@@ -1,0 +1,77 @@
+{
+  "python": "3.11.15",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "wheels": {
+    "mediapipe": {
+      "version": "0.10.30",
+      "matching_candidates": [
+        {
+          "filename": "mediapipe-0.10.30-py3-none-macosx_11_0_arm64.whl",
+          "sha256": "dba4baff388629e4d80439782e9ef982e3b27640ccca2a68508e73bb1142286a"
+        }
+      ]
+    },
+    "opencv-python": {
+      "version": "5.0.0.93",
+      "matching_candidates": [
+        {
+          "filename": "opencv_python-5.0.0.93-cp37-abi3-macosx_13_0_arm64.whl",
+          "sha256": "198a75138241810206a17c829dbcc40a7cb1841cda538ca86cbbfc6c7d95f898"
+        }
+      ]
+    },
+    "numpy": {
+      "version": "2.4.6",
+      "matching_candidates": [
+        {
+          "filename": "numpy-2.4.6-cp311-cp311-macosx_11_0_arm64.whl",
+          "sha256": "110f8b71aacb688ec69062bb7f6938a0f8acb01b7c1c4beb453c65b6d234584d"
+        },
+        {
+          "filename": "numpy-2.4.6-cp311-cp311-macosx_14_0_arm64.whl",
+          "sha256": "4cfe66903cc32a9921a6733d96b19bb6abf310397581bbad89c228f5abaf0ee8"
+        }
+      ]
+    },
+    "pydantic": {
+      "version": "2.14.2",
+      "matching_candidates": [
+        {
+          "filename": "pydantic-2.14.2-py3-none-any.whl",
+          "sha256": "7efbf7507b937931cd32a5755acb00ea1cf5ccb1d4e8067a5850d5069e382118"
+        }
+      ]
+    },
+    "pydantic-core": {
+      "version": "2.50.2",
+      "matching_candidates": [
+        {
+          "filename": "pydantic_core-2.50.2-cp311-cp311-macosx_11_0_arm64.whl",
+          "sha256": "b2dd65864aad38dbcc57c3d0e2c978d4286e063378137d8fc0c9fcd558943285"
+        }
+      ]
+    },
+    "ruff": {
+      "version": "0.17.3",
+      "matching_candidates": [
+        {
+          "filename": "ruff-0.17.3-py3-none-macosx_11_0_arm64.whl",
+          "sha256": "b75cc113b3aca388933d8296b667b1ac401a80317ea3074c9b0a66541199da29"
+        }
+      ]
+    },
+    "mypy": {
+      "version": "2.4.1",
+      "matching_candidates": [
+        {
+          "filename": "mypy-2.4.1-cp311-cp311-macosx_11_0_arm64.whl",
+          "sha256": "79a1e79199e980fb41f219cb3d4746d25c64b0b623840d3ed57df1cdc13a6502"
+        },
+        {
+          "filename": "mypy-2.4.1-py3-none-any.whl",
+          "sha256": "1784648d6ec8c2b5465e3f26241b845a0b3cb4e56c993c64abe16989e7698999"
+        }
+      ]
+    }
+  }
+}

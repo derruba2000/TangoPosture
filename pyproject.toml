@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling==1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tango-posture"
+version = "0.1.0"
+description = "Local, reference-relative side-view movement observation"
+requires-python = ">=3.11,<3.12"
+license = "Apache-2.0"
+dependencies = [
+    "mediapipe==0.10.30",
+    "opencv-python==5.0.0.93",
+    "numpy==2.4.6",
+    "pydantic==2.14.2",
+]
+
+[project.scripts]
+tango-posture = "tango_posture.cli:main"
+
+[dependency-groups]
+dev = ["pytest==9.2.0", "ruff==0.17.3", "mypy==2.4.1"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

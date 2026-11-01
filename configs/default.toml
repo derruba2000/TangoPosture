@@ -1,0 +1,36 @@
+# Experimental engineering defaults, not tango or clinical standards.
+camera = 0
+width = 640
+height = 480
+model_path = "models/pose_landmarker_lite.task"
+data_dir = "data"
+side = "left"
+facing = "right"
+capture_profile = "default"
+mirror = false
+confidence = 0.7
+min_torso = 0.12
+min_head = 0.04
+max_view_width = 0.45
+view_change_tolerance = 0.15
+smoothing = 0.25
+entry_duration = 1.5
+clear_duration = 0.75
+max_gap = 0.5
+calibration_duration = 12
+calibration_valid_duration = 9
+calibration_samples = 60
+offset_mad = 0.03
+angle_mad = 4
+
+[head_forward]
+entry = 0.08
+clear = 0.05
+
+[head_inclination]
+entry = 10.0
+clear = 6.0
+
+[trunk_inclination]
+entry = 8.0
+clear = 5.0

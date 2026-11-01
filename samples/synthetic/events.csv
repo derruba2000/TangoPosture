@@ -1,0 +1,3 @@
+id,session_id,metric,onset,detection,end,peak_deviation,end_reason
+986d09c2-d1bf-4df8-b03b-c3504dd8f65c,02063a2d-dedc-46e2-ad5e-b03e78baef89,head_forward,1.1,2.6,3.9,0.199998771158,tracking_lost
+aaa94fac-dc29-4617-a477-1887fcd00360,02063a2d-dedc-46e2-ad5e-b03e78baef89,head_inclination,1.1,2.6,3.9,28.0723144525,tracking_lost

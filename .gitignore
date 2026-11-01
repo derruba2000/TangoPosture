@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.task
+*.mp4
+*.mov
+videos/
+data/
+
+dist/
+.env
+docs/licenses/

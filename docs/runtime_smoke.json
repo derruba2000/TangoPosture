@@ -1,0 +1,71 @@
+{
+  "python": "3.11.15",
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "hardware": "arm64",
+  "processor": "arm",
+  "model_hash": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
+  "tango-posture": "0.1.0",
+  "mediapipe": "0.10.30",
+  "opencv-python": "5.0.0.93",
+  "numpy": "2.4.6",
+  "pydantic": "2.14.2",
+  "fixture": "Generated blank synthetic video, 90 frames, no person; NOT dancer validation",
+  "config": {
+    "camera": 0,
+    "width": 640,
+    "height": 480,
+    "model_path": "models/pose_landmarker_lite.task",
+    "data_dir": "data",
+    "side": "left",
+    "facing": "right",
+    "capture_profile": "default",
+    "mirror": false,
+    "confidence": 0.7,
+    "min_torso": 0.12,
+    "min_head": 0.04,
+    "max_view_width": 0.45,
+    "view_change_tolerance": 0.15,
+    "smoothing": 0.25,
+    "entry_duration": 1.5,
+    "clear_duration": 0.75,
+    "max_gap": 0.5,
+    "calibration_duration": 12,
+    "calibration_valid_duration": 9,
+    "calibration_samples": 60,
+    "offset_mad": 0.03,
+    "angle_mad": 4,
+    "head_forward": {
+      "entry": 0.08,
+      "clear": 0.05
+    },
+    "head_inclination": {
+      "entry": 10.0,
+      "clear": 6.0
+    },
+    "trunk_inclination": {
+      "entry": 8.0,
+      "clear": 5.0
+    }
+  },
+  "frames": 90,
+  "source_start": 0.0,
+  "source_end": 2.966666666666667,
+  "resolution": [
+    640,
+    480
+  ],
+  "valid_frame_coverage": {
+    "head_forward": 0.0,
+    "head_inclination": 0.0,
+    "trunk_inclination": 0.0
+  },
+  "abstentions_by_metric_frame": {
+    "No person detected": 270
+  },
+  "processed_fps": 104.63447395785863,
+  "decode_to_measurement_ms_median": 9.089687497180421,
+  "decode_to_measurement_ms_p95": 9.78463109859149,
+  "dropped_frames": 0,
+  "timestamp_fallback": false,
+  "limitation": "File throughput, not webcam capture-to-overlay latency or technique accuracy"
+}
