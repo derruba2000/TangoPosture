@@ -267,8 +267,16 @@ class Application:
             if self.capture is None:
                 self.capture = Capture(self.cfg, self.video)
             if self.cfg.beat_tracking and self.beat_tracker is None:
+                audio_out = (
+                    self.record_video.with_suffix(".wav")
+                    if self.record_video is not None
+                    else None
+                )
                 self.beat_tracker = BeatTracker(
-                    self.cfg.tango_bpm, enable_audio=not self.headless and self.video is None
+                    self.cfg.tango_bpm,
+                    enable_audio=not self.headless and self.video is None,
+                    analysis_seconds=self.cfg.beat_analysis_seconds,
+                    audio_save_path=audio_out,
                 )
             if self.interval:
                 self.cal_start = self.interval[0]
@@ -521,16 +529,23 @@ class Application:
                 self.finish(end_time, status)
             finally:
                 try:
+                    if self.beat_tracker:
+                        self.beat_tracker.close()
                     if raw_writer:
                         raw_writer.release()
                         print(f"Saved raw video: {self.record_video}")
                     if overlay_writer:
                         overlay_writer.release()
                         print(f"Saved overlay video: {self.record_overlay}")
+                    if self.beat_tracker:
+                        recorded_vids = [
+                            p for p in (self.record_video, self.record_overlay) if p is not None
+                        ]
+                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
+                        for mp in muxed:
+                            print(f"Embedded microphone audio into: {mp}")
                     if self.capture:
                         self.capture.close()
-                    if self.beat_tracker:
-                        self.beat_tracker.close()
                 finally:
                     try:
                         if self.worker:

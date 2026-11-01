@@ -210,3 +210,62 @@ def test_tango_8_beat_phrase_tracker():
     assert paused_at_8s["playing"] is False
     assert paused_at_5s["beat"] == paused_at_8s["beat"]
     assert paused_at_8s["source"] == "mic-paused"
+
+
+def test_tango_30s_phrase_start_analysis_and_audio_recording(tmp_path):
+    sr = 16000
+    beat_sec = 0.5  # 120 BPM (8-beat phrase = 4.0s)
+    total_beats = 64  # 32.0 seconds (8 full 8-beat phrases)
+    # Start the recording mid-phrase so the true Beat 1 falls at beat index k = 3, 11, 19, ...
+    true_phrase_offset = 3
+    total_samples = int(total_beats * beat_sec * sr)
+    audio = np.zeros(total_samples, dtype=np.float32)
+    t_arr = np.arange(int(beat_sec * sr), dtype=np.float32) / sr
+
+    for k in range(total_beats):
+        phrase_beat = ((k - true_phrase_offset) % 8) + 1  # 1..8
+        phrase_num = (k - true_phrase_offset) // 8
+        start = int(k * beat_sec * sr)
+        end = start + len(t_arr)
+        # Decay envelope for marcato attack
+        env = np.exp(-t_arr / (0.28 if phrase_beat == 1 else 0.14 if phrase_beat == 5 else 0.09))
+        if phrase_beat == 8:
+            # Phrase cadence / breath before Beat 1
+            env *= 0.35
+        # Contrabajo + piano bass marcato (90 Hz + 180 Hz)
+        amp = 0.45 if phrase_beat == 1 else 0.28 if phrase_beat in (3, 5, 7) else 0.14
+        sig = amp * env * (np.sin(2 * np.pi * 95.0 * t_arr) + 0.6 * np.sin(2 * np.pi * 190.0 * t_arr))
+        # Orchestration / harmonic shift at the start of every 8-beat phrase (Beat 1)
+        chord_freq = 520.0 if (phrase_num % 2 == 0) else 1180.0
+        chord_amp = 0.35 if phrase_beat == 1 else 0.18 if phrase_beat <= 4 else 0.10
+        sig += chord_amp * env * np.sin(2 * np.pi * chord_freq * t_arr)
+        audio[start:end] = sig.astype(np.float32)
+
+    wav_out = tmp_path / "videos" / "cara_sucia_test.wav"
+    tracker = BeatTracker(
+        bpm=120.0,
+        enable_audio=False,
+        require_audio=True,
+        analysis_seconds=30.0,
+        audio_save_path=wav_out,
+    )
+    block = 1024
+    for idx in range(0, len(audio), block):
+        chunk = audio[idx : idx + block]
+        ts = (idx + len(chunk)) / sr
+        tracker.feed_samples(chunk, ts)
+
+    assert tracker.phrase_locked is True
+    anchor_in_beats = round(tracker.phrase_anchor_frame / tracker.tau_frames) % 8
+    assert anchor_in_beats == true_phrase_offset
+    assert 118.0 <= tracker.bpm <= 122.0
+
+    # At beat k = 67 (which is 3 + 8*8 -> Beat 1 of phrase, t = 32.0s is end of buffer -> check end beat)
+    # After 64 beats starting at offset 3, 64 - 3 = 61 beats after first Beat 1 -> 61 % 8 = 5 (Beat 6)
+    st_end = tracker.state_at(32.01)
+    assert st_end["beat"] in (5, 6)
+    assert st_end["phrase_locked"] is True
+
+    saved = tracker.save_audio(wav_out)
+    assert wav_out.is_file()
+    assert len(saved) >= 1

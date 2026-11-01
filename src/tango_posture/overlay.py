@@ -36,6 +36,10 @@ def draw(
     beat_state: dict[str, Any] | None = None,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
+    disp_w = max(960, observation.width)
+    disp_h = round(observation.height * disp_w / observation.width)
+    if (disp_w, disp_h) != (image.shape[1], image.shape[0]):
+        image = cv2.resize(image, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
     bad_head = head_down_elapsed >= head_down_duration
     detected_role = role
     for pose in observation.poses:
@@ -46,8 +50,8 @@ def draw(
                 pa, pb = pose[a], pose[b]
                 cv2.line(
                     image,
-                    screen_point(pa.x, pa.y, observation.width, observation.height, mirror),
-                    screen_point(pb.x, pb.y, observation.width, observation.height, mirror),
+                    screen_point(pa.x, pa.y, disp_w, disp_h, mirror),
+                    screen_point(pb.x, pb.y, disp_w, disp_h, mirror),
                     (80, 220, 80),
                     2,
                 )
@@ -55,7 +59,7 @@ def draw(
             if math.isfinite(p.x) and math.isfinite(p.y) and 0 <= p.x <= 1 and 0 <= p.y <= 1:
                 cv2.circle(
                     image,
-                    screen_point(p.x, p.y, observation.width, observation.height, mirror),
+                    screen_point(p.x, p.y, disp_w, disp_h, mirror),
                     3,
                     (80, 220, 80) if reliable(p, confidence) else (0, 180, 255),
                     -1,
@@ -63,8 +67,8 @@ def draw(
         head_info = head_horizontal_alignment(pose, observation.width, observation.height)
         if head_info is not None:
             angle, ear, nose = head_info
-            ex, ey = screen_point(ear.x, ear.y, observation.width, observation.height, mirror)
-            nx, ny = screen_point(nose.x, nose.y, observation.width, observation.height, mirror)
+            ex, ey = screen_point(ear.x, ear.y, disp_w, disp_h, mirror)
+            nx, ny = screen_point(nose.x, nose.y, disp_w, disp_h, mirror)
             dir_x = 1 if nx >= ex else -1
             seg_len = max(65.0, math.hypot(nx - ex, ny - ey))
             hx = round(ex + dir_x * seg_len)
@@ -142,24 +146,36 @@ def draw(
         phrase = int(beat_state.get("phrase", 1))
         bpm = float(beat_state.get("bpm", 120.0))
         playing = bool(beat_state.get("playing", True))
+        analyzing = bool(beat_state.get("analyzing", False))
+        analyzed_sec = float(beat_state.get("analyzed_seconds", 0.0))
+        target_sec = float(beat_state.get("analysis_target_seconds", 30.0))
+        phrase_locked = bool(beat_state.get("phrase_locked", False))
         source = str(beat_state.get("source", ""))
         box_w, gap = 24, 4
-        start_x = max(12, observation.width - 8 * (box_w + gap) - 12)
-        if playing:
-            header_text = f"Phrase {phrase} | BEAT {beat}/8 ({bpm:.0f} BPM)"
-            header_color = (
-                (0, 230, 255) if beat == 1 else (255, 220, 0) if beat == 5 else (230, 230, 230)
+        start_x = max(12, disp_w - 8 * (box_w + gap) - 12)
+        if not playing:
+            if source == "mic-denied":
+                header_text = f"BEAT {beat}/8 | {bpm:.0f} BPM [MIC DENIED]"
+                header_color = (0, 0, 255)
+            else:
+                header_text = f"Phrase {phrase} | BEAT {beat}/8 | {bpm:.0f} BPM [PAUSED]"
+                header_color = (200, 200, 200)
+        elif analyzing:
+            header_text = (
+                f"FINDING PHRASE ({analyzed_sec:.0f}/{target_sec:.0f}s) | "
+                f"BEAT {beat}/8 | {bpm:.0f} BPM"
             )
-        elif source == "mic-denied":
-            header_text = f"BEAT {beat}/8 [MIC PERMISSION DENIED]"
-            header_color = (0, 0, 255)
+            header_color = (80, 220, 80)
         else:
-            header_text = f"Phrase {phrase} | BEAT {beat}/8 [PAUSED - NO MUSIC]"
-            header_color = (0, 165, 255)
+            lock_tag = " [LOCKED]" if phrase_locked else ""
+            header_text = f"Phrase {phrase} | BEAT {beat}/8 | {bpm:.0f} BPM{lock_tag}"
+            header_color = (80, 220, 80)
+        (tw, _), _ = cv2.getTextSize(header_text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+        text_x = max(12, disp_w - tw - 12)
         cv2.putText(
             image,
             header_text,
-            (max(12, start_x - (56 if not playing else 0)), 24),
+            (text_x, 24),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.52,
             header_color,
@@ -171,12 +187,8 @@ def draw(
             by = 32
             active_beat = idx == beat
             fill_color = (
-                (0, 120, 200)
+                (120, 120, 120)
                 if active_beat and not playing
-                else (0, 215, 255)
-                if active_beat and idx == 1
-                else (255, 200, 0)
-                if active_beat and idx == 5
                 else (80, 220, 80)
                 if active_beat
                 else (45, 45, 45)
@@ -193,13 +205,18 @@ def draw(
                 2 if active_beat else 1,
                 cv2.LINE_AA,
             )
-    # Dedicated panel keeps status readable on small frames without covering the dancer.
+        if analyzing and target_sec > 0:
+            total_bar_w = 8 * (box_w + gap) - gap
+            prog_w = int(min(1.0, max(0.0, analyzed_sec / target_sec)) * total_bar_w)
+            cv2.rectangle(image, (start_x, 60), (start_x + total_bar_w, 65), (50, 50, 50), -1)
+            cv2.rectangle(image, (start_x, 60), (start_x + prog_w, 65), (80, 220, 80), -1)
+    # Dedicated bottom panel keeps status readable while image fills 100% horizontally.
     panel = cv2.copyMakeBorder(
         image,
         0,
-        max(245, 24 * (len(lines) + 2)),
+        max(220, 24 * (len(lines) + 2)),
         0,
-        max(0, 900 - observation.width),
+        0,
         cv2.BORDER_CONSTANT,
     )
     for i, line in enumerate([message, *lines]):
@@ -207,7 +224,7 @@ def draw(
         cv2.putText(
             panel,
             line,
-            (12, observation.height + 24 + 24 * i),
+            (12, disp_h + 24 + 24 * i),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55 if is_red else 0.5,
             (0, 0, 255) if is_red else (255, 255, 255),

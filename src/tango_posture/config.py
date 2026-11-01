@@ -14,6 +14,7 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
         lambda s: s.lower() not in ("0", "false", "no", "off"),
     ),
     "TANGO_BPM": ("tango_bpm", float),
+    "BEAT_ANALYSIS_SECONDS": ("beat_analysis_seconds", float),
 }
 
 
@@ -75,6 +76,7 @@ class Config(BaseModel):
     head_down_angle: float = Field(default=-15.0, lt=0)
     beat_tracking: bool = True
     tango_bpm: float = Field(default=120.0, gt=20, le=240)
+    beat_analysis_seconds: float = Field(default=30.0, gt=0)
     head_forward: Threshold = Threshold(entry=0.08, clear=0.05)
     head_inclination: Threshold = Threshold(entry=10, clear=6)
     trunk_inclination: Threshold = Threshold(entry=8, clear=5)
