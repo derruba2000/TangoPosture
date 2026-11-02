@@ -89,6 +89,13 @@ def summary_dict(*args, **kwargs) -> dict:
     return asdict(summarize(*args, **kwargs))
 
 
+def _format_video_ref(path: Path | None) -> str:
+    if path is None:
+        return "`None (not recorded)`"
+    resolved = path.resolve()
+    return f"[`{path}`](file://{resolved})"
+
+
 def write_markdown_report(
     report_dir: Path,
     cfg: Config,
@@ -100,6 +107,8 @@ def write_markdown_report(
     session_id: str | None = None,
     session_summary: dict[str, Any] | None = None,
     session_events: list[dict[str, Any]] | None = None,
+    recorded_video: Path | None = None,
+    recorded_overlay: Path | None = None,
 ) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     now_utc = datetime.now(UTC)
@@ -143,6 +152,27 @@ def write_markdown_report(
         if 0.2 <= (e - s) < cfg.head_down_duration
     ]
     total_head_down_sec = sum(e - s for s, e, _ in down_spans)
+
+    # Shoulder tension (raised / shrugged shoulders) analysis
+    shoulder_elevs = [
+        float(f["shoulder_elev_pct"])
+        for f in frame_log
+        if f.get("shoulder_elev_pct") is not None
+    ]
+    shoulder_spans = _contiguous_spans(
+        frame_log,
+        lambda f: (
+            f.get("shoulder_elev_pct") is not None
+            and float(f["shoulder_elev_pct"]) >= cfg.shoulder_raise_threshold
+        ),
+        cfg.max_gap,
+    )
+    confirmed_shoulder_tension = [
+        (s, e, items)
+        for s, e, items in shoulder_spans
+        if (e - s) + 1e-9 >= cfg.shoulder_tension_duration
+    ]
+    total_shoulder_tension_sec = sum(e - s for s, e, _ in shoulder_spans)
 
     # Upper-body geometry (ear-shoulder-hip) across frames where those joints were usable
     upper_metrics: dict[str, list[float]] = {m: [] for m in METRICS}
@@ -191,14 +221,23 @@ def write_markdown_report(
         "| --- | --- |",
         f"| Generated (UTC) | `{now_utc.isoformat()}` |",
         f"| Source | `{source}` |",
+        f"| Saved Raw Video | {_format_video_ref(recorded_video)} |",
+        f"| Saved Annotated Overlay Video | {_format_video_ref(recorded_overlay)} |",
         f"| Run / Session Status | `{status}` |",
         f"| Session ID | `{session_id or 'uncalibrated-observation-run'}` |",
         f"| Observed Timeline | `{_fmt_time(start_t)}` to `{_fmt_time(end_t)}` (`{total_duration:.2f}s`, `{total_frames}` frames) |",
         f"| Selected Side / Facing | `side={cfg.side}`, `facing={cfg.facing}` |",
-        f"| Head-Down Alert Config (`.env`) | Angle `< {cfg.head_down_angle:+.1f} deg` for `>= {cfg.head_down_duration:.1f}s` |",
+        f"| Head-Down Alert Config (`.env`) | Angle `< {cfg.head_down_angle:+.1f} deg` for `>= {cfg.head_down_duration:.1f}s` (neutral offset `{cfg.head_neutral_offset:+.1f} deg`) |",
+        f"| Shoulder Tension Config (`.env`) | Elevation `>= +{cfg.shoulder_raise_threshold:.1f}%` for `>= {cfg.shoulder_tension_duration:.1f}s` |",
+        f"| Role Hysteresis Config (`.env`) | Assign after `{cfg.role_assign_ms:.0f} ms`, hold for `{cfg.role_hold_ms:.0f} ms` before returning to `NONE` |",
         f"| Musical 8-Beat Phrase Tracking | {phrase_summary} |",
         f"| Runtime Throughput & Latency | `{fps_str}` (median frame latency `{lat_str}`, dropped frames `{performance.get('dropped_frames', 0)}`) |",
         f"| **Dominant Embrace Role** | **{dominant_role}** |",
+        "",
+        "### Saved Video & Overlay Files (For Consultation & Analysis)",
+        "",
+        f"- **Raw Practice Video**: {_format_video_ref(recorded_video)}",
+        f"- **Annotated Overlay Video**: {_format_video_ref(recorded_overlay)}",
         "",
         "### Detected Leader / Follower Embrace Intervals",
         "",
@@ -248,7 +287,29 @@ def write_markdown_report(
     lines.extend(
         [
             "",
-            "### 3.2 Upper-Body Geometry (Ear–Shoulder–Hip Alignment)",
+            "### 3.2 Shoulder Tension (Raised / Shrugged Shoulders)",
+            "",
+        ]
+    )
+    if shoulder_elevs:
+        lines.extend(
+            [
+                "| Metric | Value | Interpretation |",
+                "| --- | --- | --- |",
+                f"| Frames with Visible Ear & Shoulder | `{len(shoulder_elevs)} / {total_frames}` | Shoulder elevation coverage |",
+                f"| Median Shoulder Elevation | `{median(shoulder_elevs):+.1f}%` | `0%` = relaxed neutral; positive = shoulders raised toward ears |",
+                f"| Peak Shoulder Elevation | `{max(shoulder_elevs):+.1f}%` | Highest shoulder shrug / tension observed |",
+                f"| Total Time Raised (`>= +{cfg.shoulder_raise_threshold:.1f}%`) | `{total_shoulder_tension_sec:.2f}s` | Cumulative time with elevated shoulders |",
+                f"| **Confirmed Shoulder Tension Alerts (`>= {cfg.shoulder_tension_duration:.1f}s`)** | **`{len(confirmed_shoulder_tension)}`** | Triggered red on-screen `LOWER YOUR SHOULDERS` alert |",
+            ]
+        )
+    else:
+        lines.append("- Shoulder tension could not be computed (ear/shoulder not visible).")
+
+    lines.extend(
+        [
+            "",
+            "### 3.3 Upper-Body Geometry (Ear–Shoulder–Hip Alignment)",
             "",
             "| Metric | Unit | Observed Frames | Median | Min | Max | Interpretation |",
             "| --- | --- | --- | --- | --- | --- | --- |",
@@ -329,6 +390,32 @@ def write_markdown_report(
                 f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(trigger_t)}` | `{_fmt_time(e)}` | "
                 f"`{e - s:.2f}s` | `{min(angles):+.1f} deg` | `{median(angles):+.1f} deg` | "
                 f"**Bad head alignment**: head pointed downward continuously for `{e - s:.1f}s` |"
+            )
+        lines.append("")
+
+    if confirmed_shoulder_tension:
+        has_issues = True
+        lines.append(
+            f"### 4.2 Confirmed Shoulder Tension (`>= +{cfg.shoulder_raise_threshold:.1f}%` for `>= {cfg.shoulder_tension_duration:.1f}s` — LOWER YOUR SHOULDERS)"
+        )
+        lines.append("")
+        lines.append(
+            "| Start Time (Phrase/Beat) | Alert Triggered At | End Time | Duration | Peak Elevation | Median Elevation | What Went Wrong |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for s, e, items in confirmed_shoulder_tension:
+            elevs = [
+                float(x["shoulder_elev_pct"])
+                for x in items
+                if x.get("shoulder_elev_pct") is not None
+            ]
+            trigger_t = s + cfg.shoulder_tension_duration
+            p_num, b_num = items[0].get("phrase"), items[0].get("beat")
+            beat_tag = f" (P{p_num} B{b_num}/8)" if p_num and b_num else ""
+            lines.append(
+                f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(trigger_t)}` | `{_fmt_time(e)}` | "
+                f"`{e - s:.2f}s` | `{max(elevs):+.1f}%` | `{median(elevs):+.1f}%` | "
+                f"**Shoulder tension**: shoulders raised continuously for `{e - s:.1f}s` (lower your shoulders) |"
             )
         lines.append("")
 

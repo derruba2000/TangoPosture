@@ -42,12 +42,16 @@ def _usable_point(p: Landmark | None, min_visibility: float = 0.5) -> bool:
 
 
 def head_horizontal_alignment(
-    pose: dict[str, Landmark], width: int, height: int
+    pose: dict[str, Landmark],
+    width: int,
+    height: int,
+    neutral_offset: float = 0.0,
 ) -> tuple[float, Landmark, Landmark] | None:
     """Return (angle_degrees_from_horizontal, ear_landmark, nose_landmark).
 
-    Negative angles mean the nose is below the horizontal line through the ear
-    (head pointing downward).
+    `neutral_offset` (e.g. -12.0 deg) is subtracted from the raw ear-to-nose angle so
+    that a straight, level head reads 0.0 deg despite camera angle and ear/nose anatomy.
+    Negative angles mean the nose is below the neutral horizontal line (head pointing down).
     """
     nose = pose.get("nose")
     if not _usable_point(nose) or nose is None:
@@ -60,8 +64,64 @@ def head_horizontal_alignment(
     dy = (ear.y - nose.y) * height
     if dx < 5.0 and abs(dy) < 5.0:
         return None
-    angle = math.degrees(math.atan2(dy, max(dx, 1.0)))
+    raw_angle = math.degrees(math.atan2(dy, max(dx, 1.0)))
+    angle = raw_angle - neutral_offset
     return (angle, ear, nose)
+
+
+def shoulder_tension_alignment(
+    pose: dict[str, Landmark],
+    width: int,
+    height: int,
+    neutral_clearance: float = 0.95,
+) -> tuple[float, float, Landmark, Landmark] | None:
+    """Return (elevation_pct, raw_clearance_ratio, ear_landmark, shoulder_landmark).
+
+    Measures vertical neck clearance (`shoulder.y - ear.y`) normalized by a rigid,
+    shrug-invariant anatomical reference scale (~12.5 cm equivalent across skull/hip/shoulder
+    width). When shoulders go up in tension, `raw_clearance_ratio` shrinks and `elevation_pct`
+    increases above 0%.
+    """
+    pairs: list[tuple[float, Landmark, Landmark]] = []
+    for side in ("left", "right"):
+        ear = pose.get(f"{side}_ear")
+        sh = pose.get(f"{side}_shoulder")
+        if _usable_point(ear) and _usable_point(sh) and ear is not None and sh is not None:
+            dy = (sh.y - ear.y) * height
+            pairs.append((dy, ear, sh))
+    if not pairs:
+        return None
+
+    # Build a camera-distance-invariant reference scale that does NOT change when shoulders shrug
+    scales: list[float] = []
+    nose = pose.get("nose")
+    if _usable_point(nose) and nose is not None:
+        for _, ear, _ in pairs:
+            scales.append(math.hypot((nose.x - ear.x) * width, (nose.y - ear.y) * height))
+    l_ear, r_ear = pose.get("left_ear"), pose.get("right_ear")
+    if _usable_point(l_ear) and _usable_point(r_ear) and l_ear is not None and r_ear is not None:
+        scales.append(0.85 * abs(l_ear.x - r_ear.x) * width)
+    l_sh, r_sh = pose.get("left_shoulder"), pose.get("right_shoulder")
+    if _usable_point(l_sh) and _usable_point(r_sh) and l_sh is not None and r_sh is not None:
+        scales.append(0.34 * abs(l_sh.x - r_sh.x) * width)
+    for side in ("left", "right"):
+        ear = pose.get(f"{side}_ear")
+        hip = pose.get(f"{side}_hip")
+        if _usable_point(ear) and _usable_point(hip) and ear is not None and hip is not None:
+            eh_dy = (hip.y - ear.y) * height
+            if eh_dy > 20.0:
+                scales.append(0.20 * eh_dy)
+
+    ref_scale = max(scales, default=0.0)
+    if ref_scale < 8.0:
+        return None
+
+    # Select the most elevated (smallest neck clearance) visible shoulder
+    min_dy, best_ear, best_sh = min(pairs, key=lambda item: item[0])
+    raw_clearance = min_dy / ref_scale
+    base = max(0.20, float(neutral_clearance))
+    elevation_pct = ((base - raw_clearance) / base) * 100.0
+    return (elevation_pct, raw_clearance, best_ear, best_sh)
 
 
 def detect_role(pose: dict[str, Landmark]) -> str:
@@ -93,3 +153,52 @@ def detect_role(pose: dict[str, Landmark]) -> str:
     if right_up and left_horizontal and not left_up:
         return "FOLLOWER"
     return "NONE"
+
+
+class RoleTracker:
+    """Temporal hysteresis for LEADER / FOLLOWER embrace role recognition.
+
+    - When in NONE: requires continuous detection of a role for `assign_ms` (default 300ms)
+      before transitioning from NONE to LEADER or FOLLOWER.
+    - Once in LEADER or FOLLOWER: holds that role tag for `hold_ms` (default 5000ms)
+      after the last frame that detected it before returning to NONE.
+    """
+
+    def __init__(self, assign_ms: float = 300.0, hold_ms: float = 5000.0):
+        self.assign_sec = max(0.0, float(assign_ms) / 1000.0)
+        self.hold_sec = max(0.0, float(hold_ms) / 1000.0)
+        self.role: str = "NONE"
+        self.last_confirmed_at: float | None = None
+        self.candidate: str | None = None
+        self.candidate_since: float | None = None
+
+    def update(self, raw_role: str, timestamp: float) -> str:
+        if self.role in ("LEADER", "FOLLOWER"):
+            if raw_role == self.role:
+                self.last_confirmed_at = timestamp
+                self.candidate = None
+                self.candidate_since = None
+                return self.role
+            if (
+                self.last_confirmed_at is not None
+                and (timestamp - self.last_confirmed_at) + 1e-9 < self.hold_sec
+            ):
+                return self.role
+            self.role = "NONE"
+            self.last_confirmed_at = None
+            self.candidate = None
+            self.candidate_since = None
+
+        if raw_role in ("LEADER", "FOLLOWER"):
+            if self.candidate != raw_role or self.candidate_since is None:
+                self.candidate = raw_role
+                self.candidate_since = timestamp
+            if (timestamp - self.candidate_since) + 1e-9 >= self.assign_sec:
+                self.role = raw_role
+                self.last_confirmed_at = timestamp
+                self.candidate = None
+                self.candidate_since = None
+        else:
+            self.candidate = None
+            self.candidate_since = None
+        return self.role

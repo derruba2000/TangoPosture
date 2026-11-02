@@ -1,5 +1,8 @@
 import itertools
+import json
+from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
@@ -53,9 +56,19 @@ def calibrate(
         and all(a.quality[m].valid and b.quality[m].valid for m in METRICS)
     )
     if len(valid) < cfg.calibration_samples or duration + 1e-8 < cfg.calibration_valid_duration:
+        reasons = [
+            s.quality[m].reason
+            for s in window
+            for m in METRICS
+            if not s.quality[m].valid and s.quality[m].reason
+        ]
+        reason_suffix = ""
+        if reasons:
+            top_reason = max(set(reasons), key=reasons.count)
+            reason_suffix = f" ({top_reason})"
         raise ValueError(
             f"Calibration rejected: {duration:.2f}s valid, {len(valid)} samples; "
-            f"need {cfg.calibration_valid_duration}s and {cfg.calibration_samples}"
+            f"need {cfg.calibration_valid_duration}s and {cfg.calibration_samples}{reason_suffix}"
         )
     baseline, mad = {}, {}
     for m in METRICS:
@@ -85,3 +98,41 @@ def calibrate(
         model_hash,
         review=review or {"label": "self-selected"},
     )
+
+
+def save_calibration_file(
+    cal: Calibration, folder: Path = Path("calibrations")
+) -> Path:
+    """Save accepted calibration to `calibrations/calibration_<timestamp>.json` and `latest_calibration.json`."""
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    file_path = folder / f"calibration_{stamp}_{cal.id[:8]}.json"
+    latest_path = folder / "latest_calibration.json"
+    payload = json.dumps(asdict(cal), indent=2) + "\n"
+    file_path.write_text(payload, encoding="utf-8")
+    latest_path.write_text(payload, encoding="utf-8")
+    return file_path
+
+
+def load_calibration_file(
+    identifier: str, folder: Path = Path("calibrations")
+) -> Calibration | None:
+    """Load a Calibration from a JSON file path, filename in `calibrations/`, 'latest', or UUID."""
+    candidates: list[Path] = []
+    if identifier.lower() == "latest":
+        candidates.append(folder / "latest_calibration.json")
+    raw_path = Path(identifier)
+    candidates.extend([raw_path, folder / raw_path.name, folder / f"{identifier}.json"])
+    for cand in candidates:
+        if cand.is_file():
+            data = json.loads(cand.read_text(encoding="utf-8"))
+            return Calibration(**data)
+    if folder.is_dir():
+        for json_file in sorted(folder.glob("calibration_*.json"), reverse=True):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                if data.get("id") == identifier or data.get("id", "").startswith(identifier):
+                    return Calibration(**data)
+            except (OSError, ValueError, TypeError):
+                continue
+    return None

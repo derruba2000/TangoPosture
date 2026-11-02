@@ -12,7 +12,13 @@ from tango_posture.beat import BeatTracker
 from tango_posture.capture import Capture
 from tango_posture.config import load
 from tango_posture.domain import METRICS
-from tango_posture.geometry import calculate, detect_role, head_horizontal_alignment, pixel
+from tango_posture.geometry import (
+    RoleTracker,
+    calculate,
+    detect_role,
+    head_horizontal_alignment,
+    pixel,
+)
 from tango_posture.metrics import measure
 from tango_posture.pose.mediapipe_backend import MediaPipeEstimator
 from tango_posture.reports import write_markdown_report
@@ -26,6 +32,7 @@ p.add_argument("--output", type=Path, default=Path("data/real-video-smoke.json")
 a = p.parse_args()
 cfg = load(None, {"side": a.side, "facing": a.facing, "model_path": a.model_path})
 beat_tracker = BeatTracker(bpm=cfg.tango_bpm, enable_audio=False) if cfg.beat_tracking else None
+role_tracker = RoleTracker(assign_ms=cfg.role_assign_ms, hold_ms=cfg.role_hold_ms)
 capture = None
 estimator = None
 count = 0
@@ -52,11 +59,11 @@ try:
             if not q.valid:
                 reasons[q.reason] = reasons.get(q.reason, 0) + 1
         head_angle = None
-        role = "NONE"
+        raw_role = "NONE"
         upper_body = None
         if len(observation.poses) == 1:
             pose = observation.poses[0]
-            role = detect_role(pose)
+            raw_role = detect_role(pose)
             head_info = head_horizontal_alignment(pose, observation.width, observation.height)
             if head_info is not None:
                 head_angle = head_info[0]
@@ -80,6 +87,7 @@ try:
                     )
                 except ValueError:
                     upper_body = None
+        role = role_tracker.update(raw_role, frame.timestamp)
         frame_log.append(
             {
                 "timestamp": frame.timestamp,
@@ -125,6 +133,7 @@ try:
             "capture_to_overlay_ms_median": result["decode_to_measurement_ms_median"],
             "dropped_frames": result["dropped_frames"],
         },
+        recorded_video=Path(a.video),
     )
     print(f"Saved JSON: {a.output}")
     print(f"Saved report: {report_path} (latest: reports/latest_report.md)")

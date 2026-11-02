@@ -7,7 +7,7 @@ import pytest
 from conftest import frame
 
 from tango_posture.app import Application
-from tango_posture.calibration import profile
+from tango_posture.calibration import load_calibration_file, profile
 from tango_posture.capture import Captured
 from tango_posture.models import MANIFEST, fetch, verify
 from tango_posture.storage import Storage
@@ -123,6 +123,9 @@ def test_headless_interval(tmp_path, cfg, monkeypatch):
         )
         app.run()
         assert len(storage.list("calibrations")) == 1
+        assert app.saved_calibration_path is not None and app.saved_calibration_path.is_file()
+        loaded_cal = load_calibration_file("latest", tmp_path / "calibrations")
+        assert loaded_cal is not None and loaded_cal.id == app.reference.id
         assert storage.list("sessions")[0]["active_duration"] == pytest.approx(3)
         assert min(r["timestamp"] for r in app.session.rows) > 12
     finally:
@@ -227,6 +230,9 @@ def test_opt_in_video_recording(tmp_path, reference, cfg, monkeypatch):
         report_text = latest_report.read_text(encoding="utf-8")
         assert "## 1. What This Report Is & Its Purpose" in report_text
         assert "## 4. What Went Wrong & Where in Time" in report_text
+        assert "### Saved Video & Overlay Files (For Consultation & Analysis)" in report_text
+        assert str(raw_path) in report_text
+        assert str(overlay_path) in report_text
         rel_app = Application(
             cfg,
             storage,

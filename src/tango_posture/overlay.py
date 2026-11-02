@@ -4,7 +4,7 @@ from typing import Any
 import cv2
 
 from .domain import FrameObservation
-from .geometry import detect_role, head_horizontal_alignment
+from .geometry import detect_role, head_horizontal_alignment, shoulder_tension_alignment
 from .pose.constants import CONNECTIONS
 from .quality import reliable
 
@@ -34,6 +34,11 @@ def draw(
     head_down_elapsed: float = 0.0,
     role: str | None = None,
     beat_state: dict[str, Any] | None = None,
+    head_neutral_offset: float = 0.0,
+    shoulder_raise_threshold: float = 10.0,
+    shoulder_tension_duration: float = 1.5,
+    shoulder_tension_elapsed: float = 0.0,
+    shoulder_neutral_clearance: float = 0.95,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
@@ -41,6 +46,7 @@ def draw(
     if (disp_w, disp_h) != (image.shape[1], image.shape[0]):
         image = cv2.resize(image, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
     bad_head = head_down_elapsed >= head_down_duration
+    bad_shoulders = shoulder_tension_elapsed >= shoulder_tension_duration
     detected_role = role
     for pose in observation.poses:
         if detected_role is None:
@@ -64,7 +70,9 @@ def draw(
                     (80, 220, 80) if reliable(p, confidence) else (0, 180, 255),
                     -1,
                 )
-        head_info = head_horizontal_alignment(pose, observation.width, observation.height)
+        head_info = head_horizontal_alignment(
+            pose, observation.width, observation.height, neutral_offset=head_neutral_offset
+        )
         if head_info is not None:
             angle, ear, nose = head_info
             ex, ey = screen_point(ear.x, ear.y, disp_w, disp_h, mirror)
@@ -112,6 +120,54 @@ def draw(
                 2,
                 cv2.LINE_AA,
             )
+        sh_info = shoulder_tension_alignment(
+            pose,
+            observation.width,
+            observation.height,
+            neutral_clearance=shoulder_neutral_clearance,
+        )
+        if sh_info is not None:
+            elev_pct, raw_clear, sh_ear, sh_lm = sh_info
+            _sex, sey = screen_point(sh_ear.x, sh_ear.y, disp_w, disp_h, mirror)
+            sx, sy = screen_point(sh_lm.x, sh_lm.y, disp_w, disp_h, mirror)
+            sh_color = (
+                (0, 0, 255)
+                if bad_shoulders
+                else (0, 165, 255)
+                if elev_pct >= shoulder_raise_threshold
+                else (80, 220, 80)
+            )
+            # Draw shoulder level indicator and downward cue when shoulders are raised
+            cv2.line(image, (sx - 28, sy), (sx + 28, sy), sh_color, 3 if bad_shoulders else 2, cv2.LINE_AA)
+            if raw_clear > 1e-3:
+                target_dy = round((sy - sey) * (shoulder_neutral_clearance / raw_clear))
+                target_sy = min(disp_h - 8, max(sey + 15, sey + target_dy))
+                cv2.line(image, (sx - 22, target_sy), (sx + 22, target_sy), (255, 220, 0), 2, cv2.LINE_AA)
+                if elev_pct >= shoulder_raise_threshold and target_sy > sy + 4:
+                    cv2.arrowedLine(
+                        image,
+                        (sx, sy),
+                        (sx, target_sy),
+                        sh_color,
+                        2,
+                        cv2.LINE_AA,
+                        tipLength=0.35,
+                    )
+            sh_label = (
+                f"LOWER SHOULDERS ({elev_pct:+.0f}%)"
+                if elev_pct >= shoulder_raise_threshold
+                else f"Shoulders: OK ({elev_pct:+.0f}%)"
+            )
+            cv2.putText(
+                image,
+                sh_label,
+                (max(8, sx - 60), min(disp_h - 12, sy + 24)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                sh_color,
+                2,
+                cv2.LINE_AA,
+            )
     role_text = f"Role: {detected_role or 'NONE'}"
     role_color = (
         (255, 220, 0)
@@ -130,11 +186,24 @@ def draw(
         2,
         cv2.LINE_AA,
     )
+    alert_y = 62
     if bad_head:
         cv2.putText(
             image,
             f"BAD HEAD ALIGNMENT ({head_down_elapsed:.1f}s > {head_down_duration:.1f}s)",
-            (12, 62),
+            (12, alert_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        alert_y += 32
+    if bad_shoulders:
+        cv2.putText(
+            image,
+            f"LOWER YOUR SHOULDERS ({shoulder_tension_elapsed:.1f}s > {shoulder_tension_duration:.1f}s)",
+            (12, alert_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,
             (0, 0, 255),
@@ -142,8 +211,8 @@ def draw(
             cv2.LINE_AA,
         )
     if beat_state is not None:
-        beat = int(beat_state.get("beat", 1))
-        phrase = int(beat_state.get("phrase", 1))
+        beat = int(beat_state.get("beat", 0))
+        phrase = int(beat_state.get("phrase", 0))
         bpm = float(beat_state.get("bpm", 120.0))
         playing = bool(beat_state.get("playing", True))
         analyzing = bool(beat_state.get("analyzing", False))
@@ -155,14 +224,14 @@ def draw(
         start_x = max(12, disp_w - 8 * (box_w + gap) - 12)
         if not playing:
             if source == "mic-denied":
-                header_text = f"BEAT {beat}/8 | {bpm:.0f} BPM [MIC DENIED]"
+                header_text = f"WAITING FOR SONG TO BEGIN... | {bpm:.0f} BPM [MIC DENIED]"
                 header_color = (0, 0, 255)
             else:
-                header_text = f"Phrase {phrase} | BEAT {beat}/8 | {bpm:.0f} BPM [PAUSED]"
+                header_text = f"WAITING FOR SONG TO BEGIN... | {bpm:.0f} BPM"
                 header_color = (200, 200, 200)
         elif analyzing:
             header_text = (
-                f"FINDING PHRASE ({analyzed_sec:.0f}/{target_sec:.0f}s) | "
+                f"UNDERSTANDING BEATS ({analyzed_sec:.0f}/{target_sec:.0f}s) | "
                 f"BEAT {beat}/8 | {bpm:.0f} BPM"
             )
             header_color = (80, 220, 80)
@@ -185,14 +254,8 @@ def draw(
         for idx in range(1, 9):
             bx = start_x + (idx - 1) * (box_w + gap)
             by = 32
-            active_beat = idx == beat
-            fill_color = (
-                (120, 120, 120)
-                if active_beat and not playing
-                else (80, 220, 80)
-                if active_beat
-                else (45, 45, 45)
-            )
+            active_beat = playing and (idx == beat)
+            fill_color = (80, 220, 80) if active_beat else (45, 45, 45)
             cv2.rectangle(image, (bx, by), (bx + box_w, by + 24), fill_color, -1)
             cv2.rectangle(image, (bx, by), (bx + box_w, by + 24), (200, 200, 200), 1)
             cv2.putText(
@@ -220,7 +283,7 @@ def draw(
         cv2.BORDER_CONSTANT,
     )
     for i, line in enumerate([message, *lines]):
-        is_red = i == 0 and bad_head
+        is_red = i == 0 and (bad_head or bad_shoulders)
         cv2.putText(
             panel,
             line,

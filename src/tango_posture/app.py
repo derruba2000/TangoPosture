@@ -1,8 +1,11 @@
 """Desktop controller. Headless and GUI use the same observation/session pipeline."""
 
 import platform
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from contextlib import suppress
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
@@ -12,11 +15,18 @@ import cv2
 import numpy as np
 
 from .beat import BeatTracker
-from .calibration import calibrate, compatible, profile
+from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
 from .config import Config
 from .domain import Calibration, MetricObservation, PoseEstimator
-from .geometry import calculate, detect_role, head_horizontal_alignment, pixel
+from .geometry import (
+    RoleTracker,
+    calculate,
+    detect_role,
+    head_horizontal_alignment,
+    pixel,
+    shoulder_tension_alignment,
+)
 from .metrics import measure
 from .models import verify
 from .overlay import MESSAGES, draw
@@ -94,8 +104,12 @@ class Application:
         self.last_timestamp = 0.0
         self.rows: list[dict] = []
         self.samples: list[MetricObservation] = []
+        self.cal_head_angles: list[float] = []
+        self.cal_shoulder_clearances: list[float] = []
         self.cal_start: float | None = None
+        self.last_beep_sec: int | None = None
         self.candidate: Calibration | None = None
+        self.saved_calibration_path: Path | None = None
         self.notice = "C: select reference; evaluation requires an accepted reference"
         self.latencies: list[float] = []
         self.inference_times: list[float] = []
@@ -107,6 +121,11 @@ class Application:
         self.worker: ThreadPoolExecutor | None = None
         self.window_open = False
         self.head_down_since: float | None = None
+        self.shoulder_tension_since: float | None = None
+        self.relaxed_clearances: list[float] = []
+        self.role_tracker = RoleTracker(
+            assign_ms=self.cfg.role_assign_ms, hold_ms=self.cfg.role_hold_ms
+        )
         self.role = "NONE"
         self.frame_log: list[dict[str, Any]] = []
         self.last_summary: dict[str, Any] | None = None
@@ -192,17 +211,58 @@ class Application:
                 session_id=self.session.id if self.session else None,
                 session_summary=self.last_summary,
                 session_events=events,
+                recorded_video=self.record_video,
+                recorded_overlay=self.record_overlay,
             )
             self.report_written = True
             print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
 
+    def _audio_cues_enabled(self) -> bool:
+        return (
+            sys.platform == "darwin"
+            and not self.headless
+            and isinstance(self.estimator, MediaPipeEstimator)
+        )
+
+    def _speak(self, text: str) -> None:
+        if not self._audio_cues_enabled():
+            return
+        with suppress(OSError):
+            subprocess.Popen(
+                ["/usr/bin/say", text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    def _beep(self) -> None:
+        if not self._audio_cues_enabled():
+            return
+        with suppress(OSError):
+            subprocess.Popen(
+                ["/usr/bin/afplay", "/System/Library/Sounds/Ping.aiff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     def accept(self) -> None:
         if self.candidate:
             self.storage.save_calibration(self.candidate)
+            cal_dir = (
+                Path("calibrations")
+                if self.cfg.data_dir == "data"
+                else Path(self.cfg.data_dir) / "calibrations"
+            )
+            self.saved_calibration_path = save_calibration_file(self.candidate, cal_dir)
             self.reference = self.candidate
             self.candidate = None
-            print(f"Accepted reference: {self.reference.id} ({self.reference.review['label']})")
-            self.notice = "Reference accepted. S: start session"
+            print(
+                f"Calibration completed & saved: {self.saved_calibration_path} "
+                f"(id: {self.reference.id}, {self.reference.review['label']})"
+            )
+            self.notice = (
+                f"Calibration completed! Saved to {self.saved_calibration_path.name}. "
+                f"Press S to start session"
+            )
             self.state = "READY"
 
     def key(self, key: int, timestamp: float) -> bool:
@@ -215,10 +275,16 @@ class Application:
             self.beat_tracker.tap(timestamp)
         if key in (ord("c"), ord("r")) and self.state not in ("RUNNING", "PAUSED"):
             self.samples.clear()
+            self.cal_head_angles.clear()
+            self.cal_shoulder_clearances.clear()
             self.candidate = None
             self.cal_start = timestamp + 3
+            self.last_beep_sec = None
             self.state = "CALIBRATING"
             self.setup_confirmed = True
+            self.notice = "Calibration starting: 3.0s to get into position"
+            print(self.notice)
+            self._speak("Calibration starting")
         if key == ord("a") and self.candidate:
             self.accept()
         if key == ord("s") and self.state in ("READY", "FINISHED") and not self.candidate:
@@ -332,6 +398,10 @@ class Application:
                     end = self.cal_start + self.cfg.calibration_duration
                     if self.cal_start <= timestamp <= end:
                         self.samples.append(observation)
+                        sec_idx = int(timestamp - self.cal_start)
+                        if sec_idx != self.last_beep_sec and timestamp < end:
+                            self.last_beep_sec = sec_idx
+                            self._beep()
                     if timestamp >= end:
                         try:
                             self.candidate = calibrate(
@@ -343,38 +413,93 @@ class Application:
                                 self.name,
                                 self.review,
                             )
-                            q = self.candidate.quality
-                            self.notice = (
-                                f"Reference: {q['valid_duration']:.1f}s valid, "
-                                f"MAD {q['mad']}. A: accept / R: retry"
-                            )
-                            print(self.notice)
+                            if self.cal_head_angles:
+                                self.candidate.quality["head_neutral_offset"] = float(
+                                    np.median(self.cal_head_angles)
+                                )
+                            if self.cal_shoulder_clearances:
+                                self.candidate.quality["shoulder_neutral_clearance"] = float(
+                                    np.median(self.cal_shoulder_clearances)
+                                )
+                            self.accept()
+                            self._speak("Calibration completed")
                             if self.headless:
-                                self.accept()
                                 self.start_session(timestamp)
                         except ValueError as error:
                             if self.headless:
                                 raise
-                            self.notice = str(error) + "; R: retry"
+                            err_msg = str(error)
+                            self.notice = f"Calibration failed: {err_msg}; R: retry"
+                            print(self.notice)
+                            if "Framing inadequate" in err_msg:
+                                spoken_reason = "Framing inadequate. Keep your full body from head to ankles inside the camera frame."
+                            elif "Side-on view" in err_msg:
+                                spoken_reason = "Side on view unreliable. Stand in profile to the camera."
+                            elif "unstable" in err_msg:
+                                spoken_reason = "Too much movement during calibration. Please hold still."
+                            elif "No person" in err_msg:
+                                spoken_reason = "No person detected in the frame."
+                            else:
+                                spoken_reason = "Not enough valid frames captured."
+                            self._speak(f"Calibration failed. {spoken_reason}")
                         self.cal_start = None
+                        self.last_beep_sec = None
                         self.state = "RUNNING" if self.headless else "READY"
                     else:
                         remaining = self.cal_start - timestamp
                         self.notice = (
-                            f"Adopt reference: countdown {remaining:.1f}s"
+                            f"Calibration starting: position yourself ({remaining:.1f}s)"
                             if remaining > 0
-                            else f"Capturing reference: {end - timestamp:.1f}s remaining"
+                            else f"Calibrating (beep): {end - timestamp:.1f}s remaining"
                         )
                 elif self.state == "RUNNING" and self.session:
                     self.rows = self.session.update(observation)
                 head_angle = None
+                shoulder_elev_pct = None
                 upper_body = None
+                raw_role = "NONE"
+                neutral_offset = (
+                    float(self.reference.quality["head_neutral_offset"])
+                    if self.reference and "head_neutral_offset" in self.reference.quality
+                    else self.cfg.head_neutral_offset
+                )
+                sh_neutral = (
+                    float(self.reference.quality["shoulder_neutral_clearance"])
+                    if self.reference and "shoulder_neutral_clearance" in self.reference.quality
+                    else self.cfg.shoulder_neutral_clearance
+                )
                 if len(frame.poses) == 1:
                     pose = frame.poses[0]
-                    self.role = detect_role(pose)
-                    head_info = head_horizontal_alignment(pose, frame.width, frame.height)
+                    raw_role = detect_role(pose)
+                    raw_head_info = head_horizontal_alignment(
+                        pose, frame.width, frame.height, neutral_offset=0.0
+                    )
+                    if (
+                        self.state == "CALIBRATING"
+                        and self.cal_start is not None
+                        and timestamp >= self.cal_start
+                        and raw_head_info is not None
+                    ):
+                        self.cal_head_angles.append(raw_head_info[0])
+                    head_info = head_horizontal_alignment(
+                        pose, frame.width, frame.height, neutral_offset=neutral_offset
+                    )
                     if head_info is not None:
                         head_angle = head_info[0]
+                    sh_info = shoulder_tension_alignment(
+                        pose, frame.width, frame.height, neutral_clearance=sh_neutral
+                    )
+                    if sh_info is not None:
+                        shoulder_elev_pct = sh_info[0]
+                        raw_clear = sh_info[1]
+                        if (
+                            self.state == "CALIBRATING"
+                            and self.cal_start is not None
+                            and timestamp >= self.cal_start
+                        ):
+                            self.cal_shoulder_clearances.append(raw_clear)
+                        elif len(self.relaxed_clearances) < 600 and 0.45 <= raw_clear <= 1.60:
+                            self.relaxed_clearances.append(raw_clear)
                     ear_lm = pose.get(f"{self.cfg.side}_ear")
                     sh_lm = pose.get(f"{self.cfg.side}_shoulder")
                     hip_lm = pose.get(f"{self.cfg.side}_hip")
@@ -395,21 +520,22 @@ class Application:
                             )
                         except ValueError:
                             upper_body = None
-                else:
-                    self.role = "NONE"
+                self.role = self.role_tracker.update(raw_role, timestamp)
                 quality_reason = next(
                     (q.reason for q in observation.quality.values() if not q.valid), ""
                 )
                 beat_state = self.beat_tracker.state_at(timestamp) if self.beat_tracker else None
+                has_counted_beat = bool(beat_state and beat_state["beat"] > 0)
                 self.frame_log.append(
                     {
                         "timestamp": timestamp,
                         "head_angle": head_angle,
+                        "shoulder_elev_pct": shoulder_elev_pct,
                         "role": self.role,
                         "upper_body": upper_body,
                         "quality_reason": quality_reason,
-                        "beat": beat_state["beat"] if beat_state else None,
-                        "phrase": beat_state["phrase"] if beat_state else None,
+                        "beat": beat_state["beat"] if has_counted_beat and beat_state else None,
+                        "phrase": beat_state["phrase"] if has_counted_beat and beat_state else None,
                         "bpm": beat_state["bpm"] if beat_state else None,
                     }
                 )
@@ -421,8 +547,31 @@ class Application:
                     self.head_down_since = None
                     head_down_elapsed = 0.0
                 bad_head = head_down_elapsed >= self.cfg.head_down_duration
+
+                if (
+                    shoulder_elev_pct is not None
+                    and shoulder_elev_pct >= self.cfg.shoulder_raise_threshold
+                ):
+                    if self.shoulder_tension_since is None:
+                        self.shoulder_tension_since = timestamp
+                    shoulder_tension_elapsed = timestamp - self.shoulder_tension_since
+                else:
+                    self.shoulder_tension_since = None
+                    shoulder_tension_elapsed = 0.0
+                bad_shoulders = shoulder_tension_elapsed >= self.cfg.shoulder_tension_duration
+
                 message = self.notice
-                if bad_head:
+                if bad_head and bad_shoulders:
+                    message = (
+                        f"BAD HEAD ALIGNMENT ({head_angle:+.1f} deg) & "
+                        f"LOWER YOUR SHOULDERS ({shoulder_elev_pct:+.0f}% for {shoulder_tension_elapsed:.1f}s)"
+                    )
+                elif bad_shoulders:
+                    message = (
+                        f"LOWER YOUR SHOULDERS: shoulder tension detected "
+                        f"({shoulder_elev_pct:+.0f}% raised for {shoulder_tension_elapsed:.1f}s)"
+                    )
+                elif bad_head:
                     message = (
                         f"BAD HEAD ALIGNMENT: head pointing down ({head_angle:+.1f} deg for "
                         f"{head_down_elapsed:.1f}s)"
@@ -448,19 +597,39 @@ class Application:
                         else 0
                     )
                     head_str = "N/A" if head_angle is None else f"{head_angle:+.1f} deg"
-                    beat_str = (
-                        f"Phrase {beat_state['phrase']} Beat {beat_state['beat']}/8 "
-                        f"({beat_state['bpm']:.0f} BPM, {beat_state['source']})"
-                        if beat_state
-                        else "disabled"
+                    sh_str = (
+                        "N/A"
+                        if shoulder_elev_pct is None
+                        else (
+                            f"HIGH {shoulder_elev_pct:+.0f}%"
+                            if shoulder_elev_pct >= self.cfg.shoulder_raise_threshold
+                            else f"OK ({shoulder_elev_pct:+.0f}%)"
+                        )
                     )
+                    if beat_state is None:
+                        beat_str = "disabled"
+                    elif not beat_state["playing"]:
+                        beat_str = "Waiting for song to begin..."
+                    elif beat_state["analyzing"]:
+                        beat_str = (
+                            f"Understanding beats ({beat_state['analyzed_seconds']:.0f}/"
+                            f"{beat_state['analysis_target_seconds']:.0f}s) | "
+                            f"Phrase {beat_state['phrase']} Beat {beat_state['beat']}/8 "
+                            f"({beat_state['bpm']:.0f} BPM)"
+                        )
+                    else:
+                        beat_str = (
+                            f"Phrase {beat_state['phrase']} Beat {beat_state['beat']}/8 "
+                            f"({beat_state['bpm']:.0f} BPM, {beat_state['source']})"
+                        )
                     lines = [
                         (
                             f"{self.state} | active {active:.1f}s | processed {fps:.1f} FPS | "
                             f"side {self.cfg.side}, facing {self.cfg.facing}"
                         ),
                         (
-                            f"Role: {self.role} | Beat: {beat_str} | Head horiz: {head_str}"
+                            f"Role: {self.role} | Beat: {beat_str} | "
+                            f"Head: {head_str} | Shoulders: {sh_str}"
                         ),
                         (
                             f"Reference: {self.reference.name if self.reference else 'NONE'} "
@@ -494,6 +663,11 @@ class Application:
                         head_down_elapsed=head_down_elapsed,
                         role=self.role,
                         beat_state=beat_state,
+                        head_neutral_offset=neutral_offset,
+                        shoulder_raise_threshold=self.cfg.shoulder_raise_threshold,
+                        shoulder_tension_duration=self.cfg.shoulder_tension_duration,
+                        shoulder_tension_elapsed=shoulder_tension_elapsed,
+                        shoulder_neutral_clearance=sh_neutral,
                     )
                     if self.record_overlay:
                         if overlay_writer is None:

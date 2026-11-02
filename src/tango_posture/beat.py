@@ -303,6 +303,8 @@ class BeatTracker:
         self.feat_mid_flux: list[float] = []
         self.feat_subbands: list[np.ndarray] = []
         self.feat_times: list[float] = []
+        self.preroll: deque[tuple[float, float, float, np.ndarray, float]] = deque(maxlen=150)
+        self.song_detected = False
 
         # Phrase model state (in 100 Hz active-music frame coordinates)
         self.tau_frames: float = (60.0 / self.bpm) * self.frame_rate
@@ -319,11 +321,16 @@ class BeatTracker:
         self.taps: deque[float] = deque(maxlen=6)
         self.onsets: deque[float] = deque(maxlen=16)
         self.flux_history: deque[float] = deque(maxlen=60)
-        self.rms_history: deque[float] = deque(maxlen=80)
+        self.rms_history: deque[float] = deque(maxlen=200)
+        self.ambient_rms_history: deque[float] = deque(maxlen=200)
+        self.noise_floor: float = 0.0015
+        self.signal_peak_rms: float = 0.015
         self.last_onset = -10.0
         self.last_energy_time = -10.0
+        self.last_nonzero_time = -10.0
         self.last_tap_time = -10.0
         self.consecutive_onsets = 0
+        self.sustained_music_frames = 0
         self.audio_active = False
         self.mic_permission_denied = False
         self.using_live_stream = False
@@ -388,43 +395,74 @@ class BeatTracker:
                 frame_time = timestamp - (num_hops - 1 - h) * (self.hop / self.sample_rate)
                 rms = float(np.sqrt(np.mean(frame * frame)))
                 block_rms = max(block_rms, rms)
+                self.rms_history.append(rms)
+                if rms > 2e-4:
+                    self.last_nonzero_time = frame_time
 
                 mag = np.abs(np.fft.rfft(frame * self.stft_window))
+                band_mag = mag[self.bass_mask | self.mid_mask]
+                med_mag = float(np.median(band_mag)) if len(band_mag) > 0 else 0.0
+                max_mag = float(np.max(band_mag)) if len(band_mag) > 0 else 0.0
+                crest = max_mag / (med_mag + 1e-6)
+
+                # Update ambient noise floor only when song has not been detected or during quiet frames
+                if (not self.song_detected and crest < 4.2) or (
+                    self.song_detected and rms <= self.noise_floor * 1.4
+                ):
+                    self.ambient_rms_history.append(rms)
+                if len(self.ambient_rms_history) >= 20:
+                    self.noise_floor = float(
+                        np.clip(np.percentile(self.ambient_rms_history, 30), 4e-4, 0.0040)
+                    )
+
+                # Check if this 10 ms frame has real musical sound vs ambient room noise
+                tonal_frame = rms >= max(0.0020, self.noise_floor * 1.85) and crest >= 3.2
+                active_song_frame = self.song_detected and rms >= max(0.0008, self.noise_floor * 1.25)
+                frame_has_sound = tonal_frame or active_song_frame
+
+                if frame_has_sound:
+                    self.signal_peak_rms = max(
+                        0.004, 0.992 * self.signal_peak_rms + 0.008 * max(rms, self.signal_peak_rms)
+                    )
+                    self.last_energy_time = frame_time
+                    if tonal_frame:
+                        self.sustained_music_frames += 1
+                        if self.sustained_music_frames >= 35 and not self.song_detected:
+                            self._activate_song_unlocked(frame_time)
+                else:
+                    self.sustained_music_frames = max(0, self.sustained_music_frames - 1)
+
+                # Scale-invariant spectral flux so quiet room mics and loud line-in work identically
+                mag_scale = max(self.noise_floor * 25.0, self.signal_peak_rms * 8.0, 0.015)
+                norm_mag = mag / mag_scale
                 if self.prev_mag is None:
-                    self.prev_mag = mag
+                    self.prev_mag = norm_mag
                     bass_fl = 0.0
                     mid_fl = 0.0
                 else:
-                    # Log-compressed spectral flux emphasizes rhythmic note attacks over vibrato
-                    log_curr = np.log1p(20.0 * mag)
-                    log_prev = np.log1p(20.0 * self.prev_mag)
+                    log_curr = np.log1p(12.0 * norm_mag)
+                    log_prev = np.log1p(12.0 * self.prev_mag)
                     diff = np.maximum(0.0, log_curr - log_prev)
-                    self.prev_mag = mag
-                    bass_fl = float(np.sum(diff[self.bass_mask]))
-                    mid_fl = float(np.sum(diff[self.mid_mask]))
+                    self.prev_mag = norm_mag
+                    if frame_has_sound or self.song_detected:
+                        bass_fl = float(np.sum(diff[self.bass_mask]))
+                        mid_fl = float(np.sum(diff[self.mid_mask]))
+                    else:
+                        bass_fl = 0.0
+                        mid_fl = 0.0
 
                 block_bass_flux = max(block_bass_flux, bass_fl)
                 block_mid_flux = max(block_mid_flux, mid_fl)
 
-                # Check if this 10 ms frame has active music energy above ambient noise floor
-                self.rms_history.append(rms)
-                noise_floor = (
-                    float(np.clip(np.percentile(self.rms_history, 15), 1.5e-4, 0.008))
-                    if len(self.rms_history) >= 50
-                    else 5e-4
+                # Once a song is detected and playing, append EVERY 10ms hop so the 100 Hz time
+                # axis stays 100% contiguous across all 8 beats of every phrase.
+                song_still_playing = self.song_detected and (
+                    (frame_time - self.last_energy_time) <= 2.5
                 )
-                frame_has_sound = rms > max(0.0012, noise_floor * 1.8)
-                if frame_has_sound:
-                    self.last_energy_time = frame_time
-
-                # Keep 100.0 Hz time axis contiguous across staccato gaps / respiros while music plays
-                music_window_active = frame_has_sound or (
-                    self.last_energy_time >= 0 and (frame_time - self.last_energy_time) <= 0.45
-                )
-                if music_window_active:
+                if song_still_playing or frame_has_sound:
                     sub = np.array(
                         [
-                            float(np.log1p(np.mean(mag[mask]))) if np.any(mask) else 0.0
+                            float(np.log1p(np.mean(norm_mag[mask]))) if np.any(mask) else 0.0
                             for mask in self.subband_masks
                         ],
                         dtype=np.float32,
@@ -432,11 +470,24 @@ class BeatTracker:
                     norm = float(np.linalg.norm(sub))
                     if norm > 1e-6:
                         sub /= norm
-                    self.feat_rms.append(rms)
-                    self.feat_bass_flux.append(bass_fl)
-                    self.feat_mid_flux.append(mid_fl)
-                    self.feat_subbands.append(sub)
-                    self.feat_times.append(frame_time)
+                    if self.song_detected:
+                        self.feat_rms.append(rms)
+                        self.feat_bass_flux.append(bass_fl)
+                        self.feat_mid_flux.append(mid_fl)
+                        self.feat_subbands.append(sub)
+                        self.feat_times.append(frame_time)
+                    else:
+                        self.preroll.append((rms, bass_fl, mid_fl, sub, frame_time))
+                elif not frame_has_sound and self.last_energy_time >= 0 and (frame_time - self.last_energy_time) > 3.5:
+                    self.preroll.clear()
+                    if not self.phrase_locked:
+                        self.song_detected = False
+                        self.feat_rms.clear()
+                        self.feat_bass_flux.clear()
+                        self.feat_mid_flux.clear()
+                        self.feat_subbands.clear()
+                        self.feat_times.clear()
+                        self.last_analysis_frames = 0
 
             self.staging_audio = self.staging_audio[num_hops * self.hop :]
             self._update_onset_state_unlocked(
@@ -444,30 +495,49 @@ class BeatTracker:
             )
             self._maybe_analyze_phrases_unlocked()
 
+    def _activate_song_unlocked(self, timestamp: float) -> None:
+        if self.song_detected:
+            return
+        self.song_detected = True
+        if self.last_onset < 0:
+            self.last_onset = timestamp
+        self.last_energy_time = max(self.last_energy_time, timestamp)
+        for pr_rms, pr_b, pr_m, pr_sub, pr_t in self.preroll:
+            self.feat_rms.append(pr_rms)
+            self.feat_bass_flux.append(pr_b)
+            self.feat_mid_flux.append(pr_m)
+            self.feat_subbands.append(pr_sub)
+            self.feat_times.append(pr_t)
+        self.preroll.clear()
+
     def _update_onset_state_unlocked(self, flux: float, timestamp: float, rms: float) -> bool:
-        noise_floor = (
-            float(np.clip(np.percentile(self.rms_history, 15), 1.5e-4, 0.012))
-            if len(self.rms_history) >= 10
-            else 6e-4
+        min_rms = (
+            max(0.0012, self.noise_floor * 1.35)
+            if self.song_detected
+            else max(0.0022, self.noise_floor * 1.9)
         )
-        has_energy = rms > max(0.0010, noise_floor * 1.75)
+        has_energy = rms >= min_rms
         if has_energy:
             self.last_energy_time = timestamp
+        if rms > 2e-4:
+            self.last_nonzero_time = timestamp
 
         self.flux_history.append(flux)
-        if len(self.flux_history) < 8 or not has_energy:
+        if len(self.flux_history) < 6 or not has_energy:
             return False
 
         arr = np.array(self.flux_history, dtype=float)
-        threshold = float(np.mean(arr) + 1.25 * np.std(arr))
-        if flux <= threshold or flux <= 1e-3 or (timestamp - self.last_onset) < 0.26:
+        threshold = float(np.mean(arr) + 0.85 * np.std(arr))
+        if flux <= threshold or flux <= 0.08 or (timestamp - self.last_onset) < 0.24:
             return False
 
         prev_onset = self.last_onset
         self.last_onset = timestamp
         self.audio_active = True
-        if prev_onset >= 0 and (timestamp - prev_onset) <= 1.75:
+        if prev_onset >= 0 and (timestamp - prev_onset) <= 2.2:
             self.consecutive_onsets += 1
+            if self.consecutive_onsets >= 2 and not self.song_detected:
+                self._activate_song_unlocked(timestamp)
             ioi = timestamp - prev_onset
             if 0.76 <= ioi <= 1.35:
                 ioi /= 2.0
@@ -492,9 +562,9 @@ class BeatTracker:
             return
         if self.phrase_locked:
             return
-        # Re-evaluate every 1.0s during the 30s window, and one final time when reaching 30s
+        # Re-evaluate at ~4s (tempo/grid), ~16s (mid-window), and final lock at 30s
         if (n_frames - self.last_analysis_frames) < int(
-            1.0 * self.frame_rate
+            4.0 * self.frame_rate
         ) and n_frames < target_frames:
             return
 
@@ -576,13 +646,16 @@ class BeatTracker:
         # Step 3: Identify which of the 8 beats m in {0..7} is BEAT 1 (Phrase Start)
         beat_frames = np.round(np.arange(best_phi, window_len - 3, best_tau)).astype(int)
         num_beats = len(beat_frames)
-        if num_beats < 8:
+        target_frames = int(self.analysis_seconds * self.frame_rate)
+        # Need full 30s window (or at least 24 beats) before shifting the phrase-start beat m,
+        # otherwise keep m=0 aligned to the beat grid so beats 1..8 progress smoothly without jumping.
+        if window_len < target_frames and num_beats < 24:
             self.phrase_anchor_frame = best_phi
             return
 
         attack = np.zeros(num_beats, dtype=np.float64)
         cadence_jump = np.zeros(num_beats, dtype=np.float64)
-        novelty = np.zeros(num_beats, dtype=np.float64)
+        novelty = np.full(num_beats, np.nan, dtype=np.float64)
         tau_i = max(4, round(best_tau))
 
         for k, bf in enumerate(beat_frames):
@@ -591,7 +664,7 @@ class BeatTracker:
             attack[k] = float(np.max(onset_env[lo:hi] + 0.65 * bass_norm[lo:hi]))
 
             # Post-cadence jump: strong attack on Beat 1 after weaker Beat 8 / phrase breath
-            prev_att = attack[k - 1] if k > 0 else 0.0
+            prev_att = attack[k - 1] if k > 0 else float(np.median(attack[: max(1, k)]))
             tail_lo = max(0, bf - int(0.6 * tau_i))
             tail_rms = float(np.mean(rms[tail_lo:bf])) if bf > tail_lo else 0.0
             head_hi = min(window_len, bf + int(0.8 * tau_i))
@@ -607,7 +680,10 @@ class BeatTracker:
 
         z_att = _zscore(attack)
         z_jmp = _zscore(cadence_jump)
-        z_nov = _zscore(novelty)
+        valid_nov = ~np.isnan(novelty)
+        z_nov = np.zeros(num_beats, dtype=np.float64)
+        if np.any(valid_nov):
+            z_nov[valid_nov] = _zscore(novelty[valid_nov])
 
         # Find the first prominent beat in the recording (music entrance cue)
         significant = np.where(attack >= 0.45 * float(np.max(attack)))[0]
@@ -655,13 +731,15 @@ class BeatTracker:
             return True
         if (now - self.last_tap_time) <= 1.2:
             return True
-        energy_recent = (now - self.last_energy_time) <= 0.38
-        onset_recent = (now - self.last_onset) <= 1.80
-        if not energy_recent or not onset_recent:
-            if (now - self.last_energy_time) > 0.38 or (now - self.last_onset) > 1.80:
-                self.consecutive_onsets = 0
+        if not self.song_detected:
             return False
-        return self.consecutive_onsets >= 2 or len(self.feat_rms) >= int(2.0 * self.frame_rate)
+        # If digital silence (e.g. muted input / synthetic 0.0 RMS), pause within 0.45s;
+        # for live room audio, hold playing across soft legato bridges up to 2.5s.
+        hold_sec = 0.45 if (now - self.last_nonzero_time) > 0.35 else 2.5
+        if (now - self.last_energy_time) > hold_sec:
+            self.consecutive_onsets = 0
+            return False
+        return True
 
     def process_flux(self, flux: float, timestamp: float, rms: float | None = None) -> bool:
         """Process one synthetic or external spectral-flux observation."""
@@ -694,6 +772,7 @@ class BeatTracker:
             self.last_tap_time = now
             self.last_energy_time = now
             self.last_onset = now
+            self.song_detected = True
             self.consecutive_onsets = max(self.consecutive_onsets, 2)
             if len(self.feat_rms) > 0:
                 self.phrase_anchor_frame = float(len(self.feat_rms))
@@ -704,19 +783,34 @@ class BeatTracker:
             self.was_playing = True
 
     def state_at(self, timestamp: float) -> dict[str, Any]:
-        """Return current beat (1..8), phrase (1..N), analysis progress, playing status, and BPM."""
+        """Return current beat (1..8 or 0 when waiting/analyzing), phrase, analysis progress, and BPM."""
         with self.lock:
             now = time.monotonic() - self.wall_start if self.using_live_stream else timestamp
             playing = self._is_playing_unlocked(now)
             analyzed_sec = min(self.analysis_seconds, len(self.feat_rms) / self.frame_rate)
+            analyzing = (
+                self.require_audio
+                and playing
+                and not self.phrase_locked
+                and len(self.feat_rms) > 0
+            )
 
-            if len(self.feat_rms) >= int(4.0 * self.frame_rate) and self.tau_frames > 0:
-                # Driven directly by the phrase-start model anchored on Beat 1
+            if self.require_audio and not playing:
+                # No music playing -> do not count beats or phrases
+                beat = 0
+                phrase = 0
+                phase = 0.0
+            elif len(self.feat_rms) > 0 and self.tau_frames > 0:
+                # Progress continuously through Beats 1..8 of each phrase while music plays
+                # (both during the 30s phrase-understanding period and after phrase lock)
                 current_frame = float(len(self.feat_rms))
                 if playing and self.feat_times:
                     extra_dt = max(0.0, min(now - self.feat_times[-1], 0.15))
                     current_frame += extra_dt * self.frame_rate
                 rel_beats = (current_frame - self.phrase_anchor_frame) / self.tau_frames
+                # Prevent tiny sub-frame phase refinements from stepping back 1 beat mid-phrase
+                if self.was_playing and -0.35 < (rel_beats - self.beat_position) < 0.0:
+                    rel_beats = self.beat_position
                 self.beat_position = max(0.0, rel_beats)
                 beat_index = int(np.floor(rel_beats)) % 8
                 beat = beat_index + 1
@@ -740,7 +834,7 @@ class BeatTracker:
             elif not self.require_audio:
                 source = "mic-pll" if self.audio_active else ("tap-sync" if self.taps else "clock")
             elif not playing:
-                source = "mic-paused" if self.audio_active else "mic-waiting"
+                source = "mic-paused" if self.song_detected else "waiting-for-song"
             elif self.phrase_locked:
                 source = "phrase-locked"
             else:
@@ -752,7 +846,7 @@ class BeatTracker:
                 "phase": phase,
                 "bpm": round(self.bpm, 1),
                 "playing": playing,
-                "analyzing": self.require_audio and not self.phrase_locked and playing,
+                "analyzing": analyzing,
                 "analyzed_seconds": round(analyzed_sec, 1),
                 "analysis_target_seconds": round(self.analysis_seconds, 1),
                 "phrase_locked": self.phrase_locked,

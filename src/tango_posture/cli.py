@@ -4,6 +4,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from .calibration import load_calibration_file
 from .config import load
 from .models import fetch
 from .storage import Storage
@@ -118,7 +119,18 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(storage.export(args.session_id, args.output))
             return 0
-        reference = storage.calibration(args.calibration) if args.calibration else None
+        reference = None
+        if args.calibration:
+            cal_dir = (
+                Path("calibrations")
+                if cfg.data_dir == "data"
+                else Path(cfg.data_dir) / "calibrations"
+            )
+            reference = load_calibration_file(args.calibration, cal_dir)
+            if reference is not None:
+                storage.save_calibration(reference)
+            else:
+                reference = storage.calibration(args.calibration)
         if reference:
             if args.reference_interval:
                 raise ValueError("Choose either an existing reference or a reference interval")

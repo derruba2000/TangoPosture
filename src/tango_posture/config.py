@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
+    "HEAD_NEUTRAL_OFFSET_DEGREES": ("head_neutral_offset", float),
     "HEAD_DOWN_DURATION_SECONDS": ("head_down_duration", float),
     "HEAD_DOWN_ANGLE_DEGREES": ("head_down_angle", float),
     "BEAT_TRACKING_ENABLED": (
@@ -15,6 +16,11 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
     ),
     "TANGO_BPM": ("tango_bpm", float),
     "BEAT_ANALYSIS_SECONDS": ("beat_analysis_seconds", float),
+    "ROLE_ASSIGN_MS": ("role_assign_ms", float),
+    "ROLE_HOLD_MS": ("role_hold_ms", float),
+    "SHOULDER_TENSION_DURATION_SECONDS": ("shoulder_tension_duration", float),
+    "SHOULDER_RAISE_THRESHOLD_PCT": ("shoulder_raise_threshold", float),
+    "SHOULDER_NEUTRAL_CLEARANCE": ("shoulder_neutral_clearance", float),
 }
 
 
@@ -72,11 +78,17 @@ class Config(BaseModel):
     calibration_samples: int = Field(default=60, ge=2)
     offset_mad: float = Field(default=0.03, gt=0)
     angle_mad: float = Field(default=4, gt=0)
+    head_neutral_offset: float = Field(default=-12.0)
     head_down_duration: float = Field(default=3.0, gt=0)
     head_down_angle: float = Field(default=-15.0, lt=0)
     beat_tracking: bool = True
     tango_bpm: float = Field(default=120.0, gt=20, le=240)
     beat_analysis_seconds: float = Field(default=30.0, gt=0)
+    role_assign_ms: float = Field(default=300.0, ge=0)
+    role_hold_ms: float = Field(default=5000.0, ge=0)
+    shoulder_tension_duration: float = Field(default=1.5, gt=0)
+    shoulder_raise_threshold: float = Field(default=10.0, gt=0)
+    shoulder_neutral_clearance: float = Field(default=0.95, gt=0)
     head_forward: Threshold = Threshold(entry=0.08, clear=0.05)
     head_inclination: Threshold = Threshold(entry=10, clear=6)
     trunk_inclination: Threshold = Threshold(entry=8, clear=5)

@@ -7,7 +7,14 @@ from conftest import frame
 from tango_posture.beat import BeatTracker
 from tango_posture.config import load
 from tango_posture.domain import METRICS, Landmark
-from tango_posture.geometry import calculate, detect_role, head_horizontal_alignment, wrapped
+from tango_posture.geometry import (
+    RoleTracker,
+    calculate,
+    detect_role,
+    head_horizontal_alignment,
+    shoulder_tension_alignment,
+    wrapped,
+)
 from tango_posture.metrics import measure
 from tango_posture.overlay import screen_point
 
@@ -159,6 +166,39 @@ def test_leader_and_follower_role_detection():
     }
     assert detect_role(neutral_pose) == "NONE"
 
+    # Hysteresis: 300ms to assign from NONE, 5000ms hold before returning to NONE
+    rt = RoleTracker(assign_ms=300.0, hold_ms=5000.0)
+    assert rt.update("LEADER", 1.00) == "NONE"
+    assert rt.update("LEADER", 1.20) == "NONE"  # Only 200ms elapsed (< 300ms)
+    assert rt.update("LEADER", 1.30) == "LEADER"  # 300ms reached -> assigns LEADER
+    assert rt.update("NONE", 3.00) == "LEADER"  # Held at +1.7s (< 5000ms)
+    assert rt.update("NONE", 6.29) == "LEADER"  # Held at +4.99s (< 5000ms)
+    assert rt.update("NONE", 6.31) == "NONE"  # 5000ms expired -> returns to NONE
+
+
+def test_shoulder_tension_detection():
+    # Relaxed shoulders: ear at y=0.20, shoulder at y=0.33, hip at y=0.80 -> clearance ~ 1.0
+    relaxed_pose = {
+        "nose": Landmark(0.58, 0.22, 0.99, 0.99),
+        "left_ear": Landmark(0.50, 0.20, 0.99, 0.99),
+        "left_shoulder": Landmark(0.50, 0.32, 0.99, 0.99),
+        "left_hip": Landmark(0.50, 0.80, 0.99, 0.99),
+    }
+    relaxed_res = shoulder_tension_alignment(relaxed_pose, 640, 480, neutral_clearance=0.95)
+    assert relaxed_res is not None
+    assert relaxed_res[0] < 10.0  # Below 10% tension threshold
+
+    # Shrugged / tense shoulders: shoulder rises up to y=0.28 toward the ear (> 10% elevation)
+    tense_pose = {
+        "nose": Landmark(0.58, 0.22, 0.99, 0.99),
+        "left_ear": Landmark(0.50, 0.20, 0.99, 0.99),
+        "left_shoulder": Landmark(0.50, 0.28, 0.99, 0.99),
+        "left_hip": Landmark(0.50, 0.80, 0.99, 0.99),
+    }
+    tense_res = shoulder_tension_alignment(tense_pose, 640, 480, neutral_clearance=0.95)
+    assert tense_res is not None
+    assert tense_res[0] >= 10.0  # Above 10% is no longer OK -> flags LOWER YOUR SHOULDERS
+
 
 def test_tango_8_beat_phrase_tracker():
     tracker = BeatTracker(bpm=120.0, enable_audio=False)
@@ -184,10 +224,19 @@ def test_tango_8_beat_phrase_tracker():
     st_audio = tracker.state_at(13.5)
     assert st_audio["source"] == "mic-pll"
 
-    # In microphone mode (require_audio=True), beats MUST pause when music stops
-    mic_tracker = BeatTracker(bpm=120.0, enable_audio=False, require_audio=True)
-    assert mic_tracker.state_at(0.0)["playing"] is False
-    assert mic_tracker.state_at(2.0)["beat"] == 1  # Still beat 1 after 2s of silence
+    # In microphone mode (require_audio=True), beats MUST NOT be counted before a song begins
+    # or when music stops
+    mic_tracker = BeatTracker(
+        bpm=120.0, enable_audio=False, require_audio=True, analysis_seconds=0.0
+    )
+    st_waiting_0 = mic_tracker.state_at(0.0)
+    st_waiting_2 = mic_tracker.state_at(2.0)
+    assert st_waiting_0["playing"] is False
+    assert st_waiting_2["playing"] is False
+    assert st_waiting_0["beat"] == 0
+    assert st_waiting_0["phrase"] == 0
+    assert st_waiting_2["beat"] == 0  # Still 0 (not counting) after 2s of silence
+    assert st_waiting_2["source"] == "waiting-for-song"
 
     # Feed active music with 120 BPM onsets (every 0.5s) from t=2.0s to t=4.5s
     t = 2.0
@@ -198,9 +247,10 @@ def test_tango_8_beat_phrase_tracker():
         t += 0.05
     playing_state = mic_tracker.state_at(4.5)
     assert playing_state["playing"] is True
-    assert playing_state["beat"] > 1
+    assert playing_state["beat"] >= 1
+    assert playing_state["phrase"] >= 1
 
-    # Music is paused at t=4.55s (RMS drops to silence) -> beat counter must freeze and stop progressing
+    # Music is paused at t=4.55s (RMS drops to silence) -> must stop counting beats/phrases
     while t <= 8.0:
         mic_tracker.process_flux(0.0, round(t, 2), rms=0.0)
         t += 0.05
@@ -208,7 +258,9 @@ def test_tango_8_beat_phrase_tracker():
     paused_at_8s = mic_tracker.state_at(8.0)
     assert paused_at_5s["playing"] is False
     assert paused_at_8s["playing"] is False
-    assert paused_at_5s["beat"] == paused_at_8s["beat"]
+    assert paused_at_5s["beat"] == 0
+    assert paused_at_8s["beat"] == 0
+    assert paused_at_8s["phrase"] == 0
     assert paused_at_8s["source"] == "mic-paused"
 
 
@@ -250,19 +302,43 @@ def test_tango_30s_phrase_start_analysis_and_audio_recording(tmp_path):
         audio_save_path=wav_out,
     )
     block = 1024
-    for idx in range(0, len(audio), block):
-        chunk = audio[idx : idx + block]
+    # First feed 4 seconds of ambient room noise (RMS ~0.003) before any song begins
+    rng = np.random.default_rng(42)
+    ambient = rng.normal(0.0, 0.003, size=4 * sr).astype(np.float32)
+    for idx in range(0, len(ambient), block):
+        chunk = ambient[idx : idx + block]
         ts = (idx + len(chunk)) / sr
         tracker.feed_samples(chunk, ts)
 
+    st_before_song = tracker.state_at(4.0)
+    assert tracker.song_detected is False
+    assert st_before_song["playing"] is False
+    assert st_before_song["beat"] == 0
+    assert st_before_song["phrase"] == 0
+    assert st_before_song["analyzed_seconds"] == 0.0
+    assert st_before_song["source"] == "waiting-for-song"
+
+    # Now start the song at t = 4.0s and track all beats observed across the phrases
+    observed_beats: set[int] = set()
+    for idx in range(0, len(audio), block):
+        chunk = audio[idx : idx + block]
+        ts = 4.0 + (idx + len(chunk)) / sr
+        tracker.feed_samples(chunk, ts)
+        st_cur = tracker.state_at(ts)
+        if st_cur["playing"] and st_cur["beat"] > 0:
+            observed_beats.add(int(st_cur["beat"]))
+
+    # Must progress through all 8 beats (1, 2, 3, 4, 5, 6, 7, 8) of the phrase
+    assert observed_beats == {1, 2, 3, 4, 5, 6, 7, 8}
+    assert tracker.song_detected is True
     assert tracker.phrase_locked is True
     anchor_in_beats = round(tracker.phrase_anchor_frame / tracker.tau_frames) % 8
     assert anchor_in_beats == true_phrase_offset
     assert 118.0 <= tracker.bpm <= 122.0
 
-    # At beat k = 67 (which is 3 + 8*8 -> Beat 1 of phrase, t = 32.0s is end of buffer -> check end beat)
+    # At beat k = 64 (after 4.0s silence + 32.0s song = 36.0s):
     # After 64 beats starting at offset 3, 64 - 3 = 61 beats after first Beat 1 -> 61 % 8 = 5 (Beat 6)
-    st_end = tracker.state_at(32.01)
+    st_end = tracker.state_at(36.01)
     assert st_end["beat"] in (5, 6)
     assert st_end["phrase_locked"] is True
 
