@@ -88,7 +88,7 @@ class Config(BaseModel):
     role_hold_ms: float = Field(default=5000.0, ge=0)
     shoulder_tension_duration: float = Field(default=1.5, gt=0)
     shoulder_raise_threshold: float = Field(default=10.0, gt=0)
-    shoulder_neutral_clearance: float = Field(default=0.95, gt=0)
+    shoulder_neutral_clearance: float = Field(default=1.71, gt=0)
     head_forward: Threshold = Threshold(entry=0.08, clear=0.05)
     head_inclination: Threshold = Threshold(entry=10, clear=6)
     trunk_inclination: Threshold = Threshold(entry=8, clear=5)

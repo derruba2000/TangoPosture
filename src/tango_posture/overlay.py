@@ -38,7 +38,7 @@ def draw(
     shoulder_raise_threshold: float = 10.0,
     shoulder_tension_duration: float = 1.5,
     shoulder_tension_elapsed: float = 0.0,
-    shoulder_neutral_clearance: float = 0.95,
+    shoulder_neutral_clearance: float = 1.71,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)

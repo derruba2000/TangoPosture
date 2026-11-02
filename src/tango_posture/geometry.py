@@ -73,7 +73,7 @@ def shoulder_tension_alignment(
     pose: dict[str, Landmark],
     width: int,
     height: int,
-    neutral_clearance: float = 0.95,
+    neutral_clearance: float = 1.71,
 ) -> tuple[float, float, Landmark, Landmark] | None:
     """Return (elevation_pct, raw_clearance_ratio, ear_landmark, shoulder_landmark).
 
