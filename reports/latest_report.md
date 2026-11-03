@@ -16,19 +16,22 @@
 
 | Field | Value |
 | --- | --- |
-| Generated (UTC) | `2026-11-02T23:13:33.530492+00:00` |
+| Generated (UTC) | `2026-11-03T07:53:24.630164+00:00` |
 | Source | `camera:0` |
 | Saved Raw Video | [`videos/practice_01.mp4`](file:///Users/joaoramo/src/Personal/TangoPosture/videos/practice_01.mp4) |
 | Saved Annotated Overlay Video | [`videos/overlay_01.mp4`](file:///Users/joaoramo/src/Personal/TangoPosture/videos/overlay_01.mp4) |
 | Run / Session Status | `stopped` |
 | Session ID | `uncalibrated-observation-run` |
-| Observed Timeline | `00:00.1 (0.1s)` to `00:53.9 (53.9s)` (`53.85s`, `1242` frames) |
+| Observed Timeline | `00:00.1 (0.1s)` to `00:02.8 (2.8s)` (`2.73s`, `67` frames) |
 | Selected Side / Facing | `side=left`, `facing=right` |
 | Head-Down Alert Config (`.env`) | Angle `< -15.0 deg` for `>= 3.0s` (neutral offset `-12.0 deg`) |
 | Shoulder Tension Config (`.env`) | Elevation `>= +16.0%` for `>= 1.5s` |
+| Axis Curvature Config (`axis_curve`) | Entry `>+6.0%` for `>= 1.5s`, Clear `<+3.5%` for `>= 0.75s` |
+| Closed-Embrace Knee Bend Config (`.env`) | Min knee bend `>= 6.0 deg` (alert after `1.5s`) |
+| Embrace Type Distribution | `CLOSED`: `0` frames, `OPEN`: `0` frames |
 | Role Hysteresis Config (`.env`) | Assign after `300 ms`, hold for `5000 ms` before returning to `NONE` |
-| Musical 8-Beat Phrase Tracking | `10 phrases` (median `113.2 BPM`, 8 beats/phrase) |
-| Runtime Throughput & Latency | `23.1 FPS` (median frame latency `38.2 ms`, dropped frames `4`) |
+| Musical 8-Beat Phrase Tracking | `1 phrases` (median `120.0 BPM`, 8 beats/phrase) |
+| Runtime Throughput & Latency | `24.3 FPS` (median frame latency `56.4 ms`, dropped frames `15`) |
 | **Dominant Embrace Role** | **NONE DETECTED (arms neither in Leader nor Follower embrace)** |
 
 ### Saved Video & Overlay Files (For Consultation & Analysis)
@@ -48,10 +51,10 @@
 
 | Metric | Value | Interpretation |
 | --- | --- | --- |
-| Frames with Visible Ear & Nose | `1241 / 1242` | Head horizontal angle coverage |
-| Median Head Horizontal Angle | `-5.5 deg` | `0 deg` = nose level with ear; negative = pointing down |
-| Minimum (Most Downward) Angle | `-14.7 deg` | Lowest downward pitch observed |
-| Maximum (Most Upward) Angle | `+5.7 deg` | Highest pitch observed |
+| Frames with Visible Ear & Nose | `66 / 67` | Head horizontal angle coverage |
+| Median Head Horizontal Angle | `-4.5 deg` | `0 deg` = nose level with ear; negative = pointing down |
+| Minimum (Most Downward) Angle | `-7.5 deg` | Lowest downward pitch observed |
+| Maximum (Most Upward) Angle | `+0.3 deg` | Highest pitch observed |
 | Total Time Pointing Down (`< -15.0 deg`) | `0.00s` | Cumulative time below downward angle threshold |
 | **Confirmed Bad Head Alignment Alerts (`>= 3.0s`)** | **`0`** | Triggered red on-screen `BAD HEAD ALIGNMENT` alert |
 
@@ -59,32 +62,30 @@
 
 | Metric | Value | Interpretation |
 | --- | --- | --- |
-| Frames with Visible Ear & Shoulder | `1241 / 1242` | Shoulder elevation coverage |
-| Median Shoulder Elevation | `-0.0%` | `0%` = relaxed neutral; positive = shoulders raised toward ears |
-| Peak Shoulder Elevation | `+22.6%` | Highest shoulder shrug / tension observed |
-| Total Time Raised (`>= +16.0%`) | `1.82s` | Cumulative time with elevated shoulders |
-| **Confirmed Shoulder Tension Alerts (`>= 1.5s`)** | **`1`** | Triggered red on-screen `LOWER YOUR SHOULDERS` alert |
+| Frames with Visible Ear & Shoulder | `66 / 67` | Shoulder elevation coverage |
+| Median Shoulder Elevation | `+15.8%` | `0%` = relaxed neutral; positive = shoulders raised toward ears |
+| Peak Shoulder Elevation | `+20.2%` | Highest shoulder shrug / tension observed |
+| Total Time Raised (`>= +16.0%`) | `0.63s` | Cumulative time with elevated shoulders |
+| **Confirmed Shoulder Tension Alerts (`>= 1.5s`)** | **`0`** | Triggered red on-screen `LOWER YOUR SHOULDERS` alert |
+
+### 3.2b Full-Body Axis Curvature (Ankle–Hip–Back-of-Head Line)
+
+- Axis curvature could not be computed (ankle, hip, or ear not visible).
 
 ### 3.3 Upper-Body Geometry (Ear–Shoulder–Hip Alignment)
 
 | Metric | Unit | Observed Frames | Median | Min | Max | Interpretation |
 | --- | --- | --- | --- | --- | --- | --- |
-| `head_forward` | `torso_lengths` | `0 / 1242` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
-| `head_inclination` | `degrees` | `0 / 1242` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
-| `trunk_inclination` | `degrees` | `0 / 1242` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
+| `head_forward` | `torso_lengths` | `0 / 67` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
+| `head_inclination` | `degrees` | `0 / 67` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
+| `trunk_inclination` | `degrees` | `0 / 67` | `N/A` | `N/A` | `N/A` | Requires visible left ear, shoulder, and hip in frame |
 
 ---
 
 ## 4. What Went Wrong & Where in Time (Issues Timeline)
 
-### 4.2 Confirmed Shoulder Tension (`>= +16.0%` for `>= 1.5s` — LOWER YOUR SHOULDERS)
-
-| Start Time (Phrase/Beat) | Alert Triggered At | End Time | Duration | Peak Elevation | Median Elevation | What Went Wrong |
-| --- | --- | --- | --- | --- | --- | --- |
-| `00:50.7 (50.7s)` | `00:52.2 (52.2s)` | `00:52.4 (52.4s)` | `1.73s` | `+22.6%` | `+18.6%` | **Shoulder tension**: shoulders raised continuously for `1.7s` (lower your shoulders) |
-
 ### 4.4 Camera Framing & Tracking Abstentions
 
 | Start Time | End Time | Duration | Frames | Primary Reason |
 | --- | --- | --- | --- | --- |
-| `00:00.1 (0.1s)` | `00:53.9 (53.9s)` | `53.85s` | `1242` | Keep nose and at least one ankle visible in frame |
+| `00:00.1 (0.1s)` | `00:02.8 (2.8s)` | `2.73s` | `67` | Keep shoulders and hips visible in frame |

@@ -1,6 +1,6 @@
 {
-  "id": "af274906-9b28-40a1-b16e-00799385d296",
-  "created_at_utc": "2026-11-02T22:10:02.707332+00:00",
+  "id": "dc9e2fc6-b5e8-42e9-8562-c408aca8c077",
+  "created_at_utc": "2026-11-03T07:46:01.934950+00:00",
   "name": "My reference",
   "profile": {
     "side": "left",
@@ -12,23 +12,26 @@
     "source": "camera:0"
   },
   "baseline": {
-    "head_forward": -0.06125247209957488,
-    "head_inclination": -10.647851916101502,
-    "trunk_inclination": 0.8370877480047625
+    "head_forward": -0.10889866226135471,
+    "head_inclination": -18.65755868474625,
+    "trunk_inclination": 0.8594666493947045
   },
   "quality": {
     "mad": {
-      "head_forward": 0.01156286889654011,
-      "head_inclination": 1.9740915167408843,
-      "trunk_inclination": 1.0532637104922173
+      "head_forward": 0.017913614754239762,
+      "head_inclination": 3.4646575750810484,
+      "trunk_inclination": 1.505803611593592
     },
-    "valid_duration": 10.841644124999675,
-    "valid_coverage": 0.9034703437499729,
-    "samples": 289,
+    "valid_duration": 11.272215667000637,
+    "valid_coverage": 0.9393513055833864,
+    "samples": 295,
     "view_range": [
-      0.013986326380465755,
-      0.44068642801063346
-    ]
+      0.24165918317214255,
+      0.7167049702751663
+    ],
+    "head_neutral_offset": -19.842947651647233,
+    "shoulder_neutral_clearance": 0.9275121367652055,
+    "axis_neutral_offset": -0.01982972975261158
   },
   "model_hash": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
   "metric_version": "1.0",
