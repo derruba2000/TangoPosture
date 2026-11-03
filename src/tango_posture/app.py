@@ -18,10 +18,11 @@ from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
 from .config import Config
-from .domain import Calibration, MetricObservation, PoseEstimator
+from .domain import Calibration, FrameObservation, MetricObservation, PoseEstimator
 from .geometry import (
     AxisCurveTracker,
     EmbraceTracker,
+    PoseSmoother,
     RoleTracker,
     axis_curve_alignment,
     calculate,
@@ -128,12 +129,18 @@ class Application:
         self.worker: ThreadPoolExecutor | None = None
         self.window_open = False
         self.head_down_since: float | None = None
+        self.head_smoothed: float | None = None
+        self.head_last_ts: float | None = None
         self.shoulder_tension_since: float | None = None
         self.shoulder_smoothed: float | None = None
         self.shoulder_last_ts: float | None = None
         self.knee_straight_since: float | None = None
         self.knee_smoothed: float | None = None
         self.knee_last_ts: float | None = None
+        self.pose_smoother = PoseSmoother(
+            smoothing_sec=self.cfg.overlay_smoothing,
+            max_gap=self.cfg.max_gap,
+        )
         self.axis_tracker = AxisCurveTracker(
             entry=self.cfg.axis_curve_entry,
             clear=self.cfg.axis_curve_clear,
@@ -519,6 +526,7 @@ class Application:
                 if len(frame.poses) == 1:
                     pose = frame.poses[0]
                     raw_role = detect_role(pose)
+                    metric_tau = max(1e-4, self.cfg.overlay_smoothing or self.cfg.smoothing)
                     knee_info = knee_bend_alignment(
                         pose, frame.width, frame.height, side=self.cfg.side
                     )
@@ -532,7 +540,7 @@ class Application:
                             self.knee_smoothed = raw_knee_deg
                         else:
                             dt_kn = max(0.0, timestamp - self.knee_last_ts)
-                            alpha_kn = 1.0 - np.exp(-dt_kn / 0.18)
+                            alpha_kn = 1.0 - np.exp(-dt_kn / metric_tau)
                             self.knee_smoothed += float(alpha_kn) * (
                                 raw_knee_deg - self.knee_smoothed
                             )
@@ -569,7 +577,22 @@ class Application:
                         pose, frame.width, frame.height, neutral_offset=neutral_offset
                     )
                     if head_info is not None:
-                        head_angle = head_info[0]
+                        raw_head_deg = head_info[0]
+                        if (
+                            self.cfg.overlay_smoothing <= 0
+                            or self.head_smoothed is None
+                            or self.head_last_ts is None
+                            or (timestamp - self.head_last_ts) > self.cfg.max_gap
+                        ):
+                            self.head_smoothed = raw_head_deg
+                        else:
+                            dt_hd = max(0.0, timestamp - self.head_last_ts)
+                            alpha_hd = 1.0 - np.exp(-dt_hd / metric_tau)
+                            self.head_smoothed += float(alpha_hd) * (
+                                raw_head_deg - self.head_smoothed
+                            )
+                        self.head_last_ts = timestamp
+                        head_angle = self.head_smoothed
                     sh_info = shoulder_tension_alignment(
                         pose, frame.width, frame.height, neutral_clearance=sh_neutral
                     )
@@ -592,7 +615,7 @@ class Application:
                             self.shoulder_smoothed = raw_elev_pct
                         else:
                             dt_sh = max(0.0, timestamp - self.shoulder_last_ts)
-                            alpha_sh = 1.0 - np.exp(-dt_sh / 0.18)
+                            alpha_sh = 1.0 - np.exp(-dt_sh / metric_tau)
                             self.shoulder_smoothed += float(alpha_sh) * (
                                 raw_elev_pct - self.shoulder_smoothed
                             )
@@ -874,9 +897,15 @@ class Application:
                             "Image quality: VALID (side-on heuristic)",
                         )
                         lines.append(reason)
+                    display_frame = FrameObservation(
+                        frame.timestamp,
+                        frame.width,
+                        frame.height,
+                        self.pose_smoother.update(frame.poses, timestamp),
+                    )
                     panel = draw(
                         captured.image,
-                        frame,
+                        display_frame,
                         self.cfg.mirror and self.setup_confirmed,
                         lines,
                         message,
@@ -884,6 +913,7 @@ class Application:
                         head_down_angle=self.cfg.head_down_angle,
                         head_down_duration=self.cfg.head_down_duration,
                         head_down_elapsed=head_down_elapsed,
+                        head_angle_smoothed=head_angle,
                         role=self.role,
                         beat_state=beat_state,
                         head_neutral_offset=neutral_offset,
@@ -891,11 +921,13 @@ class Application:
                         shoulder_tension_duration=self.cfg.shoulder_tension_duration,
                         shoulder_tension_elapsed=shoulder_tension_elapsed,
                         shoulder_neutral_clearance=sh_neutral,
+                        shoulder_elev_smoothed=shoulder_elev_pct,
                         embrace_type=self.embrace_type,
                         embrace_closed_threshold=self.cfg.embrace_closed_threshold,
                         closed_embrace_min_knee_bend=self.cfg.closed_embrace_min_knee_bend,
                         knee_straight_duration=self.cfg.knee_straight_duration,
                         knee_straight_elapsed=knee_straight_elapsed,
+                        knee_bend_smoothed=knee_bend_deg,
                         facing=self.cfg.facing,
                         side=self.cfg.side,
                         axis_neutral_offset=axis_neutral,

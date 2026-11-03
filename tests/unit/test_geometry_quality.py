@@ -10,6 +10,7 @@ from tango_posture.domain import METRICS, Landmark
 from tango_posture.geometry import (
     AxisCurveTracker,
     EmbraceTracker,
+    PoseSmoother,
     RoleTracker,
     axis_curve_alignment,
     calculate,
@@ -277,6 +278,28 @@ def test_closed_vs_open_embrace_and_knee_bend():
     assert et.update(closed_leader, "LEADER", 0.45) == "OPEN"  # < 200ms transition hold
     assert et.update(closed_leader, "LEADER", 0.70) == "CLOSED"  # >= 200ms -> transitions back to CLOSED
 
+    # Side-profile CLOSED vs OPEN embrace (even when the far embracing arm is occluded behind the torso):
+    side_closed_leader = {
+        "nose": Landmark(0.45, 0.22, 0.99, 0.99),
+        "left_ear": Landmark(0.52, 0.22, 0.99, 0.99),
+        "left_shoulder": Landmark(0.58, 0.37, 0.99, 0.99),
+        "left_elbow": Landmark(0.62, 0.38, 0.99, 0.99),
+        "left_wrist": Landmark(0.58, 0.32, 0.99, 0.99),
+        "right_shoulder": Landmark(0.53, 0.40, 0.99, 0.99),
+        "right_elbow": Landmark(0.49, 0.47, 0.15, 0.15),  # Far arm occluded
+        "right_wrist": Landmark(0.50, 0.44, 0.20, 0.20),
+        "left_hip": Landmark(0.55, 0.60, 0.99, 0.99),
+        "right_hip": Landmark(0.52, 0.60, 0.99, 0.99),
+    }
+    assert detect_role(side_closed_leader) == "LEADER"
+    assert detect_embrace_type(side_closed_leader, "LEADER", closed_threshold=0.72) == "CLOSED"
+
+    side_open_leader = dict(side_closed_leader)
+    side_open_leader["left_elbow"] = Landmark(0.56, 0.42, 0.99, 0.99)
+    side_open_leader["left_wrist"] = Landmark(0.52, 0.40, 0.99, 0.99)  # Extended forward (-x)
+    assert detect_role(side_open_leader) == "LEADER"
+    assert detect_embrace_type(side_open_leader, "LEADER", closed_threshold=0.72) == "OPEN"
+
     # Straight knee (0 deg bend < 6.0 deg threshold)
     straight_knee = knee_bend_alignment(closed_leader, 640, 480)
     assert straight_knee is not None
@@ -363,13 +386,42 @@ def test_axis_curve_alignment_and_hysteresis(tmp_path):
     assert st_cleared["state"] == "WITHIN_LIMIT"
     assert st_cleared["alert"] is False
 
-    # Config env and TOML loading for axis_curve
+    # Config env and TOML loading for axis_curve and smoothing parameters
     env_file = tmp_path / ".env"
-    env_file.write_text("AXIS_CURVE_ENTRY=0.07\nAXIS_CURVE_CLEAR=0.04\nAXIS_CURVE_DURATION_SECONDS=2.0\n")
+    env_file.write_text(
+        "AXIS_CURVE_ENTRY=0.07\n"
+        "AXIS_CURVE_CLEAR=0.04\n"
+        "AXIS_CURVE_DURATION_SECONDS=2.0\n"
+        "SMOOTHING_SECONDS=0.40\n"
+        "OVERLAY_SMOOTHING_SECONDS=0.35\n"
+    )
     cfg_loaded = load(None, {}, env_path=env_file)
     assert cfg_loaded.axis_curve_entry == pytest.approx(0.07)
     assert cfg_loaded.axis_curve_clear == pytest.approx(0.04)
     assert cfg_loaded.axis_curve_duration == pytest.approx(2.0)
+    assert cfg_loaded.smoothing == pytest.approx(0.40)
+    assert cfg_loaded.overlay_smoothing == pytest.approx(0.35)
+
+
+def test_pose_smoother_reduces_landmark_jitter_and_blinking():
+    smoother = PoseSmoother(smoothing_sec=0.30, max_gap=0.5)
+    p0 = [{"left_shoulder": Landmark(0.50, 0.40, 0.90, 0.90)}]
+    p1 = [{"left_shoulder": Landmark(0.60, 0.50, 0.65, 0.65)}]
+
+    out0 = smoother.update(p0, 0.0)
+    assert out0[0]["left_shoulder"].x == pytest.approx(0.50)
+
+    out1 = smoother.update(p1, 0.033)
+    # Smoothed coordinate moves only a fraction of the step (avoids sudden jumps)
+    assert 0.50 < out1[0]["left_shoulder"].x < 0.53
+    assert 0.40 < out1[0]["left_shoulder"].y < 0.43
+    # Smoothed visibility stays above 0.70 threshold across a 1-frame dip to 0.65
+    assert out1[0]["left_shoulder"].visibility is not None
+    assert out1[0]["left_shoulder"].visibility > 0.75
+
+    # Disabled when smoothing_sec == 0.0
+    passthrough = PoseSmoother(smoothing_sec=0.0).update(p1, 0.033)
+    assert passthrough[0]["left_shoulder"].x == pytest.approx(0.60)
 
 
 def test_tango_8_beat_phrase_tracker():

@@ -132,6 +132,8 @@ All real-time posture, role, embrace, shoulder, knee, and musical beat threshold
 | `EMBRACE_CLOSED_THRESHOLD` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` (`<= 0.72`) from `OPEN EMBRACE` (`> 0.72`) |
 | `CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` | `6.0` | Minimum knee flexion angle (`180° - hip–knee–ankle`) required when in `CLOSED EMBRACE` |
 | `KNEE_STRAIGHT_DURATION_SECONDS` | `1.5` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
+| `OVERLAY_SMOOTHING_SECONDS` | `0.20` | Exponential smoothing time constant (seconds) for overlay skeleton lines, segments, and visual vectors (`0.0` disables landmark smoothing; higher values like `0.35`–`0.50` make lines much smoother) |
+| `SMOOTHING_SECONDS` | `0.25` | Exponential smoothing time constant (seconds) for core posture and axis-curve measurements |
 | `ALLOW_ALL_ANGLES` | `true` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |
 | `BEAT_TRACKING_ENABLED` | `true` | Enables live microphone Argentine Tango 8-beat phrase tracking and audio recording |
 | `TANGO_BPM` | `120.0` | Initial tempo prior (BPM) before the 30-second audio analyzer locks onto the song's tempo |

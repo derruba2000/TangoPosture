@@ -33,6 +33,8 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
     "AXIS_CURVE_DURATION_SECONDS": ("axis_curve_duration", float),
     "AXIS_CURVE_CLEAR_DURATION_SECONDS": ("axis_curve_clear_duration", float),
     "AXIS_NEUTRAL_OFFSET": ("axis_neutral_offset", float),
+    "SMOOTHING_SECONDS": ("smoothing", float),
+    "OVERLAY_SMOOTHING_SECONDS": ("overlay_smoothing", float),
 }
 
 
@@ -82,6 +84,7 @@ class Config(BaseModel):
     max_view_width: float = Field(default=0.45, gt=0)
     view_change_tolerance: float = Field(default=0.15, gt=0)
     smoothing: float = Field(default=0.25, gt=0)
+    overlay_smoothing: float = Field(default=0.20, ge=0)
     entry_duration: float = Field(default=1.5, gt=0)
     clear_duration: float = Field(default=0.75, gt=0)
     max_gap: float = Field(default=0.5, gt=0)

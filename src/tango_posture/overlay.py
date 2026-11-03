@@ -91,6 +91,7 @@ def draw(
     head_down_angle: float = -15.0,
     head_down_duration: float = 3.0,
     head_down_elapsed: float = 0.0,
+    head_angle_smoothed: float | None = None,
     role: str | None = None,
     beat_state: dict[str, Any] | None = None,
     head_neutral_offset: float = 0.0,
@@ -98,11 +99,13 @@ def draw(
     shoulder_tension_duration: float = 1.5,
     shoulder_tension_elapsed: float = 0.0,
     shoulder_neutral_clearance: float = 1.71,
+    shoulder_elev_smoothed: float | None = None,
     embrace_type: str | None = None,
     embrace_closed_threshold: float = 0.72,
     closed_embrace_min_knee_bend: float = 6.0,
     knee_straight_duration: float = 1.5,
     knee_straight_elapsed: float = 0.0,
+    knee_bend_smoothed: float | None = None,
     facing: str = "right",
     side: str = "left",
     axis_neutral_offset: float = 0.0,
@@ -169,7 +172,8 @@ def draw(
             pose, observation.width, observation.height, neutral_offset=head_neutral_offset
         )
         if head_info is not None:
-            angle, ear, nose = head_info
+            raw_angle, ear, nose = head_info
+            angle = head_angle_smoothed if head_angle_smoothed is not None else raw_angle
             ex, ey = screen_point(ear.x, ear.y, disp_w, disp_h, mirror)
             nx, ny = screen_point(nose.x, nose.y, disp_w, disp_h, mirror)
             dir_x = 1 if nx >= ex else -1
@@ -222,7 +226,8 @@ def draw(
             neutral_clearance=shoulder_neutral_clearance,
         )
         if sh_info is not None:
-            elev_pct, raw_clear, sh_ear, sh_lm = sh_info
+            raw_elev_pct, raw_clear, sh_ear, sh_lm = sh_info
+            elev_pct = shoulder_elev_smoothed if shoulder_elev_smoothed is not None else raw_elev_pct
             _sex, sey = screen_point(sh_ear.x, sh_ear.y, disp_w, disp_h, mirror)
             sx, sy = screen_point(sh_lm.x, sh_lm.y, disp_w, disp_h, mirror)
             sh_color = (
@@ -267,7 +272,10 @@ def draw(
             pose, observation.width, observation.height, side=side
         )
         if knee_info is not None:
-            knee_bend_deg, vis_legs = knee_info
+            raw_knee_bend_deg, vis_legs = knee_info
+            knee_bend_deg = (
+                knee_bend_smoothed if knee_bend_smoothed is not None else raw_knee_bend_deg
+            )
             knees_straight = bad_knees or knee_bend_deg < closed_embrace_min_knee_bend
             knee_color = (
                 (0, 0, 255)
