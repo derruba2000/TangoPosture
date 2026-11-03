@@ -20,6 +20,7 @@ from .capture import Capture
 from .config import Config
 from .domain import Calibration, FrameObservation, MetricObservation, PoseEstimator
 from .geometry import (
+    AnkleStepTracker,
     AxisCurveTracker,
     EmbraceTracker,
     PoseSmoother,
@@ -154,7 +155,14 @@ class Application:
             assign_ms=self.cfg.role_assign_ms, hold_ms=self.cfg.role_hold_ms
         )
         self.embrace_tracker = EmbraceTracker(
-            closed_threshold=self.cfg.embrace_closed_threshold
+            closed_threshold=self.cfg.embrace_closed_threshold,
+            switch_sec=self.cfg.embrace_hysteresis_seconds,
+        )
+        self.ankle_tracker = AnkleStepTracker(
+            high_lift_ratio=self.cfg.ankle_high_lift_ratio,
+            max_consecutive_steps=self.cfg.max_consecutive_high_ankle_steps,
+            slow_tango_max_bpm=self.cfg.slow_tango_max_bpm,
+            max_gap=self.cfg.max_gap,
         )
         self.role = "NONE"
         self.embrace_type = "NONE"
@@ -673,12 +681,34 @@ class Application:
                 )
                 beat_state = self.beat_tracker.state_at(timestamp) if self.beat_tracker else None
                 has_counted_beat = bool(beat_state and beat_state["beat"] > 0)
+                active_bpm = (
+                    float(beat_state["bpm"])
+                    if beat_state and beat_state.get("bpm") is not None
+                    else self.cfg.tango_bpm
+                )
+                ankle_track = self.ankle_tracker.update(
+                    frame.poses[0] if len(frame.poses) == 1 else None,
+                    timestamp,
+                    bpm=active_bpm,
+                    width=frame.width,
+                    height=frame.height,
+                )
+                ankle_lift_ratio = (
+                    float(ankle_track["smoothed_ratio"])
+                    if ankle_track["smoothed_ratio"] is not None
+                    else None
+                )
+                consecutive_high_ankle_steps = int(ankle_track["consecutive_high_steps"] or 0)
+                bad_ankles = bool(ankle_track["alert"])
                 self.frame_log.append(
                     {
                         "timestamp": timestamp,
                         "head_angle": head_angle,
                         "shoulder_elev_pct": shoulder_elev_pct,
                         "knee_bend_deg": knee_bend_deg,
+                        "ankle_lift_ratio": ankle_lift_ratio,
+                        "consecutive_high_ankle_steps": consecutive_high_ankle_steps,
+                        "ankle_high_alert": bad_ankles,
                         "axis_curve_ratio": axis_curve_smoothed,
                         "axis_curve_state": axis_curve_state,
                         "axis_curve_alert": bad_axis,
@@ -770,7 +800,14 @@ class Application:
                     else self.cfg.closed_embrace_min_knee_bend
                 )
                 message = self.notice
-                if bad_axis and axis_curve_smoothed is not None:
+                if bad_ankles:
+                    lift_pct = (ankle_lift_ratio or self.cfg.ankle_high_lift_ratio) * 100.0
+                    message = (
+                        f"KEEP FEET CLOSE TO FLOOR (SLOW TANGO <={self.cfg.slow_tango_max_bpm:.0f} BPM): "
+                        f"ankle raised too high ({lift_pct:.1f}%) for {consecutive_high_ankle_steps} "
+                        f"consecutive steps (>={self.cfg.max_consecutive_high_ankle_steps})"
+                    )
+                elif bad_axis and axis_curve_smoothed is not None:
                     message = (
                         f"HIP OFFSET: hip/pelvis +{axis_curve_smoothed * 100.0:.1f}% "
                         f"past ankle-to-head line ({axis_curve_elapsed:.1f}s)"
@@ -868,6 +905,15 @@ class Application:
                             else f"OK ({axis_curve_smoothed * 100.0:+.1f}%)"
                         )
                     )
+                    feet_str = (
+                        "N/A"
+                        if ankle_lift_ratio is None
+                        else (
+                            f"HIGH {ankle_lift_ratio * 100.0:.1f}% ({consecutive_high_ankle_steps}/{self.cfg.max_consecutive_high_ankle_steps} steps)"
+                            if bad_ankles or bool(ankle_track["high_now"])
+                            else f"OK ({ankle_lift_ratio * 100.0:.1f}%, {consecutive_high_ankle_steps}/{self.cfg.max_consecutive_high_ankle_steps})"
+                        )
+                    )
                     lines = [
                         (
                             f"{self.state} | active {active:.1f}s | processed {fps:.1f} FPS | "
@@ -875,7 +921,7 @@ class Application:
                         ),
                         (
                             f"Role: {role_disp} | Beat: {beat_str} | "
-                            f"Head: {head_str} | Shoulders: {sh_str} | Knees: {knee_str} | Hip offset: {axis_str}"
+                            f"Head: {head_str} | Shoulders: {sh_str} | Knees: {knee_str} | Feet: {feet_str} | Hip offset: {axis_str}"
                         ),
                         (
                             f"Reference: {self.reference.name if self.reference else 'NONE'} "
@@ -937,6 +983,12 @@ class Application:
                         axis_curve_elapsed=axis_curve_elapsed,
                         axis_curve_smoothed=axis_curve_smoothed,
                         axis_curve_state=axis_curve_state,
+                        ankle_high_lift_ratio=self.cfg.ankle_high_lift_ratio,
+                        ankle_lift_smoothed=ankle_lift_ratio,
+                        consecutive_high_ankle_steps=consecutive_high_ankle_steps,
+                        max_consecutive_high_ankle_steps=self.cfg.max_consecutive_high_ankle_steps,
+                        slow_tango_max_bpm=self.cfg.slow_tango_max_bpm,
+                        ankle_high_alert=bad_ankles,
                         verbose_skeleton=self.verbose_skeleton,
                         show_vertical_axis=self.show_vertical_axis,
                     )

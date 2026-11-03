@@ -8,10 +8,12 @@ from tango_posture.beat import BeatTracker
 from tango_posture.config import load
 from tango_posture.domain import METRICS, Landmark
 from tango_posture.geometry import (
+    AnkleStepTracker,
     AxisCurveTracker,
     EmbraceTracker,
     PoseSmoother,
     RoleTracker,
+    ankle_lift_alignment,
     axis_curve_alignment,
     calculate,
     detect_embrace_type,
@@ -422,6 +424,96 @@ def test_pose_smoother_reduces_landmark_jitter_and_blinking():
     # Disabled when smoothing_sec == 0.0
     passthrough = PoseSmoother(smoothing_sec=0.0).update(p1, 0.033)
     assert passthrough[0]["left_shoulder"].x == pytest.approx(0.60)
+
+
+def test_embrace_hysteresis_seconds_and_slow_tango_ankle_steps(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "EMBRACE_HYSTERESIS_SECONDS=1.2\n"
+        "SLOW_TANGO_MAX_BPM=115.0\n"
+        "ANKLE_HIGH_LIFT_RATIO=0.06\n"
+        "MAX_CONSECUTIVE_HIGH_ANKLE_STEPS=2\n"
+    )
+    cfg_loaded = load(None, {}, env_path=env_file)
+    assert cfg_loaded.embrace_hysteresis_seconds == pytest.approx(1.2)
+    assert cfg_loaded.slow_tango_max_bpm == pytest.approx(115.0)
+    assert cfg_loaded.ankle_high_lift_ratio == pytest.approx(0.06)
+    assert cfg_loaded.max_consecutive_high_ankle_steps == 2
+
+    # 1. Embrace hysteresis in seconds (e.g. 1.2s required before switching CLOSED <-> OPEN)
+    closed_pose = {
+        "left_shoulder": Landmark(0.73, 0.29, 0.99, 0.99),
+        "left_elbow": Landmark(0.94, 0.33, 0.99, 0.99),
+        "left_wrist": Landmark(0.84, 0.08, 0.99, 0.99),
+        "right_shoulder": Landmark(0.46, 0.30, 0.99, 0.99),
+        "right_elbow": Landmark(0.36, 0.49, 0.99, 0.99),
+        "right_wrist": Landmark(0.60, 0.41, 0.99, 0.99),
+        "left_hip": Landmark(0.68, 0.62, 0.99, 0.99),
+        "right_hip": Landmark(0.48, 0.62, 0.99, 0.99),
+    }
+    open_pose = dict(closed_pose)
+    open_pose["right_elbow"] = Landmark(0.33, 0.43, 0.99, 0.99)
+    open_pose["right_wrist"] = Landmark(0.14, 0.45, 0.99, 0.99)
+
+    et = EmbraceTracker(closed_threshold=0.72, switch_sec=1.2, smoothing_sec=0.05)
+    assert et.update(closed_pose, "LEADER", 0.0) == "CLOSED"
+    assert et.update(open_pose, "LEADER", 0.5) == "CLOSED"  # 0.5s < 1.2s hysteresis
+    assert et.update(open_pose, "LEADER", 1.1) == "CLOSED"  # 1.1s < 1.2s hysteresis
+    assert et.update(open_pose, "LEADER", 1.8) == "OPEN"  # >= 1.2s -> switches to OPEN
+
+    # 2. Slow-tango (< 115 BPM, e.g. Di Sarli at 108 BPM) consecutive high-ankle step counter
+    def step_pose(left_ankle_y: float, right_ankle_y: float = 0.90) -> dict[str, Landmark]:
+        return {
+            "left_hip": Landmark(0.50, 0.50, 0.99, 0.99),
+            "right_hip": Landmark(0.50, 0.50, 0.99, 0.99),
+            "left_knee": Landmark(0.50, 0.70, 0.99, 0.99),
+            "right_knee": Landmark(0.50, 0.70, 0.99, 0.99),
+            "left_ankle": Landmark(0.50, left_ankle_y, 0.99, 0.99),
+            "right_ankle": Landmark(0.50, right_ankle_y, 0.99, 0.99),
+        }
+
+    # Leg length is 0.40; 6% high lift threshold corresponds to dy >= 0.024 (ankle y <= 0.876)
+    grounded = step_pose(0.90, 0.90)
+    high_lift = step_pose(0.85, 0.90)  # dy = 0.05 -> 12.5% lift (> 6%)
+    low_glide = step_pose(0.89, 0.90)  # dy = 0.01 -> 2.5% lift (<= 6%)
+
+    assert ankle_lift_alignment(high_lift)[0] == pytest.approx(0.125)
+
+    at = AnkleStepTracker(
+        high_lift_ratio=0.06,
+        max_consecutive_steps=2,
+        slow_tango_max_bpm=115.0,
+        smoothing_sec=0.01,
+    )
+    # Start grounded at 108 BPM (Di Sarli slow tango <= 115 BPM)
+    st0 = at.update(grounded, 0.0, bpm=108.0)
+    assert st0["consecutive_high_steps"] == 0 and st0["alert"] is False
+
+    # Step 1: high ankle lift -> consecutive_high_steps becomes 1 (no alert yet, need 2)
+    st1 = at.update(high_lift, 0.2, bpm=108.0)
+    assert st1["consecutive_high_steps"] == 1
+    assert st1["alert"] is False
+    # Land step 1 back on the floor
+    at.update(grounded, 0.5, bpm=108.0)
+    assert at.consecutive_high_steps == 1
+
+    # Step 2: second consecutive high ankle lift -> consecutive_high_steps becomes 2 -> ALERT!
+    st2 = at.update(high_lift, 0.8, bpm=108.0)
+    assert st2["consecutive_high_steps"] == 2
+    assert st2["alert"] is True
+    at.update(grounded, 1.1, bpm=108.0)
+
+    # Step 3: low gliding step close to the floor (<= 6%) -> resets consecutive high steps & clears alert
+    at.update(low_glide, 1.3, bpm=108.0)
+    at.update(low_glide, 1.5, bpm=108.0)
+    st_reset = at.update(grounded, 1.7, bpm=108.0)
+    assert st_reset["consecutive_high_steps"] == 0
+    assert st_reset["alert"] is False
+
+    # At fast tempo (> 115 BPM, e.g. D'Arienzo at 128 BPM), slow-tango high-ankle alert is inactive
+    st_fast = at.update(high_lift, 2.0, bpm=128.0)
+    assert st_fast["slow_tango_active"] is False
+    assert st_fast["alert"] is False
 
 
 def test_tango_8_beat_phrase_tracker():

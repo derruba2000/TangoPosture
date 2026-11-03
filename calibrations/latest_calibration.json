@@ -1,6 +1,6 @@
 {
-  "id": "a225bab3-9b98-4b0d-b2bf-955dc38e6d71",
-  "created_at_utc": "2026-11-03T08:19:03.385208+00:00",
+  "id": "ddaca38b-b427-4949-89dc-af82b48bec22",
+  "created_at_utc": "2026-11-03T19:27:28.263953+00:00",
   "name": "My reference",
   "profile": {
     "side": "left",
@@ -12,26 +12,26 @@
     "source": "camera:0"
   },
   "baseline": {
-    "head_forward": -0.026618155303062503,
-    "head_inclination": -3.8341967185851615,
-    "trunk_inclination": 5.491488625928923
+    "head_forward": -0.07328317542898359,
+    "head_inclination": -11.077619455379164,
+    "trunk_inclination": 0.5132070519721594
   },
   "quality": {
     "mad": {
-      "head_forward": 0.011322269105770916,
-      "head_inclination": 1.7471239155970295,
-      "trunk_inclination": 0.7781781587972887
+      "head_forward": 0.01926661305403024,
+      "head_inclination": 2.814037577915599,
+      "trunk_inclination": 1.8793874165948523
     },
-    "valid_duration": 11.981970749999164,
-    "valid_coverage": 0.9984975624999303,
-    "samples": 278,
+    "valid_duration": 11.007872333997511,
+    "valid_coverage": 0.9173226944997926,
+    "samples": 289,
     "view_range": [
-      0.025360832573081766,
-      0.2736134515814185
+      0.0002683253301499273,
+      0.9160862904264913
     ],
-    "head_neutral_offset": -0.916328315451715,
-    "shoulder_neutral_clearance": 0.9946385325319593,
-    "axis_neutral_offset": 0.01725068601948426
+    "head_neutral_offset": -9.658592599441986,
+    "shoulder_neutral_clearance": 0.9289162067667742,
+    "axis_neutral_offset": -0.03084989898049712
   },
   "model_hash": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
   "metric_version": "1.0",

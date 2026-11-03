@@ -130,8 +130,12 @@ All real-time posture, role, embrace, shoulder, knee, and musical beat threshold
 | `ROLE_ASSIGN_MS` | `300` | Milliseconds of continuous detection required to transition from `NONE` to `LEADER` or `FOLLOWER` |
 | `ROLE_HOLD_MS` | `5000` | Milliseconds to hold `LEADER` or `FOLLOWER` after detection before returning to `NONE` |
 | `EMBRACE_CLOSED_THRESHOLD` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` (`<= 0.72`) from `OPEN EMBRACE` (`> 0.72`) |
+| `EMBRACE_HYSTERESIS_SECONDS` | `1.0` | Seconds of continuous openness/compactness required to switch between `CLOSED EMBRACE` and `OPEN EMBRACE` |
 | `CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` | `6.0` | Minimum knee flexion angle (`180° - hip–knee–ankle`) required when in `CLOSED EMBRACE` |
 | `KNEE_STRAIGHT_DURATION_SECONDS` | `1.5` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
+| `SLOW_TANGO_MAX_BPM` | `115.0` | Tempo ceiling (BPM) for slow lyrical tangos (e.g. Carlos Di Sarli) where feet must glide close to the floor |
+| `ANKLE_HIGH_LIFT_RATIO` | `0.06` | Maximum vertical ankle lift (as a fraction of leg length, `0.06` = `6%`) before a step is counted as raised too high |
+| `MAX_CONSECUTIVE_HIGH_ANKLE_STEPS` | `2` | Number of consecutive high-ankle steps in slow tango (`<= SLOW_TANGO_MAX_BPM`) that triggers `KEEP FEET CLOSE TO FLOOR` |
 | `OVERLAY_SMOOTHING_SECONDS` | `0.20` | Exponential smoothing time constant (seconds) for overlay skeleton lines, segments, and visual vectors (`0.0` disables landmark smoothing; higher values like `0.35`–`0.50` make lines much smoother) |
 | `SMOOTHING_SECONDS` | `0.25` | Exponential smoothing time constant (seconds) for core posture and axis-curve measurements |
 | `ALLOW_ALL_ANGLES` | `true` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |

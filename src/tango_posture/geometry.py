@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 import numpy as np
 
@@ -346,10 +347,15 @@ class EmbraceTracker:
         self,
         closed_threshold: float = 0.72,
         switch_ms: float = 220.0,
+        switch_sec: float | None = None,
         smoothing_sec: float = 0.15,
     ):
         self.closed_threshold = float(closed_threshold)
-        self.switch_sec = max(0.0, float(switch_ms) / 1000.0)
+        self.switch_sec = (
+            max(0.0, float(switch_sec))
+            if switch_sec is not None
+            else max(0.0, float(switch_ms) / 1000.0)
+        )
         self.smoothing_sec = max(1e-3, float(smoothing_sec))
         self.state: str = "NONE"
         self.smoothed: float | None = None
@@ -471,6 +477,204 @@ def knee_bend_alignment(
     else:
         chosen_bend = next(iter(side_bends.values()))[0]
     return (chosen_bend, legs)
+
+
+def ankle_lift_alignment(
+    pose: dict[str, Landmark],
+    width: int = 640,
+    height: int = 480,
+) -> tuple[float, Landmark, Landmark] | None:
+    """Return (lift_ratio_of_leg_length, lifted_ankle, grounded_ankle).
+
+    Measures how high one ankle is lifted vertically above the supporting (lower) ankle,
+    normalized by full leg length (`hip -> knee -> ankle`).
+    In slow lyrical tangos (e.g. Di Sarli, < 115 BPM), the free foot should brush/glide
+    close to the floor (`lift_ratio <= ANKLE_HIGH_LIFT_RATIO`).
+    """
+    la = pose.get("left_ankle")
+    ra = pose.get("right_ankle")
+    if not (_usable_point(la, 0.35) and _usable_point(ra, 0.35) and la is not None and ra is not None):
+        return None
+
+    aspect = width / max(height, 1)
+    leg_lengths: list[float] = []
+    for s in ("left", "right"):
+        hip = pose.get(f"{s}_hip")
+        knee = pose.get(f"{s}_knee")
+        ank = pose.get(f"{s}_ankle")
+        if (
+            _usable_point(hip, 0.35)
+            and _usable_point(knee, 0.35)
+            and _usable_point(ank, 0.35)
+            and hip is not None
+            and knee is not None
+            and ank is not None
+        ):
+            u = math.hypot((hip.x - knee.x) * aspect, hip.y - knee.y)
+            v = math.hypot((knee.x - ank.x) * aspect, knee.y - ank.y)
+            if u + v > 0.12:
+                leg_lengths.append(u + v)
+        elif _usable_point(hip, 0.35) and _usable_point(ank, 0.35) and hip is not None and ank is not None:
+            span = math.hypot((hip.x - ank.x) * aspect, hip.y - ank.y)
+            if span > 0.12:
+                leg_lengths.append(span)
+
+    leg_len = max(max(leg_lengths, default=0.35), 0.15)
+    # Larger y in normalized image coordinates is lower (closer to the floor)
+    if la.y <= ra.y:
+        lifted, grounded = la, ra
+    else:
+        lifted, grounded = ra, la
+    dy = max(0.0, grounded.y - lifted.y)
+    lift_ratio = dy / leg_len
+    return (lift_ratio, lifted, grounded)
+
+
+class AnkleStepTracker:
+    """Step-by-step tracker for consecutive high-ankle steps, particularly in slow tangos (e.g. Di Sarli < 115 BPM).
+
+    - Segments individual steps from the vertical ankle separation (`lift_ratio`):
+      a step begins when one foot leaves the floor (`smoothed > step_start_ratio`) and
+      completes when the feet return close to the floor (`smoothed <= step_end_ratio`).
+    - When active (`bpm is None` or `bpm <= slow_tango_max_bpm`):
+      - If a step's peak ankle lift exceeds `high_lift_ratio`, `consecutive_high_steps` increments by 1.
+      - If a completed step stays low (gliding close to the floor, `step_peak <= high_lift_ratio`),
+        `consecutive_high_steps` resets to 0.
+      - Triggers `alert = True` as soon as `consecutive_high_steps >= max_consecutive_steps`
+        (including while the N-th consecutive high step is currently in flight).
+    """
+
+    def __init__(
+        self,
+        high_lift_ratio: float = 0.06,
+        max_consecutive_steps: int = 2,
+        slow_tango_max_bpm: float = 115.0,
+        smoothing_sec: float = 0.08,
+        max_gap: float = 0.5,
+    ):
+        self.high_lift_ratio = max(0.005, float(high_lift_ratio))
+        self.step_start_ratio = max(0.012, min(0.025, self.high_lift_ratio * 0.35))
+        self.step_end_ratio = max(0.008, self.step_start_ratio * 0.65)
+        self.max_consecutive_steps = max(1, int(max_consecutive_steps))
+        self.slow_tango_max_bpm = float(slow_tango_max_bpm)
+        self.smoothing_sec = max(1e-4, float(smoothing_sec))
+        self.max_gap = max(0.0, float(max_gap))
+        self.smoothed: float | None = None
+        self.last_ts: float | None = None
+        self.in_step: bool = False
+        self.step_start_ts: float | None = None
+        self.step_peak: float = 0.0
+        self.step_counted_high: bool = False
+        self.consecutive_high_steps: int = 0
+        self.total_high_steps: int = 0
+
+    def reset(self) -> None:
+        self.smoothed = None
+        self.last_ts = None
+        self.in_step = False
+        self.step_start_ts = None
+        self.step_peak = 0.0
+        self.step_counted_high = False
+        self.consecutive_high_steps = 0
+        self.total_high_steps = 0
+
+    def update(
+        self,
+        pose: dict[str, Landmark] | None,
+        timestamp: float,
+        bpm: float | None = None,
+        width: int = 640,
+        height: int = 480,
+    ) -> dict[str, Any]:
+        slow_tango_active = bpm is None or float(bpm) <= self.slow_tango_max_bpm
+        if self.last_ts is not None and (timestamp - self.last_ts) > self.max_gap:
+            self.smoothed = None
+            self.in_step = False
+            self.step_start_ts = None
+            self.step_peak = 0.0
+            self.step_counted_high = False
+
+        info = ankle_lift_alignment(pose, width, height) if pose is not None else None
+        if info is None:
+            return {
+                "lift_ratio": None,
+                "smoothed_ratio": self.smoothed,
+                "consecutive_high_steps": self.consecutive_high_steps,
+                "total_high_steps": self.total_high_steps,
+                "slow_tango_active": slow_tango_active,
+                "high_now": False,
+                "alert": bool(
+                    slow_tango_active
+                    and self.consecutive_high_steps >= self.max_consecutive_steps
+                ),
+                "lifted_ankle": None,
+                "grounded_ankle": None,
+            }
+
+        raw_ratio, lifted_lm, grounded_lm = info
+        if self.smoothed is None or self.last_ts is None:
+            self.smoothed = raw_ratio
+        else:
+            dt = max(0.0, timestamp - self.last_ts)
+            alpha = 1.0 - math.exp(-dt / self.smoothing_sec)
+            self.smoothed += alpha * (raw_ratio - self.smoothed)
+        self.last_ts = timestamp
+
+        val = self.smoothed
+        if not slow_tango_active:
+            # Outside slow-tango tempo range, do not accumulate slow-tango high-ankle penalties
+            self.in_step = False
+            self.step_start_ts = None
+            self.step_peak = 0.0
+            self.step_counted_high = False
+            self.consecutive_high_steps = 0
+        else:
+            if not self.in_step:
+                if val > self.step_start_ratio:
+                    self.in_step = True
+                    self.step_start_ts = timestamp
+                    self.step_peak = max(val, raw_ratio)
+                    self.step_counted_high = False
+                    if self.step_peak >= self.high_lift_ratio:
+                        self.step_counted_high = True
+                        self.consecutive_high_steps += 1
+                        self.total_high_steps += 1
+            else:
+                self.step_peak = max(self.step_peak, val, raw_ratio)
+                if not self.step_counted_high and self.step_peak >= self.high_lift_ratio:
+                    self.step_counted_high = True
+                    self.consecutive_high_steps += 1
+                    self.total_high_steps += 1
+                elif val <= self.step_end_ratio:
+                    # Step landed back on the floor
+                    step_dur = (
+                        (timestamp - self.step_start_ts)
+                        if self.step_start_ts is not None
+                        else 0.0
+                    )
+                    if not self.step_counted_high and step_dur >= 0.12:
+                        # A valid low, floor-skimming step resets the consecutive high-step counter
+                        self.consecutive_high_steps = 0
+                    self.in_step = False
+                    self.step_start_ts = None
+                    self.step_peak = 0.0
+                    self.step_counted_high = False
+
+        high_now = bool(slow_tango_active and (val >= self.high_lift_ratio or raw_ratio >= self.high_lift_ratio))
+        alert = bool(
+            slow_tango_active and self.consecutive_high_steps >= self.max_consecutive_steps
+        )
+        return {
+            "lift_ratio": float(raw_ratio),
+            "smoothed_ratio": float(val),
+            "consecutive_high_steps": int(self.consecutive_high_steps),
+            "total_high_steps": int(self.total_high_steps),
+            "slow_tango_active": bool(slow_tango_active),
+            "high_now": high_now,
+            "alert": alert,
+            "lifted_ankle": lifted_lm,
+            "grounded_ankle": grounded_lm,
+        }
 
 
 def torso_axis_alignment(

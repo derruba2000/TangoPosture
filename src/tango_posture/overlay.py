@@ -5,6 +5,7 @@ import cv2
 
 from .domain import FrameObservation, Landmark
 from .geometry import (
+    ankle_lift_alignment,
     detect_embrace_type,
     detect_role,
     head_horizontal_alignment,
@@ -115,6 +116,12 @@ def draw(
     axis_curve_elapsed: float = 0.0,
     axis_curve_smoothed: float | None = None,
     axis_curve_state: str = "WITHIN_LIMIT",
+    ankle_high_lift_ratio: float = 0.06,
+    ankle_lift_smoothed: float | None = None,
+    consecutive_high_ankle_steps: int = 0,
+    max_consecutive_high_ankle_steps: int = 2,
+    slow_tango_max_bpm: float = 115.0,
+    ankle_high_alert: bool = False,
     verbose_skeleton: bool = True,
     show_vertical_axis: bool = True,
 ) -> Any:
@@ -130,6 +137,7 @@ def draw(
         axis_curve_elapsed >= axis_curve_duration
         and (axis_curve_smoothed is None or axis_curve_smoothed >= axis_curve_clear)
     )
+    bad_ankles = bool(ankle_high_alert)
     detected_role = role
     detected_embrace = embrace_type
     for pose in observation.poses:
@@ -316,6 +324,57 @@ def draw(
                 )
         if show_vertical_axis:
             _draw_torso_axis(image, pose, mirror, confidence)
+        ankle_info = ankle_lift_alignment(pose, observation.width, observation.height)
+        if ankle_info is not None:
+            raw_ankle_lift, lifted_lm, grounded_lm = ankle_info
+            shown_lift = (
+                ankle_lift_smoothed if ankle_lift_smoothed is not None else raw_ankle_lift
+            )
+            high_step = bad_ankles or shown_lift >= ankle_high_lift_ratio
+            ank_color = (
+                (0, 0, 255)
+                if bad_ankles
+                else (0, 165, 255)
+                if high_step or consecutive_high_ankle_steps > 0
+                else (80, 220, 80)
+            )
+            lx, ly = screen_point(lifted_lm.x, lifted_lm.y, disp_w, disp_h, mirror)
+            gx, gy = screen_point(grounded_lm.x, grounded_lm.y, disp_w, disp_h, mirror)
+            cv2.circle(
+                image,
+                (lx, ly),
+                12 if high_step else 7,
+                ank_color,
+                3 if bad_ankles else 2,
+                cv2.LINE_AA,
+            )
+            if high_step and gy > ly + 4:
+                cv2.line(image, (lx - 18, gy), (lx + 18, gy), (255, 220, 0), 2, cv2.LINE_AA)
+                cv2.arrowedLine(
+                    image,
+                    (lx, ly),
+                    (lx, gy),
+                    ank_color,
+                    2,
+                    cv2.LINE_AA,
+                    tipLength=0.35,
+                )
+            ank_label = (
+                f"ANKLE HIGH: {shown_lift * 100.0:.1f}% "
+                f"({consecutive_high_ankle_steps}/{max_consecutive_high_ankle_steps} steps)"
+                if (high_step or consecutive_high_ankle_steps > 0)
+                else f"Feet low: OK ({shown_lift * 100.0:.1f}%)"
+            )
+            cv2.putText(
+                image,
+                ank_label,
+                (max(8, min(lx, gx) + 16), min(disp_h - 12, max(24, ly))),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.50,
+                ank_color,
+                2,
+                cv2.LINE_AA,
+            )
     role_text = f"Role: {detected_role or 'NONE'}"
     role_color = (
         (255, 220, 0)
@@ -396,6 +455,18 @@ def draw(
             2,
             cv2.LINE_AA,
         )
+        alert_y += 32
+    if bad_ankles:
+        cv2.putText(
+            image,
+            f"KEEP FEET CLOSE TO FLOOR: ANKLE TOO HIGH ({consecutive_high_ankle_steps}/{max_consecutive_high_ankle_steps} STEPS, <={slow_tango_max_bpm:.0f} BPM)",
+            (12, alert_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
     if beat_state is not None:
         beat = int(beat_state.get("beat", 0))
         phrase = int(beat_state.get("phrase", 0))
@@ -469,7 +540,7 @@ def draw(
         cv2.BORDER_CONSTANT,
     )
     for i, line in enumerate([message, *lines]):
-        is_red = i == 0 and (bad_head or bad_shoulders or bad_knees or bad_axis)
+        is_red = i == 0 and (bad_head or bad_shoulders or bad_knees or bad_axis or bad_ankles)
         cv2.putText(
             panel,
             line,

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
+ENV_MAP: dict[str, tuple[str, Callable[[str], float | int | bool]]] = {
     "HEAD_NEUTRAL_OFFSET_DEGREES": ("head_neutral_offset", float),
     "HEAD_DOWN_DURATION_SECONDS": ("head_down_duration", float),
     "HEAD_DOWN_ANGLE_DEGREES": ("head_down_angle", float),
@@ -26,6 +26,7 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
         lambda s: s.lower() not in ("0", "false", "no", "off"),
     ),
     "EMBRACE_CLOSED_THRESHOLD": ("embrace_closed_threshold", float),
+    "EMBRACE_HYSTERESIS_SECONDS": ("embrace_hysteresis_seconds", float),
     "CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES": ("closed_embrace_min_knee_bend", float),
     "KNEE_STRAIGHT_DURATION_SECONDS": ("knee_straight_duration", float),
     "AXIS_CURVE_ENTRY": ("axis_curve_entry", float),
@@ -35,11 +36,14 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
     "AXIS_NEUTRAL_OFFSET": ("axis_neutral_offset", float),
     "SMOOTHING_SECONDS": ("smoothing", float),
     "OVERLAY_SMOOTHING_SECONDS": ("overlay_smoothing", float),
+    "SLOW_TANGO_MAX_BPM": ("slow_tango_max_bpm", float),
+    "ANKLE_HIGH_LIFT_RATIO": ("ankle_high_lift_ratio", float),
+    "MAX_CONSECUTIVE_HIGH_ANKLE_STEPS": ("max_consecutive_high_ankle_steps", int),
 }
 
 
-def load_dotenv(env_path: Path = Path(".env")) -> dict[str, float | bool]:
-    values: dict[str, float | bool] = {}
+def load_dotenv(env_path: Path = Path(".env")) -> dict[str, float | int | bool]:
+    values: dict[str, float | int | bool] = {}
     if env_path.is_file():
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
@@ -106,8 +110,12 @@ class Config(BaseModel):
     shoulder_neutral_clearance: float = Field(default=1.05, gt=0)
     allow_all_angles: bool = False
     embrace_closed_threshold: float = Field(default=0.72, gt=0, le=1.0)
+    embrace_hysteresis_seconds: float = Field(default=1.0, ge=0)
     closed_embrace_min_knee_bend: float = Field(default=8.0, ge=0)
     knee_straight_duration: float = Field(default=1.0, gt=0)
+    slow_tango_max_bpm: float = Field(default=115.0, gt=0, le=240)
+    ankle_high_lift_ratio: float = Field(default=0.06, gt=0, le=1.0)
+    max_consecutive_high_ankle_steps: int = Field(default=2, ge=1)
     axis_curve_entry: float = Field(default=0.06, gt=0)
     axis_curve_clear: float = Field(default=0.035, ge=0)
     axis_curve_duration: float = Field(default=1.5, gt=0)

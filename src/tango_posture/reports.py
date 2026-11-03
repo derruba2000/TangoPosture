@@ -191,6 +191,17 @@ def write_markdown_report(
     closed_frames = sum(1 for f in frame_log if f.get("embrace_type") == "CLOSED")
     open_frames = sum(1 for f in frame_log if f.get("embrace_type") == "OPEN")
 
+    # Slow-tango high ankle lift analysis
+    confirmed_ankle_high = _contiguous_spans(
+        frame_log,
+        lambda f: bool(f.get("ankle_high_alert")),
+        cfg.max_gap,
+    )
+    max_consec_ankle_steps = max(
+        (int(f.get("consecutive_high_ankle_steps") or 0) for f in frame_log),
+        default=0,
+    )
+
     # Ankle-hip-back-of-head axis curvature ('bump' past axis line) analysis
     axis_ratios = [
         float(f["axis_curve_ratio"])
@@ -275,7 +286,8 @@ def write_markdown_report(
         f"| Shoulder Tension Config (`.env`) | Elevation `>= +{cfg.shoulder_raise_threshold:.1f}%` for `>= {cfg.shoulder_tension_duration:.1f}s` |",
         f"| Axis Curvature Config (`axis_curve`) | Entry `>{cfg.axis_curve_entry * 100.0:+.1f}%` for `>= {cfg.axis_curve_duration:.1f}s`, Clear `<{cfg.axis_curve_clear * 100.0:+.1f}%` for `>= {cfg.axis_curve_clear_duration:.2f}s` |",
         f"| Closed-Embrace Knee Bend Config (`.env`) | Min knee bend `>= {cfg.closed_embrace_min_knee_bend:.1f} deg` (alert after `{cfg.knee_straight_duration:.1f}s`) |",
-        f"| Embrace Type Distribution | `CLOSED`: `{closed_frames}` frames, `OPEN`: `{open_frames}` frames |",
+        f"| Embrace Type Distribution | `CLOSED`: `{closed_frames}` frames, `OPEN`: `{open_frames}` frames (hysteresis `{cfg.embrace_hysteresis_seconds:.2f}s`) |",
+        f"| Slow-Tango Low-Feet Config (`.env`) | Tempo `<={cfg.slow_tango_max_bpm:.0f} BPM`, max ankle lift `<={cfg.ankle_high_lift_ratio * 100.0:.1f}%`, alert after `{cfg.max_consecutive_high_ankle_steps}` consecutive high steps (peak streak `{max_consec_ankle_steps}`) |",
         f"| Role Hysteresis Config (`.env`) | Assign after `{cfg.role_assign_ms:.0f} ms`, hold for `{cfg.role_hold_ms:.0f} ms` before returning to `NONE` |",
         f"| Musical 8-Beat Phrase Tracking | {phrase_summary} |",
         f"| Runtime Throughput & Latency | `{fps_str}` (median frame latency `{lat_str}`, dropped frames `{performance.get('dropped_frames', 0)}`) |",
@@ -538,6 +550,36 @@ def write_markdown_report(
                 f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(s)}` | `{_fmt_time(e)}` | "
                 f"`{e - s:.2f}s` | `{peak_c:+.1f}%` | `{med_c:+.1f}%` | "
                 f"**Axis curving too much**: hip/pelvis protruded past ankle–back-of-head line for `{e - s:.1f}s` |"
+            )
+        lines.append("")
+
+    if confirmed_ankle_high:
+        has_issues = True
+        lines.append(
+            f"### 4.2d Confirmed High Ankle Lift in Slow Tango (`>={cfg.ankle_high_lift_ratio * 100.0:.1f}%` for `>={cfg.max_consecutive_high_ankle_steps}` consecutive steps at `<={cfg.slow_tango_max_bpm:.0f} BPM`)"
+        )
+        lines.append("")
+        lines.append(
+            "| Start Time (Phrase/Beat) | End Time | Duration | Peak Ankle Lift | Consecutive High Steps | What Went Wrong |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- |")
+        for s, e, items in confirmed_ankle_high:
+            lifts = [
+                float(x["ankle_lift_ratio"]) * 100.0
+                for x in items
+                if x.get("ankle_lift_ratio") is not None
+            ]
+            peak_lift = max(lifts) if lifts else cfg.ankle_high_lift_ratio * 100.0
+            max_steps = max(
+                (int(x.get("consecutive_high_ankle_steps") or 0) for x in items),
+                default=cfg.max_consecutive_high_ankle_steps,
+            )
+            p_num, b_num = items[0].get("phrase"), items[0].get("beat")
+            beat_tag = f" (P{p_num} B{b_num}/8)" if p_num and b_num else ""
+            lines.append(
+                f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(e)}` | `{e - s:.2f}s` | "
+                f"`{peak_lift:.1f}%` | `{max_steps}` | "
+                f"**Feet raised too high in slow tango**: `{max_steps}` consecutive steps above `{cfg.ankle_high_lift_ratio * 100.0:.1f}%` leg lift (keep feet close to the floor) |"
             )
         lines.append("")
 
