@@ -150,43 +150,63 @@ def detect_role(pose: dict[str, Landmark]) -> str:
     horizontal around the follower.
     Follower: raises right arm (right wrist above elbow/shoulder) and holds left arm
     horizontal around the leader's shoulder.
+    Also supports side-on views where the far embracing arm is occluded behind the torso.
     """
-    required = (
-        "left_shoulder",
-        "left_elbow",
-        "left_wrist",
-        "right_shoulder",
-        "right_elbow",
-        "right_wrist",
-    )
-    if not all(_usable_point(pose.get(k), 0.35) for k in required):
+    ls, le, lw = pose.get("left_shoulder"), pose.get("left_elbow"), pose.get("left_wrist")
+    rs, re, rw = pose.get("right_shoulder"), pose.get("right_elbow"), pose.get("right_wrist")
+    l_ok = all(_usable_point(p, 0.30) for p in (ls, le, lw))
+    r_ok = all(_usable_point(p, 0.30) for p in (rs, re, rw))
+    if not l_ok and not r_ok:
         return "NONE"
-    ls, le, lw = pose["left_shoulder"], pose["left_elbow"], pose["left_wrist"]
-    rs, re, rw = pose["right_shoulder"], pose["right_elbow"], pose["right_wrist"]
-    left_up = (le.y - lw.y) > 0.04 and lw.y <= ls.y + 0.12
-    right_up = (re.y - rw.y) > 0.04 and rw.y <= rs.y + 0.12
-    right_horizontal = abs(rw.y - re.y) <= 0.18 and abs(rw.x - re.x) >= 0.025 and rw.y >= rs.y - 0.05
-    left_horizontal = abs(lw.y - le.y) <= 0.18 and abs(lw.x - le.x) >= 0.025 and lw.y >= ls.y - 0.05
-    if left_up and right_horizontal and not right_up:
-        return "LEADER"
-    if right_up and left_horizontal and not left_up:
-        return "FOLLOWER"
+
+    if l_ok and r_ok and ls and le and lw and rs and re and rw:
+        left_up = (
+            ((le.y - lw.y) > 0.015 or lw.y <= ls.y + 0.08)
+            and lw.y <= ls.y + 0.16
+            and (rw.y - lw.y) >= 0.02
+        )
+        right_up = (
+            ((re.y - rw.y) > 0.015 or rw.y <= rs.y + 0.08)
+            and rw.y <= rs.y + 0.16
+            and (lw.y - rw.y) >= 0.02
+        )
+        right_horizontal = (
+            abs(rw.y - re.y) <= 0.20
+            and abs(rw.x - re.x) >= 0.02
+            and rs.y - 0.08 <= rw.y <= rs.y + 0.38
+        )
+        left_horizontal = (
+            abs(lw.y - le.y) <= 0.20
+            and abs(lw.x - le.x) >= 0.02
+            and ls.y - 0.08 <= lw.y <= ls.y + 0.38
+        )
+        if left_up and right_horizontal and not right_up:
+            return "LEADER"
+        if right_up and left_horizontal and not left_up:
+            return "FOLLOWER"
+
+    # Side-profile fallback when the far arm is occluded behind the torso
+    if ls and rs and abs(ls.x - rs.x) < 0.10:
+        if l_ok and ls and le and lw and lw.y <= ls.y + 0.10 and le.y <= ls.y + 0.14 and (le.y - lw.y) >= -0.02:
+            return "LEADER"
+        if r_ok and rs and re and rw and rw.y <= rs.y + 0.10 and re.y <= rs.y + 0.14 and (re.y - rw.y) >= -0.02:
+            return "FOLLOWER"
     return "NONE"
 
 
 def embrace_openness_score(pose: dict[str, Landmark], role: str) -> float | None:
     """Compute a continuous openness score in [0.0, 1.5] for an active `LEADER` or `FOLLOWER` embrace.
 
-    Combines three complementary cues so transitions between `CLOSED` and `OPEN` embrace
-    are detected reliably in both side profile and frontal/diagonal views:
-    1. Embracing-arm extension (`wrist-to-shoulder` span relative to upper-arm + forearm chain),
-       with an inward-wrap discount when the forearm folds back across the chest toward the
-       opposite shoulder in a compact closed embrace.
-    2. Raised frame-arm extension (`wrist-to-shoulder` span relative to arm chain) plus
-       interior elbow angle (compact ~75-110 deg in closed embrace vs extended >125 deg in open).
-    3. Forward/outward reach of both wrists and elbows away from the torso centerline (`shoulders/hips`)
-       normalized by torso height (`shoulder-to-hip`), which directly reflects how far the arms
-       open forward toward the partner in side-on views even if the far arm is partially occluded.
+    Combines frontal/diagonal and side-profile cues so transitions between `CLOSED` and `OPEN`
+    embrace are distinguished reliably from any camera angle:
+    1. In frontal/diagonal views (`view_ratio >= 0.18`): checks whether the embracing forearm
+       wraps inward across the chest toward the opposite shoulder (`CLOSED`, score ~0.30-0.55)
+       versus extending outward away from the torso (`OPEN`, score ~0.85-1.20), combined with
+       wrist-to-opposite-shoulder distance and inter-wrist span.
+    2. In side-profile views (`view_ratio < 0.30`, including when the far arm is occluded):
+       measures how far the frame wrist and elbow advance forward in front of the shoulder line
+       along the dancer's facing direction (`CLOSED` when tucked near/behind the shoulder line,
+       `OPEN` when extended forward toward the partner).
     """
     if role not in ("LEADER", "FOLLOWER"):
         return None
@@ -207,49 +227,89 @@ def embrace_openness_score(pose: dict[str, Landmark], role: str) -> float | None
     if not up_ok and not emb_ok:
         return None
 
-    # Torso vertical scale for normalizing horizontal arm reach away from the chest
     torso_lengths: list[float] = []
     for side in ("left", "right"):
         sh = pose.get(f"{side}_shoulder")
         hp = pose.get(f"{side}_hip")
         if _usable_point(sh, 0.30) and _usable_point(hp, 0.30) and sh is not None and hp is not None:
             torso_lengths.append(math.hypot(sh.x - hp.x, sh.y - hp.y))
-    torso_len = max(max(torso_lengths, default=0.25), 0.12)
+    torso_len = max(max(torso_lengths, default=0.25), 0.14)
 
-    scores: list[tuple[float, float]] = []
+    sh_span_x = abs(s_up.x - s_emb.x) if (s_up is not None and s_emb is not None) else 0.0
+    view_ratio = sh_span_x / torso_len
 
-    if emb_ok and s_emb is not None and e_emb is not None and w_emb is not None:
-        emb_u = math.hypot(e_emb.x - s_emb.x, e_emb.y - s_emb.y)
-        emb_v = math.hypot(w_emb.x - e_emb.x, w_emb.y - e_emb.y)
-        emb_chain = emb_u + emb_v
-        emb_span = math.hypot(w_emb.x - s_emb.x, w_emb.y - s_emb.y)
-        emb_reach = emb_span / max(emb_chain, 1e-4)
+    nose = pose.get("nose")
+    ears = [pose[k] for k in ("left_ear", "right_ear") if _usable_point(pose.get(k), 0.30)]
+    if _usable_point(nose, 0.30) and nose is not None and ears:
+        ear_x = sum(e.x for e in ears) / len(ears)
+        face_sign = 1.0 if nose.x >= ear_x else -1.0
+    elif s_up is not None and w_up is not None:
+        face_sign = 1.0 if w_up.x >= s_up.x else -1.0
+    else:
+        face_sign = 1.0
 
-        # Check inward wrap across torso or elbow fold back toward the torso in side view
-        if s_up is not None and _usable_point(s_up, 0.30) and abs(s_emb.x - s_up.x) > 0.05:
-            if abs(w_emb.x - s_up.x) < abs(e_emb.x - s_up.x):
-                emb_reach *= 0.78
-        elif abs(w_emb.x - s_emb.x) < abs(e_emb.x - s_emb.x) * 0.92:
-            # In side view, wrist folding back closer to shoulder than elbow indicates a closed wrap
-            emb_reach *= 0.80
-
-        horiz_emb = max(abs(w_emb.x - s_emb.x), abs(e_emb.x - s_emb.x)) / torso_len
-        emb_score = 0.60 * emb_reach + 0.40 * min(1.25, horiz_emb / 0.62)
-        scores.append((emb_score, 0.55))
-
+    # Side-profile forward reach (works even when the far arm is occluded behind the torso)
+    side_cues: list[float] = []
     if up_ok and s_up is not None and e_up is not None and w_up is not None:
-        up_u = math.hypot(e_up.x - s_up.x, e_up.y - s_up.y)
-        up_v = math.hypot(w_up.x - e_up.x, w_up.y - e_up.y)
-        up_chain = up_u + up_v
-        up_span = math.hypot(w_up.x - s_up.x, w_up.y - s_up.y)
-        up_reach = up_span / max(up_chain, 1e-4)
+        up_fwd = (w_up.x - s_up.x) * face_sign / torso_len
+        up_elb_fwd = (e_up.x - s_up.x) * face_sign / torso_len
+        wrist_reach = max(0.0, (up_fwd + 0.04) / 0.22)
+        elb_reach = max(0.0, (up_elb_fwd + 0.14) / 0.18)
+        side_cues.append(0.65 * min(1.3, wrist_reach) + 0.35 * min(1.3, elb_reach))
+    if emb_ok and s_emb is not None and e_emb is not None and w_emb is not None:
+        emb_fwd = (w_emb.x - s_emb.x) * face_sign / torso_len
+        emb_reach_fwd = max(0.0, emb_fwd / 0.22)
+        side_cues.append(min(1.3, emb_reach_fwd))
+    side_score = sum(side_cues) / len(side_cues) if side_cues else 0.5
 
-        horiz_up = max(abs(w_up.x - s_up.x), abs(e_up.x - s_up.x)) / torso_len
-        up_score = 0.55 * up_reach + 0.45 * min(1.25, horiz_up / 0.62)
-        scores.append((up_score, 0.45))
+    if not (
+        up_ok
+        and emb_ok
+        and s_up is not None
+        and e_up is not None
+        and w_up is not None
+        and s_emb is not None
+        and e_emb is not None
+        and w_emb is not None
+    ):
+        return side_score
 
-    total_w = sum(w for _, w in scores)
-    return sum(val * w for val, w in scores) / total_w
+    # Frontal / diagonal score when both arms are visible
+    emb_u = math.hypot(e_emb.x - s_emb.x, e_emb.y - s_emb.y)
+    emb_v = math.hypot(w_emb.x - e_emb.x, w_emb.y - e_emb.y)
+    emb_span = math.hypot(w_emb.x - s_emb.x, w_emb.y - s_emb.y)
+    emb_reach = emb_span / max(emb_u + emb_v, 1e-4)
+
+    up_u = math.hypot(e_up.x - s_up.x, e_up.y - s_up.y)
+    up_v = math.hypot(w_up.x - e_up.x, w_up.y - e_up.y)
+    up_span = math.hypot(w_up.x - s_up.x, w_up.y - s_up.y)
+    up_reach = up_span / max(up_u + up_v, 1e-4)
+
+    w_emb_to_s_up = math.hypot(w_emb.x - s_up.x, w_emb.y - s_up.y) / torso_len
+    ww_dist = math.hypot(w_up.x - w_emb.x, w_up.y - w_emb.y) / torso_len
+
+    dir_to_up = 1.0 if s_up.x >= s_emb.x else -1.0
+    forearm_inward_x = (w_emb.x - e_emb.x) * dir_to_up
+    wrist_inward_from_sh = (w_emb.x - s_emb.x) * dir_to_up
+
+    frontal_score = (
+        0.35 * emb_reach
+        + 0.20 * up_reach
+        + 0.25 * min(1.3, w_emb_to_s_up / 0.80)
+        + 0.20 * min(1.3, ww_dist / 1.00)
+    )
+    if view_ratio >= 0.18:
+        if wrist_inward_from_sh < -0.04 or forearm_inward_x < -0.03:
+            frontal_score = max(frontal_score, 0.85 + min(0.35, abs(wrist_inward_from_sh)))
+        elif forearm_inward_x > 0.05 and wrist_inward_from_sh > 0.02:
+            frontal_score *= 0.65 if w_emb_to_s_up < 0.70 else 0.78
+
+    if view_ratio < 0.18:
+        return side_score
+    if view_ratio > 0.30:
+        return frontal_score
+    w_front = (view_ratio - 0.18) / 0.12
+    return w_front * frontal_score + (1.0 - w_front) * side_score
 
 
 def detect_embrace_type(
@@ -623,6 +683,103 @@ class AxisCurveTracker:
             "elapsed": float(elapsed),
             "alert": bool(self.in_deviation),
         }
+
+
+class PoseSmoother:
+    """Timestamp-driven exponential smoothing and short-dropout hold for pose landmarks.
+
+    Smooths landmark coordinates (`x`, `y`) and confidence scores (`visibility`, `presence`)
+    using time constant `smoothing_sec` (seconds), and briefly holds recently valid landmarks
+    across 1-2 frame confidence dips (`<= min(0.15s, max_gap * 0.5)`) so overlay skeleton lines
+    and segments move smoothly without jittering or blinking on and off.
+    """
+
+    def __init__(self, smoothing_sec: float = 0.20, max_gap: float = 0.5):
+        self.smoothing_sec = max(0.0, float(smoothing_sec))
+        self.max_gap = max(0.0, float(max_gap))
+        self.hold_sec = min(0.15, self.max_gap * 0.5) if self.smoothing_sec > 0 else 0.0
+        self.state: dict[str, Landmark] = {}
+        self.last_seen: dict[str, float] = {}
+        self.last_ts: float | None = None
+
+    def reset(self) -> None:
+        self.state.clear()
+        self.last_seen.clear()
+        self.last_ts = None
+
+    def update(
+        self, poses: list[dict[str, Landmark]], timestamp: float
+    ) -> list[dict[str, Landmark]]:
+        if self.smoothing_sec <= 0.0 or not math.isfinite(timestamp):
+            return poses
+        if len(poses) != 1:
+            if self.last_ts is not None and (timestamp - self.last_ts) > self.max_gap:
+                self.reset()
+            return poses
+
+        if (
+            self.last_ts is not None
+            and (timestamp < self.last_ts or (timestamp - self.last_ts) > self.max_gap)
+        ):
+            self.reset()
+
+        pose = poses[0]
+        smoothed_pose: dict[str, Landmark] = {}
+        for name, lm in pose.items():
+            valid_xy = (
+                math.isfinite(lm.x)
+                and math.isfinite(lm.y)
+                and -0.25 <= lm.x <= 1.25
+                and -0.25 <= lm.y <= 1.25
+            )
+            prev = self.state.get(name)
+            prev_ts = self.last_seen.get(name)
+            if not valid_xy:
+                if (
+                    prev is not None
+                    and prev_ts is not None
+                    and 0.0 <= (timestamp - prev_ts) <= self.hold_sec
+                ):
+                    smoothed_pose[name] = prev
+                else:
+                    smoothed_pose[name] = lm
+                continue
+
+            if prev is None or prev_ts is None or (timestamp - prev_ts) > self.max_gap:
+                new_lm = lm
+            else:
+                dt = max(0.0, timestamp - prev_ts)
+                alpha = 1.0 - math.exp(-dt / max(1e-4, self.smoothing_sec))
+                sx = prev.x + alpha * (lm.x - prev.x)
+                sy = prev.y + alpha * (lm.y - prev.y)
+                # Smooth confidence with slightly slower decay than rise to prevent edge blinking
+                if lm.visibility is not None and prev.visibility is not None:
+                    alpha_v = (
+                        alpha
+                        if lm.visibility >= prev.visibility
+                        else 1.0 - math.exp(-dt / max(1e-4, self.smoothing_sec * 1.25))
+                    )
+                    sv: float | None = prev.visibility + alpha_v * (
+                        lm.visibility - prev.visibility
+                    )
+                else:
+                    sv = lm.visibility
+                if lm.presence is not None and prev.presence is not None:
+                    alpha_p = (
+                        alpha
+                        if lm.presence >= prev.presence
+                        else 1.0 - math.exp(-dt / max(1e-4, self.smoothing_sec * 1.25))
+                    )
+                    sp: float | None = prev.presence + alpha_p * (lm.presence - prev.presence)
+                else:
+                    sp = lm.presence
+                new_lm = Landmark(sx, sy, sv, sp)
+            self.state[name] = new_lm
+            self.last_seen[name] = timestamp
+            smoothed_pose[name] = new_lm
+
+        self.last_ts = timestamp
+        return [smoothed_pose]
 
 
 class RoleTracker:

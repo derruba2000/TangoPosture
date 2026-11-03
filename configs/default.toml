@@ -14,6 +14,7 @@ min_head = 0.04
 max_view_width = 0.45
 view_change_tolerance = 0.15
 smoothing = 0.25
+overlay_smoothing = 0.20
 entry_duration = 1.5
 clear_duration = 0.75
 max_gap = 0.5
