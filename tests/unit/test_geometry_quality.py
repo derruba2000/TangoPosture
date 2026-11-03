@@ -8,10 +8,14 @@ from tango_posture.beat import BeatTracker
 from tango_posture.config import load
 from tango_posture.domain import METRICS, Landmark
 from tango_posture.geometry import (
+    AxisCurveTracker,
     RoleTracker,
+    axis_curve_alignment,
     calculate,
+    detect_embrace_type,
     detect_role,
     head_horizontal_alignment,
+    knee_bend_alignment,
     shoulder_tension_alignment,
     wrapped,
 )
@@ -198,6 +202,142 @@ def test_shoulder_tension_detection():
     tense_res = shoulder_tension_alignment(tense_pose, 640, 480, neutral_clearance=0.95)
     assert tense_res is not None
     assert tense_res[0] >= 10.0  # Above 10% is no longer OK -> flags LOWER YOUR SHOULDERS
+
+
+def test_frontal_calibration_side_steps_and_pivots(cfg):
+    # Enable all-angle mode (front, side, 360 pivots)
+    cfg.allow_all_angles = True
+    f_front = frame()
+    p = f_front.poses[0]
+    # Wide frontal stance (shoulders & hips separated horizontally, facing the camera)
+    p["left_ear"] = replace(p["left_ear"], x=0.44, y=0.20)
+    p["right_ear"] = replace(p["right_ear"], x=0.56, y=0.20)
+    p["nose"] = replace(p["nose"], x=0.50, y=0.20)
+    p["left_shoulder"] = replace(p["left_shoulder"], x=0.35, y=0.33)
+    p["right_shoulder"] = replace(p["right_shoulder"], x=0.65, y=0.33)
+    p["left_hip"] = replace(p["left_hip"], x=0.38, y=0.66)
+    p["right_hip"] = replace(p["right_hip"], x=0.62, y=0.66)
+    # Even if ankles are off-screen during close frontal side steps, all metrics remain valid
+    del p["left_ankle"], p["right_ankle"]
+
+    obs = measure(f_front, cfg)
+    assert all(q.valid for q in obs.quality.values())
+    assert obs.values["trunk_inclination"] == pytest.approx(0.0)
+    assert obs.values["head_inclination"] == pytest.approx(0.0)
+
+    # Head horizontal alignment works accurately when facing the camera directly
+    head_front = head_horizontal_alignment(p, 640, 480, neutral_offset=0.0)
+    assert head_front is not None
+    assert head_front[0] == pytest.approx(0.0)
+
+
+def test_closed_vs_open_embrace_and_knee_bend():
+    closed_leader = {
+        "left_shoulder": Landmark(0.80, 0.36, 0.99, 0.99),
+        "left_elbow": Landmark(0.92, 0.44, 0.99, 0.99),
+        "left_wrist": Landmark(0.84, 0.25, 0.99, 0.99),
+        "right_shoulder": Landmark(0.54, 0.37, 0.99, 0.99),
+        "right_elbow": Landmark(0.47, 0.64, 0.99, 0.99),
+        "right_wrist": Landmark(0.67, 0.59, 0.99, 0.99),
+        "left_hip": Landmark(0.50, 0.62, 0.99, 0.99),
+        "left_knee": Landmark(0.50, 0.80, 0.99, 0.99),
+        "left_ankle": Landmark(0.50, 0.98, 0.99, 0.99),
+    }
+    assert detect_embrace_type(closed_leader, "LEADER", closed_threshold=0.72) == "CLOSED"
+
+    open_leader = {
+        "left_shoulder": Landmark(0.80, 0.36, 0.99, 0.99),
+        "left_elbow": Landmark(0.95, 0.42, 0.99, 0.99),
+        "left_wrist": Landmark(1.12, 0.22, 0.99, 0.99),
+        "right_shoulder": Landmark(0.54, 0.37, 0.99, 0.99),
+        "right_elbow": Landmark(0.38, 0.56, 0.99, 0.99),
+        "right_wrist": Landmark(0.20, 0.56, 0.99, 0.99),
+    }
+    assert detect_embrace_type(open_leader, "LEADER", closed_threshold=0.72) == "OPEN"
+
+    # Straight knee (0 deg bend < 6.0 deg threshold)
+    straight_knee = knee_bend_alignment(closed_leader, 640, 480)
+    assert straight_knee is not None
+    assert straight_knee[0] == pytest.approx(0.0, abs=0.5)
+
+    # Slightly bent knee (knee shifted forward -> bend >= 6.0 deg)
+    bent_leader = dict(closed_leader)
+    bent_leader["left_knee"] = Landmark(0.54, 0.80, 0.99, 0.99)
+    bent_knee = knee_bend_alignment(bent_leader, 640, 480)
+    assert bent_knee is not None
+    assert bent_knee[0] >= 6.0
+
+
+def test_axis_curve_alignment_and_hysteresis(tmp_path):
+    # Facing right (+x): posterior ('back / bump') direction is -x (to the left)
+    aligned_pose = {
+        "nose": Landmark(0.54, 0.20, 0.99, 0.99),
+        "left_ear": Landmark(0.50, 0.20, 0.99, 0.99),
+        "left_hip": Landmark(0.486, 0.60, 0.99, 0.99),
+        "left_ankle": Landmark(0.486, 0.90, 0.99, 0.99),
+    }
+    res_aligned = axis_curve_alignment(aligned_pose, 640, 480, facing="right", side="left")
+    assert res_aligned is not None
+    dev_aligned, raw_aligned, head_back, _hip_lm, _ank_lm, _proj_lm = res_aligned
+    assert abs(dev_aligned) < 0.01
+    assert head_back.x < aligned_pose["left_ear"].x  # Back of head is behind ear when facing right
+
+    # Curving too much: hip/bump pushed backward (-x when facing right) past the ankle->back-of-head line
+    curved_pose = dict(aligned_pose)
+    curved_pose["left_hip"] = Landmark(0.42, 0.60, 0.99, 0.99)
+    res_curved = axis_curve_alignment(
+        curved_pose, 640, 480, facing="right", side="left", neutral_offset=raw_aligned
+    )
+    assert res_curved is not None
+    assert res_curved[0] > 0.08  # > 6% entry threshold
+
+    # Facing left (-x): posterior ('back / bump') direction is +x (to the right)
+    curved_left_pose = {
+        "nose": Landmark(0.46, 0.20, 0.99, 0.99),
+        "right_ear": Landmark(0.50, 0.20, 0.99, 0.99),
+        "right_hip": Landmark(0.58, 0.60, 0.99, 0.99),
+        "right_ankle": Landmark(0.514, 0.90, 0.99, 0.99),
+    }
+    res_left = axis_curve_alignment(curved_left_pose, 640, 480, facing="left", side="right")
+    assert res_left is not None
+    assert res_left[0] > 0.08
+
+    # Hysteresis & persistence tracker test:
+    # entry=0.06, clear=0.035, entry_duration=1.5s, clear_duration=0.75s
+    tracker = AxisCurveTracker(
+        entry=0.06,
+        clear=0.035,
+        entry_duration=1.5,
+        clear_duration=0.75,
+        smoothing=0.001,
+    )
+    assert tracker.update(0.02, 0.0)["state"] == "WITHIN_LIMIT"
+    assert tracker.update(0.09, 0.2)["state"] == "PENDING"
+    assert tracker.update(0.09, 0.6)["state"] == "PENDING"
+    assert tracker.update(0.09, 1.0)["state"] == "PENDING"  # 0.8s elapsed (< 1.5s)
+    assert tracker.update(0.09, 1.4)["state"] == "PENDING"  # 1.2s elapsed (< 1.5s)
+    st_dev = tracker.update(0.09, 1.7)  # 1.5s elapsed -> DEVIATION confirmed
+    assert st_dev["state"] == "DEVIATION"
+    assert st_dev["alert"] is True
+
+    # Drops to 0.045 (below entry=0.06, but still above clear=0.035) -> must stay in DEVIATION (hysteresis)
+    assert tracker.update(0.045, 2.0)["state"] == "DEVIATION"
+    assert tracker.update(0.045, 2.4)["state"] == "DEVIATION"
+
+    # Drops below clear=0.035 (to 0.02), but for < 0.75s -> still in DEVIATION until clear_duration met
+    assert tracker.update(0.02, 2.7)["state"] == "DEVIATION"
+    assert tracker.update(0.02, 3.1)["state"] == "DEVIATION"  # 0.4s < 0.75s
+    st_cleared = tracker.update(0.02, 3.46)  # 0.76s >= 0.75s -> cleared
+    assert st_cleared["state"] == "WITHIN_LIMIT"
+    assert st_cleared["alert"] is False
+
+    # Config env and TOML loading for axis_curve
+    env_file = tmp_path / ".env"
+    env_file.write_text("AXIS_CURVE_ENTRY=0.07\nAXIS_CURVE_CLEAR=0.04\nAXIS_CURVE_DURATION_SECONDS=2.0\n")
+    cfg_loaded = load(None, {}, env_path=env_file)
+    assert cfg_loaded.axis_curve_entry == pytest.approx(0.07)
+    assert cfg_loaded.axis_curve_clear == pytest.approx(0.04)
+    assert cfg_loaded.axis_curve_duration == pytest.approx(2.0)
 
 
 def test_tango_8_beat_phrase_tracker():

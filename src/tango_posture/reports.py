@@ -174,6 +174,51 @@ def write_markdown_report(
     ]
     total_shoulder_tension_sec = sum(e - s for s, e, _ in shoulder_spans)
 
+    # Closed-embrace knee bend analysis
+    knee_spans = _contiguous_spans(
+        frame_log,
+        lambda f: (
+            f.get("embrace_type") == "CLOSED"
+            and f.get("knee_bend_deg") is not None
+            and float(f["knee_bend_deg"]) < cfg.closed_embrace_min_knee_bend
+        ),
+        cfg.max_gap,
+    )
+    confirmed_knee_straight = [
+        (s, e, items)
+        for s, e, items in knee_spans
+        if (e - s) + 1e-9 >= cfg.knee_straight_duration
+    ]
+    closed_frames = sum(1 for f in frame_log if f.get("embrace_type") == "CLOSED")
+    open_frames = sum(1 for f in frame_log if f.get("embrace_type") == "OPEN")
+
+    # Ankle-hip-back-of-head axis curvature ('bump' past axis line) analysis
+    axis_ratios = [
+        float(f["axis_curve_ratio"])
+        for f in frame_log
+        if f.get("axis_curve_ratio") is not None
+    ]
+    axis_entry_spans = _contiguous_spans(
+        frame_log,
+        lambda f: (
+            f.get("axis_curve_ratio") is not None
+            and float(f["axis_curve_ratio"]) > cfg.axis_curve_entry
+        ),
+        cfg.max_gap,
+    )
+    total_axis_above_entry_sec = sum(e - s for s, e, _ in axis_entry_spans)
+    confirmed_axis_curve = _contiguous_spans(
+        frame_log,
+        lambda f: bool(f.get("axis_curve_alert")) or f.get("axis_curve_state") == "DEVIATION",
+        cfg.max_gap,
+    )
+    if not confirmed_axis_curve:
+        confirmed_axis_curve = [
+            (s, e, items)
+            for s, e, items in axis_entry_spans
+            if (e - s) + 1e-9 >= cfg.axis_curve_duration
+        ]
+
     # Upper-body geometry (ear-shoulder-hip) across frames where those joints were usable
     upper_metrics: dict[str, list[float]] = {m: [] for m in METRICS}
     for f in frame_log:
@@ -229,6 +274,9 @@ def write_markdown_report(
         f"| Selected Side / Facing | `side={cfg.side}`, `facing={cfg.facing}` |",
         f"| Head-Down Alert Config (`.env`) | Angle `< {cfg.head_down_angle:+.1f} deg` for `>= {cfg.head_down_duration:.1f}s` (neutral offset `{cfg.head_neutral_offset:+.1f} deg`) |",
         f"| Shoulder Tension Config (`.env`) | Elevation `>= +{cfg.shoulder_raise_threshold:.1f}%` for `>= {cfg.shoulder_tension_duration:.1f}s` |",
+        f"| Axis Curvature Config (`axis_curve`) | Entry `>{cfg.axis_curve_entry * 100.0:+.1f}%` for `>= {cfg.axis_curve_duration:.1f}s`, Clear `<{cfg.axis_curve_clear * 100.0:+.1f}%` for `>= {cfg.axis_curve_clear_duration:.2f}s` |",
+        f"| Closed-Embrace Knee Bend Config (`.env`) | Min knee bend `>= {cfg.closed_embrace_min_knee_bend:.1f} deg` (alert after `{cfg.knee_straight_duration:.1f}s`) |",
+        f"| Embrace Type Distribution | `CLOSED`: `{closed_frames}` frames, `OPEN`: `{open_frames}` frames |",
         f"| Role Hysteresis Config (`.env`) | Assign after `{cfg.role_assign_ms:.0f} ms`, hold for `{cfg.role_hold_ms:.0f} ms` before returning to `NONE` |",
         f"| Musical 8-Beat Phrase Tracking | {phrase_summary} |",
         f"| Runtime Throughput & Latency | `{fps_str}` (median frame latency `{lat_str}`, dropped frames `{performance.get('dropped_frames', 0)}`) |",
@@ -305,6 +353,28 @@ def write_markdown_report(
         )
     else:
         lines.append("- Shoulder tension could not be computed (ear/shoulder not visible).")
+
+    lines.extend(
+        [
+            "",
+            "### 3.2b Full-Body Axis Curvature (Ankle–Hip–Back-of-Head Line)",
+            "",
+        ]
+    )
+    if axis_ratios:
+        lines.extend(
+            [
+                "| Metric | Value | Interpretation |",
+                "| --- | --- | --- |",
+                f"| Frames with Visible Ankle, Hip & Head | `{len(axis_ratios)} / {total_frames}` | Full-body axis curvature coverage |",
+                f"| Median Hip / Pelvis Offset | `{median(axis_ratios) * 100.0:+.1f}%` | `0.0%` = hip on reference ankle–back-of-head line; `+` = hip/bump protruding behind line |",
+                f"| Peak Posterior Curvature | `{max(axis_ratios) * 100.0:+.1f}%` | Maximum hip protrusion behind ankle–back-of-head line |",
+                f"| Total Time Above Entry (`>{cfg.axis_curve_entry * 100.0:+.1f}%`) | `{total_axis_above_entry_sec:.2f}s` | Cumulative time exceeding entry threshold |",
+                f"| **Confirmed Axis Curvature Alerts (`>= {cfg.axis_curve_duration:.1f}s` w/ hysteresis `<{cfg.axis_curve_clear * 100.0:+.1f}%`)** | **`{len(confirmed_axis_curve)}`** | Triggered red on-screen `AXIS CURVING TOO MUCH` alert |",
+            ]
+        )
+    else:
+        lines.append("- Axis curvature could not be computed (ankle, hip, or ear not visible).")
 
     lines.extend(
         [
@@ -416,6 +486,59 @@ def write_markdown_report(
                 f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(trigger_t)}` | `{_fmt_time(e)}` | "
                 f"`{e - s:.2f}s` | `{max(elevs):+.1f}%` | `{median(elevs):+.1f}%` | "
                 f"**Shoulder tension**: shoulders raised continuously for `{e - s:.1f}s` (lower your shoulders) |"
+            )
+        lines.append("")
+
+    if confirmed_knee_straight:
+        has_issues = True
+        lines.append(
+            f"### 4.2b Confirmed Unbent Knees in Closed Embrace (`< {cfg.closed_embrace_min_knee_bend:.1f} deg` for `>= {cfg.knee_straight_duration:.1f}s` — BEND YOUR KNEES)"
+        )
+        lines.append("")
+        lines.append(
+            "| Start Time (Phrase/Beat) | Alert Triggered At | End Time | Duration | Min Knee Bend | Median Knee Bend | What Went Wrong |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for s, e, items in confirmed_knee_straight:
+            bends = [
+                float(x["knee_bend_deg"])
+                for x in items
+                if x.get("knee_bend_deg") is not None
+            ]
+            trigger_t = s + cfg.knee_straight_duration
+            p_num, b_num = items[0].get("phrase"), items[0].get("beat")
+            beat_tag = f" (P{p_num} B{b_num}/8)" if p_num and b_num else ""
+            lines.append(
+                f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(trigger_t)}` | `{_fmt_time(e)}` | "
+                f"`{e - s:.2f}s` | `{min(bends):.1f} deg` | `{median(bends):.1f} deg` | "
+                f"**Straight knees in closed embrace**: knee bend `< {cfg.closed_embrace_min_knee_bend:.1f} deg` for `{e - s:.1f}s` (bend your knees) |"
+            )
+        lines.append("")
+
+    if confirmed_axis_curve:
+        has_issues = True
+        lines.append(
+            f"### 4.2c Confirmed Axis Curvature (`>{cfg.axis_curve_entry * 100.0:+.1f}%` for `>= {cfg.axis_curve_duration:.1f}s`, clear `<{cfg.axis_curve_clear * 100.0:+.1f}%` — AXIS CURVING TOO MUCH)"
+        )
+        lines.append("")
+        lines.append(
+            "| Start Time (Phrase/Beat) | Alert Triggered At | End Time | Duration | Peak Curvature | Median Curvature | What Went Wrong |"
+        )
+        lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for s, e, items in confirmed_axis_curve:
+            curves = [
+                float(x["axis_curve_ratio"]) * 100.0
+                for x in items
+                if x.get("axis_curve_ratio") is not None
+            ]
+            peak_c = max(curves) if curves else cfg.axis_curve_entry * 100.0
+            med_c = median(curves) if curves else cfg.axis_curve_entry * 100.0
+            p_num, b_num = items[0].get("phrase"), items[0].get("beat")
+            beat_tag = f" (P{p_num} B{b_num}/8)" if p_num and b_num else ""
+            lines.append(
+                f"| `{_fmt_time(s)}{beat_tag}` | `{_fmt_time(s)}` | `{_fmt_time(e)}` | "
+                f"`{e - s:.2f}s` | `{peak_c:+.1f}%` | `{med_c:+.1f}%` | "
+                f"**Axis curving too much**: hip/pelvis protruded past ankle–back-of-head line for `{e - s:.1f}s` |"
             )
         lines.append("")
 

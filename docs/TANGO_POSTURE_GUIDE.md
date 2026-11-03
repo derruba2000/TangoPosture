@@ -822,6 +822,21 @@ The current overlay labels this condition “BAD HEAD ALIGNMENT” and “head p
 
 This extra path uses different landmark checks and can operate outside the accepted-reference session pipeline. It should not be confused with the confidence-gated metric states or event timing guarantees described earlier. The current workspace needs separate review of quality priority, calibration independence, and continuity handling for this feature before it can claim the same safeguards.
 
+### Full-body axis curvature (ankle, hip, and back-of-head line) with hysteresis
+
+`geometry.py` includes `axis_curve_alignment` and `AxisCurveTracker` to measure and visualise whether the hip/pelvis (“bump”) protrudes behind the straight line connecting the ankle to the back of the head:
+
+1. **Back-of-head proxy and axis line**: Using the visible side's `ankle`, `hip`, and `ear` (plus `nose` when visible to estimate the posterior head point behind the ear along the facing direction), it constructs the image-plane line from `ankle` to `head_back`.
+2. **Signed posterior offset**: It projects the `hip` orthogonally onto the `ankle → head_back` line and measures the signed perpendicular distance toward the dancer's posterior side (opposite to `facing`), normalised by the `ankle → head_back` segment length. When a reference calibration is captured, the median offset during calibration is stored as `axis_neutral_offset` so the metric can evaluate relative changes as well as uncalibrated runs.
+3. **Smoothing, entry/clear thresholds, and hysteresis (`AxisCurveTracker`)**:
+   - **Smoothing**: Exponential smoothing with time constant `smoothing` (default `0.25s`).
+   - **Entry threshold & persistence**: Smoothed posterior offset must exceed `axis_curve_entry` (default `0.06`, i.e. `+6.0%` of the ankle-to-head axis length) continuously for `axis_curve_duration` (default `1.5s`) to transition from `WITHIN_LIMIT` → `PENDING` → `DEVIATION`.
+   - **Hysteresis clearing**: Once in `DEVIATION`, the alert does not clear merely by dropping below `0.06`. The smoothed offset must fall below a lower clearing threshold `axis_curve_clear` (default `0.035`, i.e. `+3.5%`) continuously for `axis_curve_clear_duration` (default `0.75s`) before returning to `WITHIN_LIMIT`.
+   - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML as well as `.env` / environment variables `AXIS_CURVE_ENTRY`, `AXIS_CURVE_CLEAR`, `AXIS_CURVE_DURATION_SECONDS`, `AXIS_CURVE_CLEAR_DURATION_SECONDS`, and `AXIS_NEUTRAL_OFFSET`.
+4. **Overlay visualization and report**: The overlay draws the yellow reference line from the ankle to the back of the head and a perpendicular hip-offset vector that turns green (`WITHIN_LIMIT`), orange (`PENDING`), or red (`DEVIATION` with banner `AXIS CURVING TOO MUCH: HIP PAST ANKLE-HEAD LINE`). Section 3.2b and Section 4.2c of the Markdown report summarise coverage, median/peak offset, and confirmed curvature intervals.
+
+Like the other workspace extensions, this is a 2D image-plane proxy of landmark alignment rather than a clinical reconstruction of lumbar lordosis or pelvic tilt.
+
 ### Arm-pattern labels
 
 `geometry.py` also contains a heuristic named `detect_role`. It checks wrist, elbow, and shoulder arrangements and maps certain patterns to `LEADER`, `FOLLOWER`, or `NONE`.

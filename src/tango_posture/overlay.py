@@ -4,7 +4,14 @@ from typing import Any
 import cv2
 
 from .domain import FrameObservation
-from .geometry import detect_role, head_horizontal_alignment, shoulder_tension_alignment
+from .geometry import (
+    axis_curve_alignment,
+    detect_embrace_type,
+    detect_role,
+    head_horizontal_alignment,
+    knee_bend_alignment,
+    shoulder_tension_alignment,
+)
 from .pose.constants import CONNECTIONS
 from .quality import reliable
 
@@ -39,6 +46,20 @@ def draw(
     shoulder_tension_duration: float = 1.5,
     shoulder_tension_elapsed: float = 0.0,
     shoulder_neutral_clearance: float = 1.71,
+    embrace_type: str | None = None,
+    embrace_closed_threshold: float = 0.72,
+    closed_embrace_min_knee_bend: float = 6.0,
+    knee_straight_duration: float = 1.5,
+    knee_straight_elapsed: float = 0.0,
+    facing: str = "right",
+    side: str = "left",
+    axis_neutral_offset: float = 0.0,
+    axis_curve_entry: float = 0.06,
+    axis_curve_clear: float = 0.035,
+    axis_curve_duration: float = 1.5,
+    axis_curve_elapsed: float = 0.0,
+    axis_curve_smoothed: float | None = None,
+    axis_curve_state: str = "WITHIN_LIMIT",
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
@@ -47,10 +68,20 @@ def draw(
         image = cv2.resize(image, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
     bad_head = head_down_elapsed >= head_down_duration
     bad_shoulders = shoulder_tension_elapsed >= shoulder_tension_duration
+    bad_knees = knee_straight_elapsed >= knee_straight_duration
+    bad_axis = axis_curve_state == "DEVIATION" or (
+        axis_curve_elapsed >= axis_curve_duration
+        and (axis_curve_smoothed is None or axis_curve_smoothed >= axis_curve_clear)
+    )
     detected_role = role
+    detected_embrace = embrace_type
     for pose in observation.poses:
         if detected_role is None:
             detected_role = detect_role(pose)
+        if detected_embrace is None and detected_role in ("LEADER", "FOLLOWER"):
+            detected_embrace = detect_embrace_type(
+                pose, detected_role, closed_threshold=embrace_closed_threshold
+            )
         for a, b in CONNECTIONS:
             if reliable(pose.get(a), confidence) and reliable(pose.get(b), confidence):
                 pa, pb = pose[a], pose[b]
@@ -168,6 +199,110 @@ def draw(
                 2,
                 cv2.LINE_AA,
             )
+        knee_info = knee_bend_alignment(pose, observation.width, observation.height)
+        if knee_info is not None:
+            knee_bend_deg, vis_legs = knee_info
+            in_closed = detected_role in ("LEADER", "FOLLOWER") and detected_embrace == "CLOSED"
+            knees_straight_in_closed = in_closed and knee_bend_deg < closed_embrace_min_knee_bend
+            knee_color = (
+                (0, 0, 255)
+                if bad_knees
+                else (0, 165, 255)
+                if knees_straight_in_closed
+                else (80, 220, 80)
+            )
+            for _hip_lm, k_lm, _ank_lm in vis_legs:
+                kx, ky = screen_point(k_lm.x, k_lm.y, disp_w, disp_h, mirror)
+                cv2.circle(
+                    image,
+                    (kx, ky),
+                    12 if knees_straight_in_closed else 7,
+                    knee_color,
+                    3 if bad_knees else 2,
+                    cv2.LINE_AA,
+                )
+            if vis_legs:
+                first_k = vis_legs[0][1]
+                kx, ky = screen_point(first_k.x, first_k.y, disp_w, disp_h, mirror)
+                knee_label = (
+                    f"BEND KNEES ({knee_bend_deg:.1f} deg < {closed_embrace_min_knee_bend:.1f} deg)"
+                    if knees_straight_in_closed
+                    else f"Knees: OK ({knee_bend_deg:.1f} deg)"
+                )
+                cv2.putText(
+                    image,
+                    knee_label,
+                    (max(8, kx + 16), min(disp_h - 12, ky + 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.52,
+                    knee_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+        axis_info = axis_curve_alignment(
+            pose,
+            observation.width,
+            observation.height,
+            facing=facing,
+            side=side,
+            neutral_offset=axis_neutral_offset,
+        )
+        if axis_info is not None:
+            dev_ratio, _raw_ratio, head_back, hip_lm, ank_lm, proj_lm = axis_info
+            shown_ratio = axis_curve_smoothed if axis_curve_smoothed is not None else dev_ratio
+            is_pending = (
+                axis_curve_state == "PENDING"
+                or (not bad_axis and shown_ratio > axis_curve_entry)
+            )
+            axis_color = (
+                (0, 0, 255)
+                if bad_axis
+                else (0, 165, 255)
+                if is_pending
+                else (80, 220, 80)
+            )
+            bx, by = screen_point(head_back.x, head_back.y, disp_w, disp_h, mirror)
+            ax, ay = screen_point(ank_lm.x, ank_lm.y, disp_w, disp_h, mirror)
+            hx_pt, hy_pt = screen_point(hip_lm.x, hip_lm.y, disp_w, disp_h, mirror)
+            px, py = screen_point(proj_lm.x, proj_lm.y, disp_w, disp_h, mirror)
+            # Straight reference axis line from ankle to back of head
+            cv2.line(image, (ax, ay), (bx, by), (255, 220, 0), 2, cv2.LINE_AA)
+            cv2.circle(image, (bx, by), 5, (255, 220, 0), -1, cv2.LINE_AA)
+            cv2.circle(image, (ax, ay), 5, (255, 220, 0), -1, cv2.LINE_AA)
+            # Perpendicular hip/bump offset vector from the axis line to the hip
+            cv2.line(
+                image,
+                (px, py),
+                (hx_pt, hy_pt),
+                axis_color,
+                3 if bad_axis else 2,
+                cv2.LINE_AA,
+            )
+            cv2.circle(
+                image,
+                (hx_pt, hy_pt),
+                9 if (bad_axis or is_pending) else 6,
+                axis_color,
+                2,
+                cv2.LINE_AA,
+            )
+            axis_label = (
+                f"AXIS CURVE: {shown_ratio * 100.0:+.1f}% (>{axis_curve_entry * 100.0:.1f}%)"
+                if (bad_axis or is_pending)
+                else f"Axis line: OK ({shown_ratio * 100.0:+.1f}%)"
+            )
+            if axis_curve_elapsed > 0:
+                axis_label += f" ({axis_curve_elapsed:.1f}s)"
+            cv2.putText(
+                image,
+                axis_label,
+                (max(8, min(hx_pt, px) - 70), max(24, hy_pt - 14)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                axis_color,
+                2,
+                cv2.LINE_AA,
+            )
     role_text = f"Role: {detected_role or 'NONE'}"
     role_color = (
         (255, 220, 0)
@@ -187,6 +322,20 @@ def draw(
         cv2.LINE_AA,
     )
     alert_y = 62
+    if detected_role in ("LEADER", "FOLLOWER") and detected_embrace in ("CLOSED", "OPEN"):
+        embrace_label = f"Embrace: {detected_embrace} EMBRACE"
+        embrace_color = (0, 230, 255) if detected_embrace == "CLOSED" else (120, 240, 120)
+        cv2.putText(
+            image,
+            embrace_label,
+            (12, 56),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            embrace_color,
+            2,
+            cv2.LINE_AA,
+        )
+        alert_y = 88
     if bad_head:
         cv2.putText(
             image,
@@ -203,6 +352,30 @@ def draw(
         cv2.putText(
             image,
             f"LOWER YOUR SHOULDERS ({shoulder_tension_elapsed:.1f}s > {shoulder_tension_duration:.1f}s)",
+            (12, alert_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        alert_y += 32
+    if bad_knees:
+        cv2.putText(
+            image,
+            f"BEND YOUR KNEES IN CLOSED EMBRACE ({knee_straight_elapsed:.1f}s > {knee_straight_duration:.1f}s)",
+            (12, alert_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        alert_y += 32
+    if bad_axis:
+        cv2.putText(
+            image,
+            f"AXIS CURVING TOO MUCH: HIP PAST ANKLE-HEAD LINE ({axis_curve_elapsed:.1f}s > {axis_curve_duration:.1f}s)",
             (12, alert_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,
@@ -283,7 +456,7 @@ def draw(
         cv2.BORDER_CONSTANT,
     )
     for i, line in enumerate([message, *lines]):
-        is_red = i == 0 and (bad_head or bad_shoulders)
+        is_red = i == 0 and (bad_head or bad_shoulders or bad_knees or bad_axis)
         cv2.putText(
             panel,
             line,

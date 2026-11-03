@@ -34,3 +34,8 @@ clear = 6.0
 [trunk_inclination]
 entry = 8.0
 clear = 5.0
+
+[axis_curve]
+entry = 0.06
+clear = 0.035
+

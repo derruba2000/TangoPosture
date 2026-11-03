@@ -13,7 +13,8 @@ Tango Posture Coach tracks four complementary layers of geometry from your camer
 | **1. Head Horizontal Alignment** | `Head horiz` (`deg`) & `BAD HEAD ALIGNMENT` alert | Angle of the **ear-to-nose vector** relative to a true horizontal line (`0.0°` = nose level with ear; negative = head tilted/looking down). | Drawn directly on the head in the video overlay + Section 3.1 & Section 4 of the Markdown report. |
 | **2. Vertical Alignment (Torso / Axis)** | `trunk_inclination` (`deg`) | Angle of the **hip-to-shoulder line** relative to image vertical (`0.0°` = vertical axis; `+` = leaning forward in facing direction; `-` = leaning backward). | Overlay status panel (`smoothed` & `delta` vs. reference), Section 3.2 & Section 3.3 of the report, `observations.csv`. |
 | **3. Head-to-Shoulder Vertical & Forward Alignment** | `head_inclination` (`deg`) & `head_forward` (`torso_lengths`) | How far your ear tilts (`deg`) or shifts forward (`torso_lengths`) **relative to your shoulder and trunk axis**. | Overlay status panel (`smoothed` & `delta` vs. reference), Section 3.2 & Section 3.3 of the report, `observations.csv`. |
-| **4. Shoulder & Arm Embrace Positions** | `Role: LEADER / FOLLOWER / NONE` + `view_width` gate | **1)** Shoulder-to-hip/ear hinge; **2)** Projected shoulder width (`<= 0.45` torso lengths to verify your shoulders stay side-on without twisting open); **3)** Left/right shoulder–elbow–wrist geometry to detect **Leader** vs. **Follower** embrace. | Top-left `Role:` badge on the overlay, Section 2 of the report (`Detected Leader / Follower Embrace Intervals`). |
+| **4. Full-Body Axis Curvature (Ankle–Hip–Back of Head)** | `Axis` (`%`) & `AXIS CURVING TOO MUCH` alert | Signed perpendicular distance of your **hip / pelvis ("bump")** behind the straight line connecting your **ankle to the back of your head**, normalized by the ankle-to-head axis length, with entry/clear **hysteresis**. | Yellow ankle-to-back-of-head line + green/orange/red hip-offset vector on the body overlay, status bar (`Axis:`), and Section 3.2b & Section 4.2c of the Markdown report. |
+| **5. Shoulder & Arm Embrace Positions** | `Role: LEADER / FOLLOWER / NONE` + `view_width` gate | **1)** Shoulder-to-hip/ear hinge; **2)** Projected shoulder width (`<= 0.45` torso lengths to verify your shoulders stay side-on without twisting open); **3)** Left/right shoulder–elbow–wrist geometry to detect **Leader** vs. **Follower** embrace. | Top-left `Role:` badge on the overlay, Section 2 of the report (`Detected Leader / Follower Embrace Intervals`). |
 
 ---
 
@@ -57,6 +58,14 @@ BEAT_ANALYSIS_SECONDS=30.0
 # 5000ms hold time before returning from LEADER/FOLLOWER -> NONE
 ROLE_ASSIGN_MS=300
 ROLE_HOLD_MS=5000
+
+# Full-body axis curvature (ankle -> hip/bump -> back of head) threshold & hysteresis
+# Triggers "AXIS CURVING TOO MUCH" when hip passes behind the ankle-to-back-of-head line
+# above entry (6.0% of axis length) for >= 1.5s, and only clears when below 3.5% for >= 0.75s
+AXIS_CURVE_ENTRY=0.06
+AXIS_CURVE_CLEAR=0.035
+AXIS_CURVE_DURATION_SECONDS=1.5
+AXIS_CURVE_CLEAR_DURATION_SECONDS=0.75
 ```
 
 ### 3.2 `configs/default.toml` Settings (Reference Stability & Deviation Thresholds)
@@ -95,6 +104,10 @@ clear = 6.0
 [trunk_inclination]
 entry = 8.0                    # >= 8 deg change from reference vertical trunk axis -> DEVIATION
 clear = 5.0
+
+[axis_curve]
+entry = 0.06                   # Hip/pelvis > +6.0% behind ankle-to-back-of-head line -> PENDING/DEVIATION
+clear = 0.035                  # Must return below +3.5% for clear_duration to clear alert (hysteresis)
 ```
 
 ---
@@ -165,7 +178,13 @@ Open `videos/overlay.mp4` (linked directly at the top of your Markdown report). 
      - **Green**: Head is level (`angle >= -15.0°`).
      - **Orange**: Head is tilted down (`angle < -15.0°`), timer counting up (`(1.2s)`).
      - **Red + `BAD HEAD ALIGNMENT` banner**: Head has pointed down below `-15.0°` continuously for more than `3.0s`.
-2. **Shoulder & Embrace Role Badge (Top-Left)**:
+2. **Full-Body Axis Line & Hip/Bump Curvature Indicator (Ankle to Back of Head)**:
+   - **Yellow axis line**: Connects your visible **ankle** directly to the **back of your head** (estimated behind your ear opposite your facing direction).
+   - **Perpendicular hip-offset vector & hip ring**: Draws the shortest horizontal/perpendicular bridge from the ankle–head line to your hip (`Axis line: OK (+1.2%)` or `AXIS CURVE: +7.4% (>6.0%)`):
+     - **Green (`WITHIN_LIMIT`)**: Your hip/pelvis is aligned with the ankle–head axis line.
+     - **Orange (`PENDING`)**: Your hip/bump crossed past the `entry` threshold (`+6.0%`), persistence timer counting up toward `1.5s`.
+     - **Red (`DEVIATION`) + `AXIS CURVING TOO MUCH` banner**: Your hip stayed past the entry threshold for `>= 1.5s`. Because of **hysteresis**, it remains red until you bring your pelvis back inside the stricter `clear` threshold (`< +3.5%`) continuously for `0.75s`.
+3. **Shoulder & Embrace Role Badge (Top-Left)**:
    - Displays `Role: LEADER`, `Role: FOLLOWER`, or `Role: NONE`.
    - Watch this during walking and turns/changes of weight: if your embrace arms drop so far that the role resets to `NONE` (after the 5000 ms hold), your elbow/wrist height drifted out of the embrace zone.
 3. **8-Beat Tango Phrase Bar (Top-Right)**:

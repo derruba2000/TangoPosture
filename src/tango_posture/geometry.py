@@ -62,6 +62,15 @@ def head_horizontal_alignment(
     ear = max(ears, key=lambda e: abs(nose.x - e.x))
     dx = abs(nose.x - ear.x) * width
     dy = (ear.y - nose.y) * height
+    if len(ears) == 2:
+        l_ear, r_ear = pose["left_ear"], pose["right_ear"]
+        inter_ear_dx = abs(l_ear.x - r_ear.x) * width
+        # When facing the camera or pivoting through front view, use inter-ear head scale
+        # so head pitch stays stable across 360-degree rotations.
+        if inter_ear_dx > dx * 1.15:
+            dx = max(dx, 0.75 * inter_ear_dx)
+            mid_ear_y = 0.5 * (l_ear.y + r_ear.y)
+            dy = (mid_ear_y - nose.y) * height
     if dx < 5.0 and abs(dy) < 5.0:
         return None
     raw_angle = math.degrees(math.atan2(dy, max(dx, 1.0)))
@@ -153,6 +162,288 @@ def detect_role(pose: dict[str, Landmark]) -> str:
     if right_up and left_horizontal and not left_up:
         return "FOLLOWER"
     return "NONE"
+
+
+def detect_embrace_type(
+    pose: dict[str, Landmark],
+    role: str,
+    closed_threshold: float = 0.72,
+) -> str:
+    """Classify an active embrace (`LEADER` or `FOLLOWER`) as `CLOSED` or `OPEN`.
+
+    Measures the normalized reach/extension of the embracing arm and raised frame arm
+    relative to total upper-arm + forearm length, plus inward forearm wrap across the
+    torso. Compact/wrapped arms <= `closed_threshold` return `CLOSED`; extended arms
+    return `OPEN`. Returns `NONE` when `role` is not `LEADER` or `FOLLOWER`.
+    """
+    if role not in ("LEADER", "FOLLOWER"):
+        return "NONE"
+    required = (
+        "left_shoulder",
+        "left_elbow",
+        "left_wrist",
+        "right_shoulder",
+        "right_elbow",
+        "right_wrist",
+    )
+    if not all(_usable_point(pose.get(k)) for k in required):
+        return "CLOSED"
+    ls, le, lw = pose["left_shoulder"], pose["left_elbow"], pose["left_wrist"]
+    rs, re, rw = pose["right_shoulder"], pose["right_elbow"], pose["right_wrist"]
+    if role == "LEADER":
+        s_up, e_up, w_up = ls, le, lw
+        s_emb, e_emb, w_emb = rs, re, rw
+        s_opp = ls
+    else:
+        s_up, e_up, w_up = rs, re, rw
+        s_emb, e_emb, w_emb = ls, le, lw
+        s_opp = rs
+
+    emb_chain = math.hypot(e_emb.x - s_emb.x, e_emb.y - s_emb.y) + math.hypot(
+        w_emb.x - e_emb.x, w_emb.y - e_emb.y
+    )
+    emb_span = math.hypot(w_emb.x - s_emb.x, w_emb.y - s_emb.y)
+    emb_reach = emb_span / max(emb_chain, 1e-4)
+
+    # If the embracing forearm folds back inward toward the opposite shoulder, it is a close wrap
+    if abs(s_emb.x - s_opp.x) > 0.05 and abs(w_emb.x - s_opp.x) < abs(e_emb.x - s_opp.x):
+        emb_reach *= 0.80
+
+    up_chain = math.hypot(e_up.x - s_up.x, e_up.y - s_up.y) + math.hypot(
+        w_up.x - e_up.x, w_up.y - e_up.y
+    )
+    up_span = math.hypot(w_up.x - s_up.x, w_up.y - s_up.y)
+    up_reach = up_span / max(up_chain, 1e-4)
+
+    openness = 0.65 * emb_reach + 0.35 * up_reach
+    return "CLOSED" if openness <= closed_threshold else "OPEN"
+
+
+def knee_bend_alignment(
+    pose: dict[str, Landmark],
+    width: int,
+    height: int,
+) -> tuple[float, list[tuple[Landmark, Landmark, Landmark]]] | None:
+    """Return (knee_bend_degrees, visible_leg_triplets).
+
+    `knee_bend_degrees` is `180.0 - interior_angle(hip, knee, ankle)`:
+    - `0.0 deg` = completely straight / locked knee
+    - `>= CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` = knees flexed / bent
+    """
+    bends: list[float] = []
+    legs: list[tuple[Landmark, Landmark, Landmark]] = []
+    for side in ("left", "right"):
+        hip = pose.get(f"{side}_hip")
+        knee = pose.get(f"{side}_knee")
+        ankle = pose.get(f"{side}_ankle")
+        if (
+            _usable_point(hip, 0.45)
+            and _usable_point(knee, 0.45)
+            and _usable_point(ankle, 0.45)
+            and hip is not None
+            and knee is not None
+            and ankle is not None
+        ):
+            ux = (hip.x - knee.x) * width
+            uy = (hip.y - knee.y) * height
+            vx = (ankle.x - knee.x) * width
+            vy = (ankle.y - knee.y) * height
+            u_norm = math.hypot(ux, uy)
+            v_norm = math.hypot(vx, vy)
+            if u_norm >= 10.0 and v_norm >= 10.0:
+                cos_ang = max(-1.0, min(1.0, (ux * vx + uy * vy) / (u_norm * v_norm)))
+                interior_deg = math.degrees(math.acos(cos_ang))
+                bend_deg = max(0.0, 180.0 - interior_deg)
+                bends.append(bend_deg)
+                legs.append((hip, knee, ankle))
+    if not bends:
+        return None
+    return (max(bends), legs)
+
+
+def axis_curve_alignment(
+    pose: dict[str, Landmark],
+    width: int,
+    height: int,
+    facing: str = "right",
+    side: str = "left",
+    neutral_offset: float = 0.0,
+) -> tuple[float, float, Landmark, Landmark, Landmark, Landmark] | None:
+    """Return (deviation_ratio, raw_offset_ratio, head_back_landmark, hip_landmark, ankle_landmark, proj_landmark).
+
+    Measures how far the hip / pelvis ('bump') passes behind the straight axis line connecting
+    the ankle to the back of the head (estimated from the ear and nose vector, or ear directly),
+    normalized by the ankle-to-head axis length.
+    - Positive `raw_offset_ratio` means the hip protrudes toward the dancer's posterior ('back')
+      side of the ankle-to-back-of-head line (anterior pelvic tilt / curving too much).
+    - `deviation_ratio` is `raw_offset_ratio - neutral_offset`.
+    """
+    sides = (side, "right" if side == "left" else "left")
+    chosen_side = None
+    for s in sides:
+        if (
+            _usable_point(pose.get(f"{s}_ear"), 0.45)
+            and _usable_point(pose.get(f"{s}_hip"), 0.45)
+            and _usable_point(pose.get(f"{s}_ankle"), 0.45)
+        ):
+            chosen_side = s
+            break
+    if chosen_side is None:
+        return None
+
+    ear = pose[f"{chosen_side}_ear"]
+    hip = pose[f"{chosen_side}_hip"]
+    ankle = pose[f"{chosen_side}_ankle"]
+    nose = pose.get("nose")
+
+    # Estimate the back of the head in normalized image coordinates by extending from nose through ear
+    f_sign = 1.0 if facing == "right" else -1.0
+    if _usable_point(nose, 0.45) and nose is not None:
+        head_span_x = abs(nose.x - ear.x)
+        back_dx = max(0.35 * head_span_x, 0.015)
+        back_x = max(0.0, min(1.0, ear.x - f_sign * back_dx))
+        back_y = ear.y
+    else:
+        back_x = ear.x
+        back_y = ear.y
+    head_back = Landmark(back_x, back_y, ear.visibility, ear.presence)
+
+    # Compute vectors in pixel space (x right, y up)
+    a_pt = pixel(ankle, width, height)
+    h_pt = pixel(hip, width, height)
+    b_pt = pixel(head_back, width, height)
+
+    axis_vec = b_pt - a_pt
+    axis_len = float(np.linalg.norm(axis_vec))
+    if axis_len < 0.20 * height or not math.isfinite(axis_len):
+        return None
+
+    u = axis_vec / axis_len
+    # Unit normal pointing toward the dancer's posterior (back / 'bump') side of the ankle->head axis:
+    # When facing right (+1), up-axis u=(0,1) has posterior normal (-1,0) = (-f_sign * u[1], f_sign * u[0])
+    n_posterior = np.array([-f_sign * u[1], f_sign * u[0]], dtype=float)
+
+    rel_hip = h_pt - a_pt
+    signed_posterior_px = float(np.dot(rel_hip, n_posterior))
+    raw_offset_ratio = signed_posterior_px / axis_len
+    deviation_ratio = raw_offset_ratio - float(neutral_offset)
+
+    # Orthogonal projection of the hip onto the ankle -> head_back line for visualization
+    along_px = float(np.dot(rel_hip, u))
+    proj_pt = a_pt + along_px * u
+    proj_lm = Landmark(
+        float(proj_pt[0] / width),
+        float(-proj_pt[1] / height),
+        hip.visibility,
+        hip.presence,
+    )
+    return (deviation_ratio, raw_offset_ratio, head_back, hip, ankle, proj_lm)
+
+
+class AxisCurveTracker:
+    """Timestamp-driven exponential smoothing, entry/clear thresholds, and persistence hysteresis
+    for the ankle–hip–back-of-head axis curvature metric.
+
+    - Smoothing: time-constant exponential filter (`smoothing` seconds).
+    - Entry: smoothed deviation must exceed `entry` continuously for `entry_duration` seconds
+      to transition `WITHIN_LIMIT -> PENDING -> DEVIATION`.
+    - Hysteresis Clear: once in `DEVIATION`, smoothed deviation must drop below `clear`
+      (`clear < entry`) continuously for `clear_duration` seconds before returning to `WITHIN_LIMIT`.
+    """
+
+    def __init__(
+        self,
+        entry: float = 0.06,
+        clear: float = 0.035,
+        entry_duration: float = 1.5,
+        clear_duration: float = 0.75,
+        smoothing: float = 0.25,
+        max_gap: float = 0.5,
+    ):
+        if clear >= entry:
+            raise ValueError("clear threshold must be below entry threshold")
+        self.entry = float(entry)
+        self.clear = float(clear)
+        self.entry_duration = max(0.0, float(entry_duration))
+        self.clear_duration = max(0.0, float(clear_duration))
+        self.smoothing = max(1e-4, float(smoothing))
+        self.max_gap = max(0.0, float(max_gap))
+        self.smoothed: float | None = None
+        self.last_valid: float | None = None
+        self.pending_since: float | None = None
+        self.clearing_since: float | None = None
+        self.in_deviation: bool = False
+
+    def reset(self) -> None:
+        self.smoothed = None
+        self.last_valid = None
+        self.pending_since = None
+        self.clearing_since = None
+        self.in_deviation = False
+
+    def update(self, raw_deviation: float | None, timestamp: float) -> dict[str, float | str | bool | None]:
+        if self.last_valid is not None and (timestamp - self.last_valid) > self.max_gap:
+            self.reset()
+        if raw_deviation is None or not math.isfinite(raw_deviation):
+            self.pending_since = None
+            self.clearing_since = None
+            self.in_deviation = False
+            return {
+                "raw": None,
+                "smoothed": None,
+                "state": "UNKNOWN",
+                "elapsed": 0.0,
+                "alert": False,
+            }
+
+        if self.smoothed is None or self.last_valid is None:
+            self.smoothed = float(raw_deviation)
+        else:
+            dt = max(0.0, timestamp - self.last_valid)
+            alpha = 1.0 - math.exp(-dt / self.smoothing)
+            self.smoothed += alpha * (float(raw_deviation) - self.smoothed)
+        self.last_valid = timestamp
+
+        val = self.smoothed
+        if self.in_deviation:
+            if val < self.clear:
+                if self.clearing_since is None:
+                    self.clearing_since = timestamp
+                if (timestamp - self.clearing_since) + 1e-9 >= self.clear_duration:
+                    self.in_deviation = False
+                    self.clearing_since = None
+                    self.pending_since = None
+            else:
+                self.clearing_since = None
+        else:
+            if val > self.entry:
+                if self.pending_since is None:
+                    self.pending_since = timestamp
+                if (timestamp - self.pending_since) + 1e-9 >= self.entry_duration:
+                    self.in_deviation = True
+                    self.clearing_since = None
+            else:
+                self.pending_since = None
+
+        if self.in_deviation:
+            state = "DEVIATION"
+            elapsed = (
+                (timestamp - self.pending_since) if self.pending_since is not None else self.entry_duration
+            )
+        elif self.pending_since is not None:
+            state = "PENDING"
+            elapsed = timestamp - self.pending_since
+        else:
+            state = "WITHIN_LIMIT"
+            elapsed = 0.0
+
+        return {
+            "raw": float(raw_deviation),
+            "smoothed": float(val),
+            "state": state,
+            "elapsed": float(elapsed),
+            "alert": bool(self.in_deviation),
+        }
 
 
 class RoleTracker:

@@ -21,6 +21,18 @@ ENV_MAP: dict[str, tuple[str, Callable[[str], float | bool]]] = {
     "SHOULDER_TENSION_DURATION_SECONDS": ("shoulder_tension_duration", float),
     "SHOULDER_RAISE_THRESHOLD_PCT": ("shoulder_raise_threshold", float),
     "SHOULDER_NEUTRAL_CLEARANCE": ("shoulder_neutral_clearance", float),
+    "ALLOW_ALL_ANGLES": (
+        "allow_all_angles",
+        lambda s: s.lower() not in ("0", "false", "no", "off"),
+    ),
+    "EMBRACE_CLOSED_THRESHOLD": ("embrace_closed_threshold", float),
+    "CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES": ("closed_embrace_min_knee_bend", float),
+    "KNEE_STRAIGHT_DURATION_SECONDS": ("knee_straight_duration", float),
+    "AXIS_CURVE_ENTRY": ("axis_curve_entry", float),
+    "AXIS_CURVE_CLEAR": ("axis_curve_clear", float),
+    "AXIS_CURVE_DURATION_SECONDS": ("axis_curve_duration", float),
+    "AXIS_CURVE_CLEAR_DURATION_SECONDS": ("axis_curve_clear_duration", float),
+    "AXIS_NEUTRAL_OFFSET": ("axis_neutral_offset", float),
 }
 
 
@@ -89,14 +101,33 @@ class Config(BaseModel):
     shoulder_tension_duration: float = Field(default=1.5, gt=0)
     shoulder_raise_threshold: float = Field(default=10.0, gt=0)
     shoulder_neutral_clearance: float = Field(default=1.71, gt=0)
+    allow_all_angles: bool = False
+    embrace_closed_threshold: float = Field(default=0.72, gt=0, le=1.0)
+    closed_embrace_min_knee_bend: float = Field(default=6.0, ge=0)
+    knee_straight_duration: float = Field(default=1.5, gt=0)
+    axis_curve_entry: float = Field(default=0.06, gt=0)
+    axis_curve_clear: float = Field(default=0.035, ge=0)
+    axis_curve_duration: float = Field(default=1.5, gt=0)
+    axis_curve_clear_duration: float = Field(default=0.75, gt=0)
+    axis_neutral_offset: float = Field(default=0.0)
     head_forward: Threshold = Threshold(entry=0.08, clear=0.05)
     head_inclination: Threshold = Threshold(entry=10, clear=6)
     trunk_inclination: Threshold = Threshold(entry=8, clear=5)
+    axis_curve: Threshold | None = None
 
     @model_validator(mode="after")
     def durations(self) -> "Config":
         if self.calibration_valid_duration > self.calibration_duration:
             raise ValueError("valid calibration duration exceeds capture window")
+        if self.axis_curve is not None:
+            if "axis_curve_entry" not in self.model_fields_set:
+                self.axis_curve_entry = self.axis_curve.entry
+            if "axis_curve_clear" not in self.model_fields_set:
+                self.axis_curve_clear = self.axis_curve.clear
+        if self.axis_curve_clear >= self.axis_curve_entry:
+            raise ValueError("axis_curve clear threshold must be below entry threshold")
+        if self.axis_curve is None:
+            self.axis_curve = Threshold(entry=self.axis_curve_entry, clear=self.axis_curve_clear)
         return self
 
 
