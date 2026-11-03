@@ -3,6 +3,7 @@ import math
 import numpy as np
 
 from .domain import Landmark
+from .quality import reliable
 
 
 def pixel(p: Landmark, width: int, height: int) -> np.ndarray:
@@ -410,6 +411,33 @@ def knee_bend_alignment(
     else:
         chosen_bend = next(iter(side_bends.values()))[0]
     return (chosen_bend, legs)
+
+
+def torso_axis_alignment(
+    pose: dict[str, Landmark],
+    width: int,
+    height: int,
+    confidence: float = 0.5,
+) -> tuple[float, Landmark, Landmark] | None:
+    """Return (tilt_degrees, shoulder_midpoint, hip_midpoint) for the visible torso.
+
+    Tilt is measured in pixel space from image-up, positive toward camera-right.
+    This is a projected torso orientation, not a centre-of-mass or balance estimate.
+    All four landmarks must be reliable; do not substitute a limb or the head when
+    a shoulder/hip is occluded during a turn.
+    """
+    names = ("left_shoulder", "right_shoulder", "left_hip", "right_hip")
+    if width <= 1 or height <= 1 or not all(reliable(pose.get(k), confidence) for k in names):
+        return None
+    ls, rs, lh, rh = (pose[k] for k in names)
+    shoulder = Landmark((ls.x + rs.x) / 2, (ls.y + rs.y) / 2)
+    hip = Landmark((lh.x + rh.x) / 2, (lh.y + rh.y) / 2)
+    # Match the pixel mapping used by screen_point, including non-square frames.
+    dx = (shoulder.x - hip.x) * (width - 1)
+    dy = (hip.y - shoulder.y) * (height - 1)
+    if math.hypot(dx, dy) < 1.0:
+        return None
+    return math.degrees(math.atan2(dx, dy)), shoulder, hip
 
 
 def axis_curve_alignment(

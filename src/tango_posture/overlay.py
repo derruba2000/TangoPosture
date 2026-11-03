@@ -3,14 +3,14 @@ from typing import Any
 
 import cv2
 
-from .domain import FrameObservation
+from .domain import FrameObservation, Landmark
 from .geometry import (
-    axis_curve_alignment,
     detect_embrace_type,
     detect_role,
     head_horizontal_alignment,
     knee_bend_alignment,
     shoulder_tension_alignment,
+    torso_axis_alignment,
 )
 from .pose.constants import CONNECTIONS
 from .quality import reliable
@@ -27,6 +27,58 @@ def screen_point(x: float, y: float, width: int, height: int, mirror: bool) -> t
         width - 1 - round(x * (width - 1)) if mirror else round(x * (width - 1)),
         round(y * (height - 1)),
     )
+
+
+def _draw_torso_axis(
+    image: Any, pose: dict[str, Landmark], mirror: bool, confidence: float
+) -> None:
+    height, width = image.shape[:2]
+    axis = torso_axis_alignment(pose, width, height, confidence)
+    if axis is None:
+        return
+    angle, shoulder, hip = axis
+    sx, sy = screen_point(shoulder.x, shoulder.y, width, height, mirror)
+    hx, hy = screen_point(hip.x, hip.y, width, height, mirror)
+    dx, dy = sx - hx, sy - hy
+    length = math.hypot(dx, dy)
+    torso_color, vertical_color = (255, 140, 255), (255, 220, 0)
+
+    # Extend the fixed vertical farther so it stays visible behind an upright torso.
+    top = max(0, round(hy - 1.35 * length))
+    bottom = min(height - 1, round(hy + 0.35 * length))
+    for y in range(top, bottom + 1, 20):
+        cv2.line(image, (hx, y), (hx, min(y + 11, bottom)), vertical_color, 2, cv2.LINE_AA)
+    # Extend the torso direction by 15% beyond each midpoint.
+    cv2.line(
+        image,
+        (round(hx - 0.15 * dx), round(hy - 0.15 * dy)),
+        (round(sx + 0.15 * dx), round(sy + 0.15 * dy)),
+        torso_color,
+        3,
+        cv2.LINE_AA,
+    )
+    for point in ((sx, sy), (hx, hy)):
+        cv2.circle(image, point, 5, torso_color, -1, cv2.LINE_AA)
+    # Magnitude stays the same when the display is mirrored; it is not a judgement
+    # that leaning is wrong, nor an estimate of forward/backward lean in 3D.
+    labels = (
+        (f"Torso axis: {abs(angle):.1f} deg", torso_color),
+        ("Vertical (level camera)", vertical_color),
+    )
+    label_y = max(24, min(hy + 24, height - 36))
+    for i, (text, color) in enumerate(labels):
+        (text_width, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 2)
+        x = max(8, min(hx + 16, width - text_width - 8))
+        cv2.putText(
+            image,
+            text,
+            (x, label_y + 24 * i),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            color,
+            2,
+            cv2.LINE_AA,
+        )
 
 
 def draw(
@@ -254,74 +306,8 @@ def draw(
                     2,
                     cv2.LINE_AA,
                 )
-        axis_info = (
-            axis_curve_alignment(
-                pose,
-                observation.width,
-                observation.height,
-                facing=facing,
-                side=side,
-                neutral_offset=axis_neutral_offset,
-            )
-            if show_vertical_axis
-            else None
-        )
-        if axis_info is not None:
-            dev_ratio, _raw_ratio, head_back, hip_lm, ank_lm, proj_lm = axis_info
-            shown_ratio = axis_curve_smoothed if axis_curve_smoothed is not None else dev_ratio
-            is_pending = (
-                axis_curve_state == "PENDING"
-                or (not bad_axis and shown_ratio > axis_curve_entry)
-            )
-            axis_color = (
-                (0, 0, 255)
-                if bad_axis
-                else (0, 165, 255)
-                if is_pending
-                else (80, 220, 80)
-            )
-            bx, by = screen_point(head_back.x, head_back.y, disp_w, disp_h, mirror)
-            ax, ay = screen_point(ank_lm.x, ank_lm.y, disp_w, disp_h, mirror)
-            hx_pt, hy_pt = screen_point(hip_lm.x, hip_lm.y, disp_w, disp_h, mirror)
-            px, py = screen_point(proj_lm.x, proj_lm.y, disp_w, disp_h, mirror)
-            # Straight reference axis line from ankle to back of head
-            cv2.line(image, (ax, ay), (bx, by), (255, 220, 0), 2, cv2.LINE_AA)
-            cv2.circle(image, (bx, by), 5, (255, 220, 0), -1, cv2.LINE_AA)
-            cv2.circle(image, (ax, ay), 5, (255, 220, 0), -1, cv2.LINE_AA)
-            # Perpendicular hip/bump offset vector from the axis line to the hip
-            cv2.line(
-                image,
-                (px, py),
-                (hx_pt, hy_pt),
-                axis_color,
-                3 if bad_axis else 2,
-                cv2.LINE_AA,
-            )
-            cv2.circle(
-                image,
-                (hx_pt, hy_pt),
-                9 if (bad_axis or is_pending) else 6,
-                axis_color,
-                2,
-                cv2.LINE_AA,
-            )
-            axis_label = (
-                f"AXIS CURVE: {shown_ratio * 100.0:+.1f}% (>{axis_curve_entry * 100.0:.1f}%)"
-                if (bad_axis or is_pending)
-                else f"Axis line: OK ({shown_ratio * 100.0:+.1f}%)"
-            )
-            if axis_curve_elapsed > 0:
-                axis_label += f" ({axis_curve_elapsed:.1f}s)"
-            cv2.putText(
-                image,
-                axis_label,
-                (max(8, min(hx_pt, px) - 70), max(24, hy_pt - 14)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                axis_color,
-                2,
-                cv2.LINE_AA,
-            )
+        if show_vertical_axis:
+            _draw_torso_axis(image, pose, mirror, confidence)
     role_text = f"Role: {detected_role or 'NONE'}"
     role_color = (
         (255, 220, 0)
@@ -394,7 +380,7 @@ def draw(
     if bad_axis:
         cv2.putText(
             image,
-            f"AXIS CURVING TOO MUCH: HIP PAST ANKLE-HEAD LINE ({axis_curve_elapsed:.1f}s > {axis_curve_duration:.1f}s)",
+            f"HIP OFFSET: PAST ANKLE-HEAD LINE ({axis_curve_elapsed:.1f}s > {axis_curve_duration:.1f}s)",
             (12, alert_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,

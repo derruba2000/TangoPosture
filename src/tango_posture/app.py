@@ -749,7 +749,7 @@ class Application:
                 message = self.notice
                 if bad_axis and axis_curve_smoothed is not None:
                     message = (
-                        f"AXIS CURVING TOO MUCH: hip/pelvis +{axis_curve_smoothed * 100.0:.1f}% "
+                        f"HIP OFFSET: hip/pelvis +{axis_curve_smoothed * 100.0:.1f}% "
                         f"past ankle-to-head line ({axis_curve_elapsed:.1f}s)"
                     )
                 elif bad_knees:
@@ -838,7 +838,7 @@ class Application:
                         "N/A"
                         if axis_curve_smoothed is None
                         else (
-                            f"CURVED {axis_curve_smoothed * 100.0:+.1f}% [DEVIATION]"
+                            f"HIGH {axis_curve_smoothed * 100.0:+.1f}% [DEVIATION]"
                             if bad_axis
                             else f"PENDING {axis_curve_smoothed * 100.0:+.1f}%"
                             if axis_curve_state == "PENDING"
@@ -852,13 +852,13 @@ class Application:
                         ),
                         (
                             f"Role: {role_disp} | Beat: {beat_str} | "
-                            f"Head: {head_str} | Shoulders: {sh_str} | Knees: {knee_str} | Axis: {axis_str}"
+                            f"Head: {head_str} | Shoulders: {sh_str} | Knees: {knee_str} | Hip offset: {axis_str}"
                         ),
                         (
                             f"Reference: {self.reference.name if self.reference else 'NONE'} "
                             f"({self.reference.review['label'] if self.reference else 'not calibrated'})"
                         ),
-                        "C calibrate | A accept | R retry | S start | P pause | E end | V verbose | Y axis | B beat-1 | Q quit",
+                        "C calibrate | A accept | R retry | S start | P pause | E end | V verbose | Y torso/vertical | B beat-1 | Q quit",
                     ]
                     if not self.setup_confirmed:
                         lines.append(

@@ -13,7 +13,7 @@ Tango Posture Coach tracks four complementary layers of geometry from your camer
 | **1. Head Horizontal Alignment** | `Head horiz` (`deg`) & `BAD HEAD ALIGNMENT` alert | Angle of the **ear-to-nose vector** relative to a true horizontal line (`0.0°` = nose level with ear; negative = head tilted/looking down). | Drawn directly on the head in the video overlay + Section 3.1 & Section 4 of the Markdown report. |
 | **2. Vertical Alignment (Torso / Axis)** | `trunk_inclination` (`deg`) | Angle of the **hip-to-shoulder line** relative to image vertical (`0.0°` = vertical axis; `+` = leaning forward in facing direction; `-` = leaning backward). | Overlay status panel (`smoothed` & `delta` vs. reference), Section 3.2 & Section 3.3 of the report, `observations.csv`. |
 | **3. Head-to-Shoulder Vertical & Forward Alignment** | `head_inclination` (`deg`) & `head_forward` (`torso_lengths`) | How far your ear tilts (`deg`) or shifts forward (`torso_lengths`) **relative to your shoulder and trunk axis**. | Overlay status panel (`smoothed` & `delta` vs. reference), Section 3.2 & Section 3.3 of the report, `observations.csv`. |
-| **4. Full-Body Axis Curvature (Ankle–Hip–Back of Head)** | `Axis` (`%`) & `AXIS CURVING TOO MUCH` alert | Signed perpendicular distance of your **hip / pelvis ("bump")** behind the straight line connecting your **ankle to the back of your head**, normalized by the ankle-to-head axis length, with entry/clear **hysteresis**. | Yellow ankle-to-back-of-head line + green/orange/red hip-offset vector on the body overlay, status bar (`Axis:`), and Section 3.2b & Section 4.2c of the Markdown report. |
+| **4. Hip Offset (Ankle–Hip–Back of Head)** | `Hip offset` (`%`) & `HIP OFFSET` alert | Signed perpendicular distance of your **hip / pelvis** behind the line connecting your **ankle to the back of your head**, normalized by that line's length, with entry/clear **hysteresis**. This is separate from the torso axis drawing. | Status bar (`Hip offset:`), alert banner, and Section 3.2b & Section 4.2c of the Markdown report. |
 | **5. Shoulder & Arm Embrace Positions** | `Role: LEADER / FOLLOWER / NONE` + `view_width` gate | **1)** Shoulder-to-hip/ear hinge; **2)** Projected shoulder width (`<= 0.45` torso lengths to verify your shoulders stay side-on without twisting open); **3)** Left/right shoulder–elbow–wrist geometry to detect **Leader** vs. **Follower** embrace. | Top-left `Role:` badge on the overlay, Section 2 of the report (`Detected Leader / Follower Embrace Intervals`). |
 
 ---
@@ -60,7 +60,7 @@ ROLE_ASSIGN_MS=300
 ROLE_HOLD_MS=5000
 
 # Full-body axis curvature (ankle -> hip/bump -> back of head) threshold & hysteresis
-# Triggers "AXIS CURVING TOO MUCH" when hip passes behind the ankle-to-back-of-head line
+# Triggers "HIP OFFSET" when hip passes behind the ankle-to-back-of-head line
 # above entry (6.0% of axis length) for >= 1.5s, and only clears when below 3.5% for >= 0.75s
 AXIS_CURVE_ENTRY=0.06
 AXIS_CURVE_CLEAR=0.035
@@ -178,12 +178,11 @@ Open `videos/overlay.mp4` (linked directly at the top of your Markdown report). 
      - **Green**: Head is level (`angle >= -15.0°`).
      - **Orange**: Head is tilted down (`angle < -15.0°`), timer counting up (`(1.2s)`).
      - **Red + `BAD HEAD ALIGNMENT` banner**: Head has pointed down below `-15.0°` continuously for more than `3.0s`.
-2. **Full-Body Axis Line & Hip/Bump Curvature Indicator (Ankle to Back of Head)**:
-   - **Yellow axis line (toggle with `Y`)**: Connects your visible **ankle** directly to the **back of your head** (estimated behind your ear opposite your facing direction). Press **`Y`** at any time to show or hide this vertical axis overlay; press **`V`** to toggle **verbose skeleton mode** (showing all green bone lines and orange low-confidence points vs. only the joint circles).
-   - **Perpendicular hip-offset vector & hip ring**: Draws the shortest horizontal/perpendicular bridge from the ankle–head line to your hip (`Axis line: OK (+1.2%)` or `AXIS CURVE: +7.4% (>6.0%)`):
-     - **Green (`WITHIN_LIMIT`)**: Your hip/pelvis is aligned with the ankle–head axis line.
-     - **Orange (`PENDING`)**: Your hip/bump crossed past the `entry` threshold (`+6.0%`), persistence timer counting up toward `1.5s`.
-     - **Red (`DEVIATION`) + `AXIS CURVING TOO MUCH` banner**: Your hip stayed past the entry threshold for `>= 1.5s`. Because of **hysteresis**, it remains red until you bring your pelvis back inside the stricter `clear` threshold (`< +3.5%`) continuously for `0.75s`.
+2. **Torso Axis & Vertical Reference (toggle with `Y`)**:
+   - **Solid magenta torso axis**: Joins the hip midpoint to the shoulder midpoint, extended slightly beyond both. `Torso axis: X deg` is the magnitude of the torso's image-plane tilt from vertical, calculated in pixels to account for aspect ratio. It is unaffected by head movement and stepping feet.
+   - **Dashed cyan vertical**: Passes through the hip midpoint. Keep the camera level; this is image vertical, not a gravity sensor. Neither line estimates centre of mass or which foot bears weight. Both hide if any required shoulder/hip landmark is unreliable. Mirroring preserves the tilt magnitude.
+   - **Separate hip-offset status**: The existing ankle-to-head calculation still appears as `Hip offset: OK / PENDING / HIGH`, with a red `HIP OFFSET` banner after the entry threshold (`+6.0%`) is exceeded for `1.5s`. It clears below `+3.5%` for `0.75s`. Its thresholds, calibration and report data are unchanged; it does not colour the torso axis.
+   - Press **`V`** to toggle verbose skeleton rendering independently of the torso/vertical lines.
 3. **Shoulder & Embrace Role Badge (Top-Left)**:
    - Displays `Role: LEADER`, `Role: FOLLOWER`, or `Role: NONE`.
    - Watch this during walking and turns/changes of weight: if your embrace arms drop so far that the role resets to `NONE` (after the 5000 ms hold), your elbow/wrist height drifted out of the embrace zone.

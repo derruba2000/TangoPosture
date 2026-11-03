@@ -95,6 +95,23 @@ On macOS, grant Camera and Microphone access to the terminal/application that la
 | `E` | End and save the current session |
 | `Q` / window close / `Ctrl+C` | Quit, mux recorded audio into `.mp4` videos, and write the Markdown report to `reports/` |
 | `V` | Confirm unmirrored facing direction and enable requested display mirroring |
+| `Y` | Show/hide the torso axis and vertical reference |
+
+### Torso axis overlay
+
+The solid **magenta torso axis** joins the midpoint of your hips to the midpoint of
+your shoulders and extends slightly beyond both. The **dashed cyan vertical** runs
+through your hip midpoint. `Torso axis: X deg` shows the magnitude of the torso's
+image-plane tilt from vertical, corrected for the video's aspect ratio. These cues
+work in both live and recorded overlays, including mirrored displays. Head movement
+and stepping feet do not define this axis. Both lines hide when any of the four
+shoulder/hip landmarks is missing or below the configured confidence threshold.
+
+Keep the camera level: the vertical is an image reference, not a measured gravity
+direction. This overlay shows torso orientation, not your centre of mass or which
+foot carries your weight. The existing ankle-to-head hip-offset calculation remains
+separate, labelled **Hip offset** in the overlay status; its calibration, thresholds,
+and report fields are unchanged.
 
 ---
 

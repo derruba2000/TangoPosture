@@ -369,7 +369,7 @@ def write_markdown_report(
                 f"| Median Hip / Pelvis Offset | `{median(axis_ratios) * 100.0:+.1f}%` | `0.0%` = hip on reference ankle–back-of-head line; `+` = hip/bump protruding behind line |",
                 f"| Peak Posterior Curvature | `{max(axis_ratios) * 100.0:+.1f}%` | Maximum hip protrusion behind ankle–back-of-head line |",
                 f"| Total Time Above Entry (`>{cfg.axis_curve_entry * 100.0:+.1f}%`) | `{total_axis_above_entry_sec:.2f}s` | Cumulative time exceeding entry threshold |",
-                f"| **Confirmed Axis Curvature Alerts (`>= {cfg.axis_curve_duration:.1f}s` w/ hysteresis `<{cfg.axis_curve_clear * 100.0:+.1f}%`)** | **`{len(confirmed_axis_curve)}`** | Triggered red on-screen `AXIS CURVING TOO MUCH` alert |",
+                f"| **Confirmed Axis Curvature Alerts (`>= {cfg.axis_curve_duration:.1f}s` w/ hysteresis `<{cfg.axis_curve_clear * 100.0:+.1f}%`)** | **`{len(confirmed_axis_curve)}`** | Triggered red on-screen `HIP OFFSET` alert; separate from the torso axis |",
             ]
         )
     else:
@@ -517,7 +517,7 @@ def write_markdown_report(
     if confirmed_axis_curve:
         has_issues = True
         lines.append(
-            f"### 4.2c Confirmed Axis Curvature (`>{cfg.axis_curve_entry * 100.0:+.1f}%` for `>= {cfg.axis_curve_duration:.1f}s`, clear `<{cfg.axis_curve_clear * 100.0:+.1f}%` — AXIS CURVING TOO MUCH)"
+            f"### 4.2c Confirmed Axis Curvature (`>{cfg.axis_curve_entry * 100.0:+.1f}%` for `>= {cfg.axis_curve_duration:.1f}s`, clear `<{cfg.axis_curve_clear * 100.0:+.1f}%` — HIP OFFSET)"
         )
         lines.append("")
         lines.append(
