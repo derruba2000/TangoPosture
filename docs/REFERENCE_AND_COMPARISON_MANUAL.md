@@ -179,7 +179,7 @@ Open `videos/overlay.mp4` (linked directly at the top of your Markdown report). 
      - **Orange**: Head is tilted down (`angle < -15.0°`), timer counting up (`(1.2s)`).
      - **Red + `BAD HEAD ALIGNMENT` banner**: Head has pointed down below `-15.0°` continuously for more than `3.0s`.
 2. **Full-Body Axis Line & Hip/Bump Curvature Indicator (Ankle to Back of Head)**:
-   - **Yellow axis line**: Connects your visible **ankle** directly to the **back of your head** (estimated behind your ear opposite your facing direction).
+   - **Yellow axis line (toggle with `Y`)**: Connects your visible **ankle** directly to the **back of your head** (estimated behind your ear opposite your facing direction). Press **`Y`** at any time to show or hide this vertical axis overlay; press **`V`** to toggle **verbose skeleton mode** (showing all green bone lines and orange low-confidence points vs. only the joint circles).
    - **Perpendicular hip-offset vector & hip ring**: Draws the shortest horizontal/perpendicular bridge from the ankle–head line to your hip (`Axis line: OK (+1.2%)` or `AXIS CURVE: +7.4% (>6.0%)`):
      - **Green (`WITHIN_LIMIT`)**: Your hip/pelvis is aligned with the ankle–head axis line.
      - **Orange (`PENDING`)**: Your hip/bump crossed past the `entry` threshold (`+6.0%`), persistence timer counting up toward `1.5s`.

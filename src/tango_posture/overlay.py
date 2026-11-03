@@ -60,6 +60,8 @@ def draw(
     axis_curve_elapsed: float = 0.0,
     axis_curve_smoothed: float | None = None,
     axis_curve_state: str = "WITHIN_LIMIT",
+    verbose_skeleton: bool = True,
+    show_vertical_axis: bool = True,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
@@ -82,25 +84,35 @@ def draw(
             detected_embrace = detect_embrace_type(
                 pose, detected_role, closed_threshold=embrace_closed_threshold
             )
-        for a, b in CONNECTIONS:
-            if reliable(pose.get(a), confidence) and reliable(pose.get(b), confidence):
-                pa, pb = pose[a], pose[b]
-                cv2.line(
-                    image,
-                    screen_point(pa.x, pa.y, disp_w, disp_h, mirror),
-                    screen_point(pb.x, pb.y, disp_w, disp_h, mirror),
-                    (80, 220, 80),
-                    2,
-                )
+        if verbose_skeleton:
+            for a, b in CONNECTIONS:
+                if reliable(pose.get(a), confidence) and reliable(pose.get(b), confidence):
+                    pa, pb = pose[a], pose[b]
+                    cv2.line(
+                        image,
+                        screen_point(pa.x, pa.y, disp_w, disp_h, mirror),
+                        screen_point(pb.x, pb.y, disp_w, disp_h, mirror),
+                        (80, 220, 80),
+                        2,
+                    )
         for p in pose.values():
             if math.isfinite(p.x) and math.isfinite(p.y) and 0 <= p.x <= 1 and 0 <= p.y <= 1:
-                cv2.circle(
-                    image,
-                    screen_point(p.x, p.y, disp_w, disp_h, mirror),
-                    3,
-                    (80, 220, 80) if reliable(p, confidence) else (0, 180, 255),
-                    -1,
-                )
+                if verbose_skeleton:
+                    cv2.circle(
+                        image,
+                        screen_point(p.x, p.y, disp_w, disp_h, mirror),
+                        3,
+                        (80, 220, 80) if reliable(p, confidence) else (0, 180, 255),
+                        -1,
+                    )
+                elif reliable(p, confidence):
+                    cv2.circle(
+                        image,
+                        screen_point(p.x, p.y, disp_w, disp_h, mirror),
+                        4,
+                        (80, 220, 80),
+                        -1,
+                    )
         head_info = head_horizontal_alignment(
             pose, observation.width, observation.height, neutral_offset=head_neutral_offset
         )
@@ -199,16 +211,17 @@ def draw(
                 2,
                 cv2.LINE_AA,
             )
-        knee_info = knee_bend_alignment(pose, observation.width, observation.height)
+        knee_info = knee_bend_alignment(
+            pose, observation.width, observation.height, side=side
+        )
         if knee_info is not None:
             knee_bend_deg, vis_legs = knee_info
-            in_closed = detected_role in ("LEADER", "FOLLOWER") and detected_embrace == "CLOSED"
-            knees_straight_in_closed = in_closed and knee_bend_deg < closed_embrace_min_knee_bend
+            knees_straight = bad_knees or knee_bend_deg < closed_embrace_min_knee_bend
             knee_color = (
                 (0, 0, 255)
                 if bad_knees
                 else (0, 165, 255)
-                if knees_straight_in_closed
+                if knees_straight
                 else (80, 220, 80)
             )
             for _hip_lm, k_lm, _ank_lm in vis_legs:
@@ -216,7 +229,7 @@ def draw(
                 cv2.circle(
                     image,
                     (kx, ky),
-                    12 if knees_straight_in_closed else 7,
+                    12 if knees_straight else 7,
                     knee_color,
                     3 if bad_knees else 2,
                     cv2.LINE_AA,
@@ -226,9 +239,11 @@ def draw(
                 kx, ky = screen_point(first_k.x, first_k.y, disp_w, disp_h, mirror)
                 knee_label = (
                     f"BEND KNEES ({knee_bend_deg:.1f} deg < {closed_embrace_min_knee_bend:.1f} deg)"
-                    if knees_straight_in_closed
+                    if knees_straight
                     else f"Knees: OK ({knee_bend_deg:.1f} deg)"
                 )
+                if knee_straight_elapsed > 0:
+                    knee_label += f" ({knee_straight_elapsed:.1f}s)"
                 cv2.putText(
                     image,
                     knee_label,
@@ -239,13 +254,17 @@ def draw(
                     2,
                     cv2.LINE_AA,
                 )
-        axis_info = axis_curve_alignment(
-            pose,
-            observation.width,
-            observation.height,
-            facing=facing,
-            side=side,
-            neutral_offset=axis_neutral_offset,
+        axis_info = (
+            axis_curve_alignment(
+                pose,
+                observation.width,
+                observation.height,
+                facing=facing,
+                side=side,
+                neutral_offset=axis_neutral_offset,
+            )
+            if show_vertical_axis
+            else None
         )
         if axis_info is not None:
             dev_ratio, _raw_ratio, head_back, hip_lm, ank_lm, proj_lm = axis_info
@@ -363,7 +382,7 @@ def draw(
     if bad_knees:
         cv2.putText(
             image,
-            f"BEND YOUR KNEES IN CLOSED EMBRACE ({knee_straight_elapsed:.1f}s > {knee_straight_duration:.1f}s)",
+            f"BEND YOUR KNEES ({knee_straight_elapsed:.1f}s > {knee_straight_duration:.1f}s)",
             (12, alert_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,

@@ -82,6 +82,10 @@ def test_zero_valid_and_endpoints(tmp_path, reference, cfg):
 
 def test_sample_export(tmp_path, reference, cfg):
     db, _, _, _ = run_session(tmp_path, reference, cfg)
+    # Re-saving an existing calibration (e.g., via --calibration latest) must succeed
+    # even when referenced by existing sessions.
+    db.save_calibration(reference)
+    assert db.calibration(reference.id).id == reference.id
     db.close()
 
 

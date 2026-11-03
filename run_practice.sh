@@ -33,6 +33,6 @@ exec uv run tango-posture run \
   --side left \
   --facing right \
   --record-video "$raw_video" \
+  --calibration latest --confirm-camera-unchanged \
   --record-overlay "$overlay_video" \
   "$@"
-

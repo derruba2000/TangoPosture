@@ -21,10 +21,10 @@ from .config import Config
 from .domain import Calibration, MetricObservation, PoseEstimator
 from .geometry import (
     AxisCurveTracker,
+    EmbraceTracker,
     RoleTracker,
     axis_curve_alignment,
     calculate,
-    detect_embrace_type,
     detect_role,
     head_horizontal_alignment,
     knee_bend_alignment,
@@ -44,7 +44,7 @@ GUIDANCE = (
     "Stand side-on; fitted clothing helps. Keep the selected anatomical side visible.\n"
     "Facing means direction in the ORIGINAL UNMIRRORED image; setup is unmirrored.\n"
     "C: calibrate (3s countdown + 12s capture); A: accept; R: retry; S: start;\n"
-    "P: pause/resume; E: end/save; Q: quit/save partial.\n"
+    "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit.\n"
     "Measurements are relative to your reference, not medical or technique judgements."
 )
 
@@ -123,11 +123,17 @@ class Application:
         self.capture_profile: dict = {}
         self.versions: dict = {}
         self.setup_confirmed = headless
+        self.verbose_skeleton = True
+        self.show_vertical_axis = True
         self.worker: ThreadPoolExecutor | None = None
         self.window_open = False
         self.head_down_since: float | None = None
         self.shoulder_tension_since: float | None = None
+        self.shoulder_smoothed: float | None = None
+        self.shoulder_last_ts: float | None = None
         self.knee_straight_since: float | None = None
+        self.knee_smoothed: float | None = None
+        self.knee_last_ts: float | None = None
         self.axis_tracker = AxisCurveTracker(
             entry=self.cfg.axis_curve_entry,
             clear=self.cfg.axis_curve_clear,
@@ -139,6 +145,9 @@ class Application:
         self.relaxed_clearances: list[float] = []
         self.role_tracker = RoleTracker(
             assign_ms=self.cfg.role_assign_ms, hold_ms=self.cfg.role_hold_ms
+        )
+        self.embrace_tracker = EmbraceTracker(
+            closed_threshold=self.cfg.embrace_closed_threshold
         )
         self.role = "NONE"
         self.embrace_type = "NONE"
@@ -284,8 +293,15 @@ class Application:
         if key == ord("q"):
             self.finish(timestamp, "stopped")
             return False
-        if key == ord("v"):
+        if key in (ord("v"), ord("V")):
             self.setup_confirmed = True
+            self.verbose_skeleton = not self.verbose_skeleton
+            state_lbl = "ON (green lines & orange points)" if self.verbose_skeleton else "OFF (circles only)"
+            self.notice = f"Verbose skeleton: {state_lbl}"
+        if key in (ord("y"), ord("Y")):
+            self.show_vertical_axis = not self.show_vertical_axis
+            state_lbl = "ON" if self.show_vertical_axis else "OFF"
+            self.notice = f"Vertical axis display: {state_lbl}"
         if key == ord("b") and self.beat_tracker:
             self.beat_tracker.tap(timestamp)
         if key in (ord("c"), ord("r")) and self.state not in ("RUNNING", "PAUSED"):
@@ -480,16 +496,20 @@ class Application:
                 axis_dev_raw = None
                 upper_body = None
                 raw_role = "NONE"
-                raw_embrace = "NONE"
                 neutral_offset = (
                     float(self.reference.quality["head_neutral_offset"])
                     if self.reference and "head_neutral_offset" in self.reference.quality
                     else self.cfg.head_neutral_offset
                 )
-                sh_neutral = (
+                sh_neutral_base = (
                     float(self.reference.quality["shoulder_neutral_clearance"])
                     if self.reference and "shoulder_neutral_clearance" in self.reference.quality
                     else self.cfg.shoulder_neutral_clearance
+                )
+                sh_neutral = (
+                    max(sh_neutral_base, float(np.percentile(self.relaxed_clearances, 75)))
+                    if len(self.relaxed_clearances) >= 15
+                    else sh_neutral_base
                 )
                 axis_neutral = (
                     float(self.reference.quality["axis_neutral_offset"])
@@ -499,13 +519,25 @@ class Application:
                 if len(frame.poses) == 1:
                     pose = frame.poses[0]
                     raw_role = detect_role(pose)
-                    if raw_role in ("LEADER", "FOLLOWER"):
-                        raw_embrace = detect_embrace_type(
-                            pose, raw_role, closed_threshold=self.cfg.embrace_closed_threshold
-                        )
-                    knee_info = knee_bend_alignment(pose, frame.width, frame.height)
+                    knee_info = knee_bend_alignment(
+                        pose, frame.width, frame.height, side=self.cfg.side
+                    )
                     if knee_info is not None:
-                        knee_bend_deg = knee_info[0]
+                        raw_knee_deg = knee_info[0]
+                        if (
+                            self.knee_smoothed is None
+                            or self.knee_last_ts is None
+                            or (timestamp - self.knee_last_ts) > self.cfg.max_gap
+                        ):
+                            self.knee_smoothed = raw_knee_deg
+                        else:
+                            dt_kn = max(0.0, timestamp - self.knee_last_ts)
+                            alpha_kn = 1.0 - np.exp(-dt_kn / 0.18)
+                            self.knee_smoothed += float(alpha_kn) * (
+                                raw_knee_deg - self.knee_smoothed
+                            )
+                        self.knee_last_ts = timestamp
+                        knee_bend_deg = self.knee_smoothed
                     axis_info = axis_curve_alignment(
                         pose,
                         frame.width,
@@ -542,7 +574,7 @@ class Application:
                         pose, frame.width, frame.height, neutral_clearance=sh_neutral
                     )
                     if sh_info is not None:
-                        shoulder_elev_pct = sh_info[0]
+                        raw_elev_pct = sh_info[0]
                         raw_clear = sh_info[1]
                         if (
                             self.state == "CALIBRATING"
@@ -550,8 +582,22 @@ class Application:
                             and timestamp >= self.cal_start
                         ):
                             self.cal_shoulder_clearances.append(raw_clear)
-                        elif len(self.relaxed_clearances) < 600 and 0.45 <= raw_clear <= 1.60:
+                        elif len(self.relaxed_clearances) < 600 and 0.65 <= raw_clear <= 1.50:
                             self.relaxed_clearances.append(raw_clear)
+                        if (
+                            self.shoulder_smoothed is None
+                            or self.shoulder_last_ts is None
+                            or (timestamp - self.shoulder_last_ts) > self.cfg.max_gap
+                        ):
+                            self.shoulder_smoothed = raw_elev_pct
+                        else:
+                            dt_sh = max(0.0, timestamp - self.shoulder_last_ts)
+                            alpha_sh = 1.0 - np.exp(-dt_sh / 0.18)
+                            self.shoulder_smoothed += float(alpha_sh) * (
+                                raw_elev_pct - self.shoulder_smoothed
+                            )
+                        self.shoulder_last_ts = timestamp
+                        shoulder_elev_pct = self.shoulder_smoothed
                     if all(observation.values.get(m) is not None for m in observation.values):
                         upper_body = {
                             m: float(v)
@@ -584,16 +630,11 @@ class Application:
                                 except ValueError:
                                     upper_body = None
                 self.role = self.role_tracker.update(raw_role, timestamp)
-                if self.role == "NONE":
-                    self.embrace_type = "NONE"
-                elif raw_embrace in ("CLOSED", "OPEN"):
-                    self.embrace_type = raw_embrace
-                elif self.embrace_type == "NONE" and len(frame.poses) == 1:
-                    self.embrace_type = detect_embrace_type(
-                        frame.poses[0],
-                        self.role,
-                        closed_threshold=self.cfg.embrace_closed_threshold,
-                    )
+                self.embrace_type = self.embrace_tracker.update(
+                    frame.poses[0] if len(frame.poses) == 1 else None,
+                    self.role,
+                    timestamp,
+                )
                 axis_track = self.axis_tracker.update(axis_dev_raw, timestamp)
                 axis_curve_smoothed = (
                     float(axis_track["smoothed"])
@@ -636,31 +677,75 @@ class Application:
                     head_down_elapsed = 0.0
                 bad_head = head_down_elapsed >= self.cfg.head_down_duration
 
-                if (
-                    shoulder_elev_pct is not None
-                    and shoulder_elev_pct >= self.cfg.shoulder_raise_threshold
-                ):
-                    if self.shoulder_tension_since is None:
-                        self.shoulder_tension_since = timestamp
-                    shoulder_tension_elapsed = timestamp - self.shoulder_tension_since
+                sh_clear_threshold = max(4.0, self.cfg.shoulder_raise_threshold * 0.65)
+                if shoulder_elev_pct is not None:
+                    if shoulder_elev_pct >= self.cfg.shoulder_raise_threshold:
+                        if self.shoulder_tension_since is None:
+                            self.shoulder_tension_since = timestamp
+                        shoulder_tension_elapsed = timestamp - self.shoulder_tension_since
+                    elif (
+                        self.shoulder_tension_since is not None
+                        and shoulder_elev_pct >= sh_clear_threshold
+                    ):
+                        shoulder_tension_elapsed = timestamp - self.shoulder_tension_since
+                    else:
+                        self.shoulder_tension_since = None
+                        shoulder_tension_elapsed = 0.0
                 else:
-                    self.shoulder_tension_since = None
-                    shoulder_tension_elapsed = 0.0
+                    if (
+                        self.shoulder_last_ts is None
+                        or (timestamp - self.shoulder_last_ts) > self.cfg.max_gap
+                    ):
+                        self.shoulder_tension_since = None
+                        shoulder_tension_elapsed = 0.0
+                    elif self.shoulder_tension_since is not None:
+                        shoulder_tension_elapsed = timestamp - self.shoulder_tension_since
+                    else:
+                        shoulder_tension_elapsed = 0.0
                 bad_shoulders = shoulder_tension_elapsed >= self.cfg.shoulder_tension_duration
 
-                if (
-                    self.embrace_type == "CLOSED"
-                    and knee_bend_deg is not None
-                    and knee_bend_deg < self.cfg.closed_embrace_min_knee_bend
-                ):
-                    if self.knee_straight_since is None:
-                        self.knee_straight_since = timestamp
-                    knee_straight_elapsed = timestamp - self.knee_straight_since
+                knee_clear_deg = self.cfg.closed_embrace_min_knee_bend + 2.5
+                if knee_bend_deg is not None:
+                    if knee_bend_deg < self.cfg.closed_embrace_min_knee_bend:
+                        if self.knee_straight_since is None:
+                            self.knee_straight_since = timestamp
+                        knee_straight_elapsed = timestamp - self.knee_straight_since
+                    elif (
+                        self.knee_straight_since is not None
+                        and knee_bend_deg < knee_clear_deg
+                    ):
+                        knee_straight_elapsed = timestamp - self.knee_straight_since
+                    else:
+                        self.knee_straight_since = None
+                        knee_straight_elapsed = 0.0
                 else:
-                    self.knee_straight_since = None
-                    knee_straight_elapsed = 0.0
+                    if (
+                        self.knee_last_ts is None
+                        or (timestamp - self.knee_last_ts) > self.cfg.max_gap
+                    ):
+                        self.knee_straight_since = None
+                        knee_straight_elapsed = 0.0
+                    elif self.knee_straight_since is not None:
+                        knee_straight_elapsed = timestamp - self.knee_straight_since
+                    else:
+                        knee_straight_elapsed = 0.0
                 bad_knees = knee_straight_elapsed >= self.cfg.knee_straight_duration
 
+                sh_disp_pct = (
+                    shoulder_elev_pct
+                    if shoulder_elev_pct is not None
+                    else (
+                        self.shoulder_smoothed
+                        if self.shoulder_smoothed is not None
+                        else self.cfg.shoulder_raise_threshold
+                    )
+                )
+                head_disp_deg = head_angle if head_angle is not None else self.cfg.head_down_angle
+                knee_disp_deg = (
+                    knee_bend_deg
+                    if knee_bend_deg is not None
+                    else self.cfg.closed_embrace_min_knee_bend
+                )
                 message = self.notice
                 if bad_axis and axis_curve_smoothed is not None:
                     message = (
@@ -669,22 +754,22 @@ class Application:
                     )
                 elif bad_knees:
                     message = (
-                        f"BEND YOUR KNEES IN CLOSED EMBRACE: knee bend {knee_bend_deg:.1f} deg "
+                        f"BEND YOUR KNEES: knee bend {knee_disp_deg:.1f} deg "
                         f"< {self.cfg.closed_embrace_min_knee_bend:.1f} deg ({knee_straight_elapsed:.1f}s)"
                     )
                 elif bad_head and bad_shoulders:
                     message = (
-                        f"BAD HEAD ALIGNMENT ({head_angle:+.1f} deg) & "
-                        f"LOWER YOUR SHOULDERS ({shoulder_elev_pct:+.0f}% for {shoulder_tension_elapsed:.1f}s)"
+                        f"BAD HEAD ALIGNMENT ({head_disp_deg:+.1f} deg) & "
+                        f"LOWER YOUR SHOULDERS ({sh_disp_pct:+.0f}% for {shoulder_tension_elapsed:.1f}s)"
                     )
                 elif bad_shoulders:
                     message = (
                         f"LOWER YOUR SHOULDERS: shoulder tension detected "
-                        f"({shoulder_elev_pct:+.0f}% raised for {shoulder_tension_elapsed:.1f}s)"
+                        f"({sh_disp_pct:+.0f}% raised for {shoulder_tension_elapsed:.1f}s)"
                     )
                 elif bad_head:
                     message = (
-                        f"BAD HEAD ALIGNMENT: head pointing down ({head_angle:+.1f} deg for "
+                        f"BAD HEAD ALIGNMENT: head pointing down ({head_disp_deg:+.1f} deg for "
                         f"{head_down_elapsed:.1f}s)"
                     )
                 elif self.state == "RUNNING":
@@ -744,8 +829,8 @@ class Application:
                         if knee_bend_deg is None
                         else (
                             f"STRAIGHT {knee_bend_deg:.1f} deg"
-                            if self.embrace_type == "CLOSED"
-                            and knee_bend_deg < self.cfg.closed_embrace_min_knee_bend
+                            if bad_knees
+                            or knee_bend_deg < self.cfg.closed_embrace_min_knee_bend
                             else f"OK ({knee_bend_deg:.1f} deg)"
                         )
                     )
@@ -773,7 +858,7 @@ class Application:
                             f"Reference: {self.reference.name if self.reference else 'NONE'} "
                             f"({self.reference.review['label'] if self.reference else 'not calibrated'})"
                         ),
-                        "C calibrate | A accept | R retry | S start | P pause | E end | B beat-1 | Q quit",
+                        "C calibrate | A accept | R retry | S start | P pause | E end | V verbose | Y axis | B beat-1 | Q quit",
                     ]
                     if not self.setup_confirmed:
                         lines.append(
@@ -820,6 +905,8 @@ class Application:
                         axis_curve_elapsed=axis_curve_elapsed,
                         axis_curve_smoothed=axis_curve_smoothed,
                         axis_curve_state=axis_curve_state,
+                        verbose_skeleton=self.verbose_skeleton,
+                        show_vertical_axis=self.show_vertical_axis,
                     )
                     if self.record_overlay:
                         if overlay_writer is None:

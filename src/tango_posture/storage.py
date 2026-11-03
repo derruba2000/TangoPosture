@@ -39,12 +39,29 @@ class Storage:
         d = asdict(calibration)
         for key in ("profile", "baseline", "quality", "review"):
             d[key] = json.dumps(d[key], allow_nan=False)
-        with self.db:
+        # Use INSERT OR REPLACE only when no sessions reference this calibration;
+        # otherwise update in-place to avoid foreign-key conflicts.
+        has_sessions = (
             self.db.execute(
-                "INSERT INTO calibrations VALUES (:id,:created_at_utc,:name,:profile,"
-                ":baseline,:quality,:model_hash,:metric_version,:review)",
-                d,
-            )
+                "SELECT 1 FROM sessions WHERE calibration_id=? LIMIT 1", (calibration.id,)
+            ).fetchone()
+            is not None
+        )
+        with self.db:
+            if has_sessions:
+                self.db.execute(
+                    "UPDATE calibrations SET created_at_utc=:created_at_utc, name=:name, "
+                    "profile=:profile, baseline=:baseline, quality=:quality, "
+                    "model_hash=:model_hash, metric_version=:metric_version, review=:review "
+                    "WHERE id=:id",
+                    d,
+                )
+            else:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO calibrations VALUES (:id,:created_at_utc,:name,:profile,"
+                    ":baseline,:quality,:model_hash,:metric_version,:review)",
+                    d,
+                )
 
     def calibration(self, identifier: str) -> Calibration:
         row = self.db.execute("SELECT * FROM calibrations WHERE id=?", (identifier,)).fetchone()

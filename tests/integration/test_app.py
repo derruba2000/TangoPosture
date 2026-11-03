@@ -90,7 +90,7 @@ def test_gui_controls(tmp_path, reference, cfg, monkeypatch):
     monkeypatch.setattr(cv2, "imshow", lambda *args: None)
     monkeypatch.setattr(cv2, "getWindowProperty", lambda *args: 1)
     monkeypatch.setattr(cv2, "destroyAllWindows", lambda: None)
-    keys = iter("sp peq")
+    keys = iter("spvvyyeq")
     monkeypatch.setattr(cv2, "waitKey", lambda _: ord(next(keys)))
     cfg.data_dir = str(tmp_path)
     capture, estimator = FakeCapture(), FakeEstimator()
@@ -102,6 +102,8 @@ def test_gui_controls(tmp_path, reference, cfg, monkeypatch):
         )
         app.run()
         assert storage.list("sessions")[0]["status"] == "completed"
+        assert app.verbose_skeleton is True
+        assert app.show_vertical_axis is True
         assert capture.closed and estimator.closed
     finally:
         storage.close()

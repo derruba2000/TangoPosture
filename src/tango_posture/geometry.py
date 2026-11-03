@@ -102,26 +102,35 @@ def shoulder_tension_alignment(
         return None
 
     # Build a camera-distance-invariant reference scale that does NOT change when shoulders shrug
-    scales: list[float] = []
-    nose = pose.get("nose")
-    if _usable_point(nose) and nose is not None:
-        for _, ear, _ in pairs:
-            scales.append(math.hypot((nose.x - ear.x) * width, (nose.y - ear.y) * height))
-    l_ear, r_ear = pose.get("left_ear"), pose.get("right_ear")
-    if _usable_point(l_ear) and _usable_point(r_ear) and l_ear is not None and r_ear is not None:
-        scales.append(0.85 * abs(l_ear.x - r_ear.x) * width)
-    l_sh, r_sh = pose.get("left_shoulder"), pose.get("right_shoulder")
-    if _usable_point(l_sh) and _usable_point(r_sh) and l_sh is not None and r_sh is not None:
-        scales.append(0.34 * abs(l_sh.x - r_sh.x) * width)
+    # or when the dancer rotates between side profile and frontal view.
+    torso_scales: list[float] = []
     for side in ("left", "right"):
         ear = pose.get(f"{side}_ear")
         hip = pose.get(f"{side}_hip")
         if _usable_point(ear) and _usable_point(hip) and ear is not None and hip is not None:
             eh_dy = (hip.y - ear.y) * height
             if eh_dy > 20.0:
-                scales.append(0.20 * eh_dy)
+                torso_scales.append(0.26 * eh_dy)
 
-    ref_scale = max(scales, default=0.0)
+    head_scales: list[float] = []
+    nose = pose.get("nose")
+    if _usable_point(nose) and nose is not None:
+        for _, ear, _ in pairs:
+            # Use full 2D Euclidean distance (invariant to head pitch) scaled to match
+            # vertical ear-to-hip normalization (~0.68x nose-to-ear distance).
+            head_scales.append(
+                0.68 * math.hypot((nose.x - ear.x) * width, (nose.y - ear.y) * height)
+            )
+    l_ear, r_ear = pose.get("left_ear"), pose.get("right_ear")
+    if _usable_point(l_ear) and _usable_point(r_ear) and l_ear is not None and r_ear is not None:
+        head_scales.append(0.65 * abs(l_ear.x - r_ear.x) * width)
+    l_sh, r_sh = pose.get("left_shoulder"), pose.get("right_shoulder")
+    if _usable_point(l_sh) and _usable_point(r_sh) and l_sh is not None and r_sh is not None:
+        head_scales.append(0.28 * abs(l_sh.x - r_sh.x) * width)
+
+    # Prefer vertical ear-to-hip height when visible (invariant to yaw rotation and shrugging);
+    # otherwise fall back to head/shoulder scales aligned to the same ratio.
+    ref_scale = max(torso_scales) if torso_scales else max(head_scales, default=0.0)
     if ref_scale < 8.0:
         return None
 
@@ -149,19 +158,97 @@ def detect_role(pose: dict[str, Landmark]) -> str:
         "right_elbow",
         "right_wrist",
     )
-    if not all(_usable_point(pose.get(k)) for k in required):
+    if not all(_usable_point(pose.get(k), 0.35) for k in required):
         return "NONE"
     ls, le, lw = pose["left_shoulder"], pose["left_elbow"], pose["left_wrist"]
     rs, re, rw = pose["right_shoulder"], pose["right_elbow"], pose["right_wrist"]
-    left_up = (le.y - lw.y) > 0.05 and lw.y <= ls.y + 0.08
-    right_up = (re.y - rw.y) > 0.05 and rw.y <= rs.y + 0.08
-    right_horizontal = abs(rw.y - re.y) <= 0.14 and abs(rw.x - re.x) >= 0.04 and rw.y >= rs.y - 0.03
-    left_horizontal = abs(lw.y - le.y) <= 0.14 and abs(lw.x - le.x) >= 0.04 and lw.y >= ls.y - 0.03
+    left_up = (le.y - lw.y) > 0.04 and lw.y <= ls.y + 0.12
+    right_up = (re.y - rw.y) > 0.04 and rw.y <= rs.y + 0.12
+    right_horizontal = abs(rw.y - re.y) <= 0.18 and abs(rw.x - re.x) >= 0.025 and rw.y >= rs.y - 0.05
+    left_horizontal = abs(lw.y - le.y) <= 0.18 and abs(lw.x - le.x) >= 0.025 and lw.y >= ls.y - 0.05
     if left_up and right_horizontal and not right_up:
         return "LEADER"
     if right_up and left_horizontal and not left_up:
         return "FOLLOWER"
     return "NONE"
+
+
+def embrace_openness_score(pose: dict[str, Landmark], role: str) -> float | None:
+    """Compute a continuous openness score in [0.0, 1.5] for an active `LEADER` or `FOLLOWER` embrace.
+
+    Combines three complementary cues so transitions between `CLOSED` and `OPEN` embrace
+    are detected reliably in both side profile and frontal/diagonal views:
+    1. Embracing-arm extension (`wrist-to-shoulder` span relative to upper-arm + forearm chain),
+       with an inward-wrap discount when the forearm folds back across the chest toward the
+       opposite shoulder in a compact closed embrace.
+    2. Raised frame-arm extension (`wrist-to-shoulder` span relative to arm chain) plus
+       interior elbow angle (compact ~75-110 deg in closed embrace vs extended >125 deg in open).
+    3. Forward/outward reach of both wrists and elbows away from the torso centerline (`shoulders/hips`)
+       normalized by torso height (`shoulder-to-hip`), which directly reflects how far the arms
+       open forward toward the partner in side-on views even if the far arm is partially occluded.
+    """
+    if role not in ("LEADER", "FOLLOWER"):
+        return None
+    if role == "LEADER":
+        up_side, emb_side = "left", "right"
+    else:
+        up_side, emb_side = "right", "left"
+
+    s_up = pose.get(f"{up_side}_shoulder")
+    e_up = pose.get(f"{up_side}_elbow")
+    w_up = pose.get(f"{up_side}_wrist")
+    s_emb = pose.get(f"{emb_side}_shoulder")
+    e_emb = pose.get(f"{emb_side}_elbow")
+    w_emb = pose.get(f"{emb_side}_wrist")
+
+    up_ok = all(_usable_point(p, 0.30) for p in (s_up, e_up, w_up))
+    emb_ok = all(_usable_point(p, 0.30) for p in (s_emb, e_emb, w_emb))
+    if not up_ok and not emb_ok:
+        return None
+
+    # Torso vertical scale for normalizing horizontal arm reach away from the chest
+    torso_lengths: list[float] = []
+    for side in ("left", "right"):
+        sh = pose.get(f"{side}_shoulder")
+        hp = pose.get(f"{side}_hip")
+        if _usable_point(sh, 0.30) and _usable_point(hp, 0.30) and sh is not None and hp is not None:
+            torso_lengths.append(math.hypot(sh.x - hp.x, sh.y - hp.y))
+    torso_len = max(max(torso_lengths, default=0.25), 0.12)
+
+    scores: list[tuple[float, float]] = []
+
+    if emb_ok and s_emb is not None and e_emb is not None and w_emb is not None:
+        emb_u = math.hypot(e_emb.x - s_emb.x, e_emb.y - s_emb.y)
+        emb_v = math.hypot(w_emb.x - e_emb.x, w_emb.y - e_emb.y)
+        emb_chain = emb_u + emb_v
+        emb_span = math.hypot(w_emb.x - s_emb.x, w_emb.y - s_emb.y)
+        emb_reach = emb_span / max(emb_chain, 1e-4)
+
+        # Check inward wrap across torso or elbow fold back toward the torso in side view
+        if s_up is not None and _usable_point(s_up, 0.30) and abs(s_emb.x - s_up.x) > 0.05:
+            if abs(w_emb.x - s_up.x) < abs(e_emb.x - s_up.x):
+                emb_reach *= 0.78
+        elif abs(w_emb.x - s_emb.x) < abs(e_emb.x - s_emb.x) * 0.92:
+            # In side view, wrist folding back closer to shoulder than elbow indicates a closed wrap
+            emb_reach *= 0.80
+
+        horiz_emb = max(abs(w_emb.x - s_emb.x), abs(e_emb.x - s_emb.x)) / torso_len
+        emb_score = 0.60 * emb_reach + 0.40 * min(1.25, horiz_emb / 0.62)
+        scores.append((emb_score, 0.55))
+
+    if up_ok and s_up is not None and e_up is not None and w_up is not None:
+        up_u = math.hypot(e_up.x - s_up.x, e_up.y - s_up.y)
+        up_v = math.hypot(w_up.x - e_up.x, w_up.y - e_up.y)
+        up_chain = up_u + up_v
+        up_span = math.hypot(w_up.x - s_up.x, w_up.y - s_up.y)
+        up_reach = up_span / max(up_chain, 1e-4)
+
+        horiz_up = max(abs(w_up.x - s_up.x), abs(e_up.x - s_up.x)) / torso_len
+        up_score = 0.55 * up_reach + 0.45 * min(1.25, horiz_up / 0.62)
+        scores.append((up_score, 0.45))
+
+    total_w = sum(w for _, w in scores)
+    return sum(val * w for val, w in scores) / total_w
 
 
 def detect_embrace_type(
@@ -172,74 +259,121 @@ def detect_embrace_type(
     """Classify an active embrace (`LEADER` or `FOLLOWER`) as `CLOSED` or `OPEN`.
 
     Measures the normalized reach/extension of the embracing arm and raised frame arm
-    relative to total upper-arm + forearm length, plus inward forearm wrap across the
-    torso. Compact/wrapped arms <= `closed_threshold` return `CLOSED`; extended arms
-    return `OPEN`. Returns `NONE` when `role` is not `LEADER` or `FOLLOWER`.
+    relative to total upper-arm + forearm length and torso-normalized horizontal reach,
+    plus inward forearm wrap across the torso. Compact/wrapped arms <= `closed_threshold`
+    return `CLOSED`; extended arms return `OPEN`. Returns `NONE` when `role` is not
+    `LEADER` or `FOLLOWER`.
     """
     if role not in ("LEADER", "FOLLOWER"):
         return "NONE"
-    required = (
-        "left_shoulder",
-        "left_elbow",
-        "left_wrist",
-        "right_shoulder",
-        "right_elbow",
-        "right_wrist",
-    )
-    if not all(_usable_point(pose.get(k)) for k in required):
+    openness = embrace_openness_score(pose, role)
+    if openness is None:
         return "CLOSED"
-    ls, le, lw = pose["left_shoulder"], pose["left_elbow"], pose["left_wrist"]
-    rs, re, rw = pose["right_shoulder"], pose["right_elbow"], pose["right_wrist"]
-    if role == "LEADER":
-        s_up, e_up, w_up = ls, le, lw
-        s_emb, e_emb, w_emb = rs, re, rw
-        s_opp = ls
-    else:
-        s_up, e_up, w_up = rs, re, rw
-        s_emb, e_emb, w_emb = ls, le, lw
-        s_opp = rs
-
-    emb_chain = math.hypot(e_emb.x - s_emb.x, e_emb.y - s_emb.y) + math.hypot(
-        w_emb.x - e_emb.x, w_emb.y - e_emb.y
-    )
-    emb_span = math.hypot(w_emb.x - s_emb.x, w_emb.y - s_emb.y)
-    emb_reach = emb_span / max(emb_chain, 1e-4)
-
-    # If the embracing forearm folds back inward toward the opposite shoulder, it is a close wrap
-    if abs(s_emb.x - s_opp.x) > 0.05 and abs(w_emb.x - s_opp.x) < abs(e_emb.x - s_opp.x):
-        emb_reach *= 0.80
-
-    up_chain = math.hypot(e_up.x - s_up.x, e_up.y - s_up.y) + math.hypot(
-        w_up.x - e_up.x, w_up.y - e_up.y
-    )
-    up_span = math.hypot(w_up.x - s_up.x, w_up.y - s_up.y)
-    up_reach = up_span / max(up_chain, 1e-4)
-
-    openness = 0.65 * emb_reach + 0.35 * up_reach
     return "CLOSED" if openness <= closed_threshold else "OPEN"
+
+
+class EmbraceTracker:
+    """Temporal smoothing and hysteresis for `CLOSED` <-> `OPEN` embrace transitions.
+
+    - Smooths the continuous arm openness score (`smoothing_sec`, default 0.15s).
+    - Uses symmetric hysteresis around `closed_threshold` (`±0.035`) and a short transition
+      confirmation time (`switch_ms`, default 220ms) so deliberately opening or closing the
+      embrace transitions smoothly and reliably without flickering.
+    """
+
+    def __init__(
+        self,
+        closed_threshold: float = 0.72,
+        switch_ms: float = 220.0,
+        smoothing_sec: float = 0.15,
+    ):
+        self.closed_threshold = float(closed_threshold)
+        self.switch_sec = max(0.0, float(switch_ms) / 1000.0)
+        self.smoothing_sec = max(1e-3, float(smoothing_sec))
+        self.state: str = "NONE"
+        self.smoothed: float | None = None
+        self.last_ts: float | None = None
+        self.candidate: str | None = None
+        self.candidate_since: float | None = None
+
+    def reset(self) -> None:
+        self.state = "NONE"
+        self.smoothed = None
+        self.last_ts = None
+        self.candidate = None
+        self.candidate_since = None
+
+    def update(self, pose: dict[str, Landmark] | None, role: str, timestamp: float) -> str:
+        if role not in ("LEADER", "FOLLOWER") or pose is None:
+            self.reset()
+            return "NONE"
+        score = embrace_openness_score(pose, role)
+        if score is None:
+            return self.state if self.state in ("CLOSED", "OPEN") else "CLOSED"
+
+        if self.smoothed is None or self.last_ts is None or (timestamp - self.last_ts) > 0.5:
+            self.smoothed = score
+        else:
+            dt = max(0.0, timestamp - self.last_ts)
+            alpha = 1.0 - math.exp(-dt / self.smoothing_sec)
+            self.smoothed += alpha * (score - self.smoothed)
+        self.last_ts = timestamp
+
+        if self.state not in ("CLOSED", "OPEN"):
+            self.state = "CLOSED" if self.smoothed <= self.closed_threshold else "OPEN"
+            self.candidate = None
+            self.candidate_since = None
+            return self.state
+
+        # Hysteresis band: to switch CLOSED -> OPEN, openness must exceed threshold + 0.025;
+        # to switch OPEN -> CLOSED, openness must drop below threshold - 0.025.
+        target = self.state
+        if self.state == "CLOSED" and self.smoothed > self.closed_threshold + 0.025:
+            target = "OPEN"
+        elif self.state == "OPEN" and self.smoothed <= self.closed_threshold - 0.025:
+            target = "CLOSED"
+
+        if target != self.state:
+            if self.candidate != target or self.candidate_since is None:
+                self.candidate = target
+                self.candidate_since = timestamp
+            if (timestamp - self.candidate_since) + 1e-9 >= self.switch_sec:
+                self.state = target
+                self.candidate = None
+                self.candidate_since = None
+        else:
+            self.candidate = None
+            self.candidate_since = None
+        return self.state
 
 
 def knee_bend_alignment(
     pose: dict[str, Landmark],
     width: int,
     height: int,
+    side: str = "left",
 ) -> tuple[float, list[tuple[Landmark, Landmark, Landmark]]] | None:
     """Return (knee_bend_degrees, visible_leg_triplets).
 
     `knee_bend_degrees` is `180.0 - interior_angle(hip, knee, ankle)`:
     - `0.0 deg` = completely straight / locked knee
     - `>= CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` = knees flexed / bent
+
+    Uses the minimum bend across visible reliable legs (or the camera-facing side when the
+    far leg has low confidence) so a locked/straight standing leg is not masked by noise
+    or movement on the other leg.
     """
-    bends: list[float] = []
+    side_bends: dict[str, tuple[float, float, tuple[Landmark, Landmark, Landmark]]] = {}
     legs: list[tuple[Landmark, Landmark, Landmark]] = []
-    for side in ("left", "right"):
-        hip = pose.get(f"{side}_hip")
-        knee = pose.get(f"{side}_knee")
-        ankle = pose.get(f"{side}_ankle")
+    ordered_sides = (side, "right" if side == "left" else "left")
+    for s in ordered_sides:
+        hip = pose.get(f"{s}_hip")
+        knee = pose.get(f"{s}_knee")
+        ankle = pose.get(f"{s}_ankle")
         if (
-            _usable_point(hip, 0.45)
-            and _usable_point(knee, 0.45)
-            and _usable_point(ankle, 0.45)
+            _usable_point(hip, 0.35)
+            and _usable_point(knee, 0.35)
+            and _usable_point(ankle, 0.35)
             and hip is not None
             and knee is not None
             and ankle is not None
@@ -254,11 +388,28 @@ def knee_bend_alignment(
                 cos_ang = max(-1.0, min(1.0, (ux * vx + uy * vy) / (u_norm * v_norm)))
                 interior_deg = math.degrees(math.acos(cos_ang))
                 bend_deg = max(0.0, 180.0 - interior_deg)
-                bends.append(bend_deg)
-                legs.append((hip, knee, ankle))
-    if not bends:
+                conf = min(
+                    hip.visibility if hip.visibility is not None else 1.0,
+                    knee.visibility if knee.visibility is not None else 1.0,
+                    ankle.visibility if ankle.visibility is not None else 1.0,
+                )
+                triplet = (hip, knee, ankle)
+                side_bends[s] = (bend_deg, conf, triplet)
+                legs.append(triplet)
+    if not side_bends:
         return None
-    return (max(bends), legs)
+    if len(side_bends) == 2:
+        near_bend, near_conf, _ = side_bends[ordered_sides[0]]
+        far_bend, far_conf, _ = side_bends[ordered_sides[1]]
+        # If the occluded far leg has much lower landmark visibility, use the camera-facing leg;
+        # otherwise use min(near_bend, far_bend) so a straight standing leg is always caught.
+        if far_conf < 0.60 and near_conf >= far_conf + 0.15:
+            chosen_bend = near_bend
+        else:
+            chosen_bend = min(near_bend, far_bend)
+    else:
+        chosen_bend = next(iter(side_bends.values()))[0]
+    return (chosen_bend, legs)
 
 
 def axis_curve_alignment(

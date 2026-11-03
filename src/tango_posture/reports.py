@@ -174,12 +174,11 @@ def write_markdown_report(
     ]
     total_shoulder_tension_sec = sum(e - s for s, e, _ in shoulder_spans)
 
-    # Closed-embrace knee bend analysis
+    # Knee bend analysis
     knee_spans = _contiguous_spans(
         frame_log,
         lambda f: (
-            f.get("embrace_type") == "CLOSED"
-            and f.get("knee_bend_deg") is not None
+            f.get("knee_bend_deg") is not None
             and float(f["knee_bend_deg"]) < cfg.closed_embrace_min_knee_bend
         ),
         cfg.max_gap,

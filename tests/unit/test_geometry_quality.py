@@ -9,6 +9,7 @@ from tango_posture.config import load
 from tango_posture.domain import METRICS, Landmark
 from tango_posture.geometry import (
     AxisCurveTracker,
+    EmbraceTracker,
     RoleTracker,
     axis_curve_alignment,
     calculate,
@@ -181,14 +182,14 @@ def test_leader_and_follower_role_detection():
 
 
 def test_shoulder_tension_detection():
-    # Relaxed shoulders: ear at y=0.20, shoulder at y=0.33, hip at y=0.80 -> clearance ~ 1.0
+    # Relaxed shoulders: ear at y=0.20, shoulder at y=0.36, hip at y=0.80 -> clearance ~ 1.02
     relaxed_pose = {
         "nose": Landmark(0.58, 0.22, 0.99, 0.99),
         "left_ear": Landmark(0.50, 0.20, 0.99, 0.99),
-        "left_shoulder": Landmark(0.50, 0.32, 0.99, 0.99),
+        "left_shoulder": Landmark(0.50, 0.36, 0.99, 0.99),
         "left_hip": Landmark(0.50, 0.80, 0.99, 0.99),
     }
-    relaxed_res = shoulder_tension_alignment(relaxed_pose, 640, 480, neutral_clearance=0.95)
+    relaxed_res = shoulder_tension_alignment(relaxed_pose, 640, 480, neutral_clearance=1.05)
     assert relaxed_res is not None
     assert relaxed_res[0] < 10.0  # Below 10% tension threshold
 
@@ -199,9 +200,21 @@ def test_shoulder_tension_detection():
         "left_shoulder": Landmark(0.50, 0.28, 0.99, 0.99),
         "left_hip": Landmark(0.50, 0.80, 0.99, 0.99),
     }
-    tense_res = shoulder_tension_alignment(tense_pose, 640, 480, neutral_clearance=0.95)
+    tense_res = shoulder_tension_alignment(tense_pose, 640, 480, neutral_clearance=1.05)
     assert tense_res is not None
     assert tense_res[0] >= 10.0  # Above 10% is no longer OK -> flags LOWER YOUR SHOULDERS
+
+    # Even if nose moves horizontally away from ear (side profile), vertical ear-to-hip reference
+    # scale prevents head/nose horizontal distance from masking high shoulders
+    side_shrug_pose = {
+        "nose": Landmark(0.66, 0.22, 0.99, 0.99),
+        "left_ear": Landmark(0.50, 0.20, 0.99, 0.99),
+        "left_shoulder": Landmark(0.50, 0.28, 0.99, 0.99),
+        "left_hip": Landmark(0.50, 0.80, 0.99, 0.99),
+    }
+    side_shrug_res = shoulder_tension_alignment(side_shrug_pose, 640, 480, neutral_clearance=1.05)
+    assert side_shrug_res is not None
+    assert side_shrug_res[0] >= 10.0
 
 
 def test_frontal_calibration_side_steps_and_pivots(cfg):
@@ -255,6 +268,15 @@ def test_closed_vs_open_embrace_and_knee_bend():
     }
     assert detect_embrace_type(open_leader, "LEADER", closed_threshold=0.72) == "OPEN"
 
+    # EmbraceTracker smoothly transitions CLOSED -> OPEN -> CLOSED even when role is held
+    # across frames where raw_role would otherwise flicker, and works in side-profile occlusion
+    et = EmbraceTracker(closed_threshold=0.72, switch_ms=200.0, smoothing_sec=0.05)
+    assert et.update(closed_leader, "LEADER", 0.0) == "CLOSED"
+    assert et.update(open_leader, "LEADER", 0.1) == "CLOSED"  # < 200ms transition hold
+    assert et.update(open_leader, "LEADER", 0.35) == "OPEN"  # >= 200ms -> transitions to OPEN
+    assert et.update(closed_leader, "LEADER", 0.45) == "OPEN"  # < 200ms transition hold
+    assert et.update(closed_leader, "LEADER", 0.70) == "CLOSED"  # >= 200ms -> transitions back to CLOSED
+
     # Straight knee (0 deg bend < 6.0 deg threshold)
     straight_knee = knee_bend_alignment(closed_leader, 640, 480)
     assert straight_knee is not None
@@ -266,6 +288,16 @@ def test_closed_vs_open_embrace_and_knee_bend():
     bent_knee = knee_bend_alignment(bent_leader, 640, 480)
     assert bent_knee is not None
     assert bent_knee[0] >= 6.0
+
+    # Even if the far (occluded) leg appears slightly bent due to MediaPipe jitter,
+    # a locked/straight supporting leg on the near side is still detected via min(...)
+    both_legs_one_straight = dict(closed_leader)
+    both_legs_one_straight["right_hip"] = Landmark(0.50, 0.62, 0.99, 0.99)
+    both_legs_one_straight["right_knee"] = Landmark(0.55, 0.80, 0.99, 0.99)  # ~15 deg bend on far leg
+    both_legs_one_straight["right_ankle"] = Landmark(0.50, 0.98, 0.99, 0.99)
+    one_straight_res = knee_bend_alignment(both_legs_one_straight, 640, 480, side="left")
+    assert one_straight_res is not None
+    assert one_straight_res[0] < 6.0  # Catches the straight left supporting leg
 
 
 def test_axis_curve_alignment_and_hysteresis(tmp_path):
