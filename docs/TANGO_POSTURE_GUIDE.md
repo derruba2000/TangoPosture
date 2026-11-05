@@ -132,7 +132,7 @@ Camera device indices are explicit. The application does not silently switch to 
 
 ### Record the reference and start
 
-Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by a twelve-second capture. Review the result, then press A to accept or C to retry. Press S to begin reference-based scoring and session statistics; it does not start video recording. Press R (Record) to start video recording. E stops and saves recording and scoring while leaving the preview open; Q saves and quits. Open a new coach to record another video with new filenames.
+Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by a twelve-second capture. Review the result, then press A to accept or C to retry. Press S to begin reference-based scoring and session statistics; it does not start video recording. Press R (Record) to start video recording. E stops and saves recording and scoring while leaving the preview open; Q saves and quits. Press R again after E to add the next numbered recording to the same practice archive.
 
 During practice, P pauses or resumes. E ends and saves the session. Q quits and saves an unfinished session with an explicit stopped status. Ctrl+C and closing the window also stop the run cleanly through the application lifecycle.
 
@@ -918,7 +918,7 @@ The captured median is a personal experimental baseline, not a model of an ideal
 ### Read the overlay and report together
 
 - **Overlay:** use the head horizontal cue and its configured warning as an ear-to-nose image angle; the magenta torso axis and cyan vertical describe image-plane orientation; `Hip offset` is a separate ankle-to-head proxy. Role, embrace, knee, and beat cues are heuristic branches, not validated tango assessments.
-- **Report:** open `reports/latest_report.md` in the Review tab or Help/report viewer. It is a Markdown document with metric summaries, event timelines, coverage/unknown information, and links or metadata for available recordings. The timestamped `report_*.md` is the durable report; `latest_report.md` is a convenience alias.
+- **Report:** open `practice/<name>.tp` in the Review tab and choose a recording. Each recording has its own Markdown report with metric summaries, event timelines, coverage/unknown information, and metadata for its matching raw and overlay videos. Older standalone Markdown reports remain readable.
 - **Replay:** use report timestamps to seek the matching video when a recording is available. If camera frames were dropped or the report is from an older run without frame metadata, treat timestamp seeking as approximate.
 - **Session export:** read `summary.json`, `observations.csv`, and `events.csv` together. The JSON supplies units, reference, configuration, and denominators; CSV alone can be misleading.
 
@@ -962,23 +962,26 @@ tango_bpm = 120.0
 
 The current configuration loader also recognises `tp_BEAT_TRACKING_ENABLED` and `tp_TANGO_BPM` from `.env` or the process environment. Precedence is code defaults, then `.env`, then process environment, then TOML, then applicable CLI overrides. A TOML setting therefore overrides the same field from an environment variable.
 
-Microphone samples are processed locally; this implementation does not save an audio recording. This is audio input, distinct from the voice coaching excluded by Stage 1.
+Microphone samples are processed locally. During explicit video recording, microphone audio can be embedded in the raw and overlay videos on supported macOS systems. Beat analysis can continue between recordings without retaining those idle samples.
 
-### Optional video recording
+### Practice archives and video recording
 
 The CLI now includes:
 
 ```bash
 uv run tango-posture run --camera 0 --side left --facing right \
-  --record-video videos/practice.mp4 \
-  --record-overlay videos/overlay.mp4
+  --practice-name 'Evening practice'
 ```
 
-`--record-video` saves processed original unmirrored frames. `--record-overlay` saves annotated rendered frames. Omitting a path uses `videos/practice.mp4` or `videos/overlay.mp4`, respectively. Relative paths outside `videos/` are placed under that directory; absolute paths are honoured.
+Set **Practice name** in Files & recording, or use `--practice-name` in the CLI. Press R to record and E to save; repeat R/E to add further recordings. Q saves the current recording and quits. Reusing a practice name appends to its archive.
 
-These are explicit recording requests. They change the privacy properties of that run because images of the dancer are retained. They are not an audio recording or an automatic copy of the original input file.
+The output is `practice/<name>.tp`, a ZIP archive. Each recording contains `video_00.mp4`, `overlay_00.mp4`, `report_00.md`, and `report_00.metadata.json`; later recordings increment to `01`, `02`, and beyond. The manifest associates each report with its videos. With a custom data directory, the practice folder is placed under that directory. New reports and media are not left as separate persistent files.
 
-The writers use a fixed output frame rate from capture metadata, falling back to 15 FPS when needed. Webcam frames may have been dropped before processing; the resulting recording should not be assumed to preserve exact capture-time spacing. Use source timestamps in the observation exports for quantitative timing. Select a fresh output filename when retaining previous recordings.
+In **Review**, open a `.tp` practice and use the **Recording** selector to choose its report and raw/overlay videos. Extraction uses temporary storage, cleaned when the archive is closed. Saved Ollama analyses are retained inside the archive. Existing standalone reports and videos remain untouched.
+
+Headless runs can use `--record-video` or `--record-overlay` to record automatically; both videos are stored inside the archive. Legacy path arguments are accepted but no longer select standalone output files. Recording retains images of the dancer and may retain microphone audio; the original input video is not copied into the archive.
+
+The writers use a fixed output frame rate from capture metadata, falling back to 15 FPS when needed. Webcam frames may have been dropped before processing. Each segment's frame metadata maps report timestamps to the corresponding recorded frames; use source timestamps in observation exports for quantitative timing.
 
 ### Extra head-horizontal angle
 

@@ -37,11 +37,12 @@ and pose-model setup. Optional report interpretation connects to your configured
    - **Silence / No Music Gate**: Displays **`WAITING FOR SONG TO BEGIN...`** with all `1..8` beat boxes unlit (`beat = 0`, `phrase = 0`) when no music is playing.
    - **30-Second Phrase-Start Analysis**: As soon as a song is detected on the microphone, starts a 30-second analysis window (`UNDERSTANDING BEATS (0/30s -> 30/30s)`) using scale-invariant multi-band spectral flux and 8-beat harmonic comb autocorrelation while progressing through beats `1 -> 2 -> ... -> 8` in green.
    - **Phrase Lock**: Locks onto **Beat 1** of each 8-beat tango phrase (`Phrase N | BEAT 1..8 | YYY BPM [LOCKED]`) and pauses immediately when the music stops.
-8. **Synchronized Audio+Video Recording (`videos/`) & Auto-Incrementing Launcher (`./run_practice.sh`)**
-   - Embeds recorded microphone audio directly into `videos/practice_XX.mp4` and `videos/overlay_XX.mp4` via native macOS `AVFoundation` muxing (no separate `.wav` files left behind).
+8. **Portable Practice Archives (`practice/`) & Numbered Recordings**
+   - Saves each named practice as a ZIP archive with a `.tp` extension. Each recording includes raw video, annotated overlay, report, and metadata, numbered from `00`.
+   - Embeds recorded microphone audio into video via native macOS `AVFoundation` muxing when supported (no separate `.wav` files left behind).
    - Full-width video display (`>= 960 px` wide) with no black side margins.
-9. **Automatic Post-Run Markdown Reports (`reports/`)**
-   - Every run generates `reports/report_<timestamp>.md` and `reports/latest_report.md` with clickable links to the saved raw and overlay videos, embrace role & type intervals, head horizontal pitch, shoulder tension, closed-embrace knee bend, calibrated reference deltas, and an issues timeline mapped to exact timestamps and musical Phrase/Beat.
+9. **Per-Recording Markdown Reports**
+   - Each saved recording has a report inside its `.tp` archive, with embrace role/type intervals, alignment metrics, and an issues timeline linked to the matching raw and overlay videos.
 
 ---
 
@@ -81,8 +82,9 @@ SQLite records), or define a reference interval in a video. Use **Match referenc
 camera settings** to restore the recorded side, facing, resolution, and capture
 profile. Confirm physical camera placement each time you reuse a reference.
 
-**Files & recording** controls model/data paths, recording switches, and raw/overlay
-filenames. It suggests unused names and asks before replacing existing recordings.
+**Files & recording** controls model/data paths and the **Practice name**.
+Practices are saved as `practice/<name>.tp`; an existing name appends recordings
+without replacing earlier segments. **New practice name** starts a separate archive.
 **Settings** groups all 58 configuration values into camera/view, quality/calibration,
 tracking, head/shoulders, embrace/knees, hip offset, music, and review/Ollama tabs. The Settings menu
 also imports/exports `.env` settings; the File menu imports/exports TOML and saves
@@ -94,7 +96,7 @@ Start scoring, Pause/resume, Stop recording/save, Beat 1, Skeleton, Torso axis, 
 as **Start recording video**). **S** starts reference-based scoring and session
 statistics, not video recording, and requires an accepted reference. **E** stops
 and saves recording and scoring while keeping the preview open; **Q** saves and
-quits. Open a new coach to record another video with new filenames.
+quits. Press **R** again after **E** to add another recording to the same practice.
 The existing keyboard shortcuts work in this window too. Settings changes apply to
 the next run; closing the coach releases capture and saves reports and recordings.
 
@@ -103,15 +105,17 @@ The GUI needs a desktop display and Python's Tk support (check with
 
 ### Read reports, replay recordings, and review with Ollama
 
-The **Review** tab opens the report from a completed practice automatically. Select
-older reports from the list, use **Refresh** after changing the data directory, or
-choose **Open report** for a Markdown report elsewhere. Reports have formatted
+The **Review** tab opens saved practices automatically. Select a `.tp` archive
+from the list or **Open practice**, then choose **Recording 00**, **Recording 01**,
+and so on to load its matching report and videos. **Refresh** finds saved practices
+in the selected data directory. Legacy Markdown reports remain readable. Reports have formatted
 headings, search, line wrapping, and clickable timestamps.
 
-Under **Video replay**, switch between **Raw video**, **Overlay**, and the input
-video when available. Play/pause, step through frames, scrub the timeline, change
+Under **Video replay**, switch between **Raw video** and **Overlay** for the selected
+recording. Archive contents are extracted temporarily and removed when closed.
+Play/pause, step through frames, scrub the timeline, change
 speed, or enter a time such as `01:12.5`. Clicking a report timestamp seeks to that
-moment. New `.metadata.json` sidecars associate each report with its recordings and
+moment. Metadata inside the `.tp` archive associates each report with its recordings and
 frame timeline, accounting for dropped capture frames when seeking recorded videos.
 Older Markdown reports still open through their existing video links; timestamp
 seeking for these reports is approximate. Use **Open video** to locate moved files.
@@ -146,7 +150,7 @@ tp_OLLAMA_NUM_CTX=16384
 tp_OLLAMA_NUM_PREDICT=2048
 ```
 
-Completed analyses are stored alongside their report as `.analysis-*.json`, with
+Completed analyses are stored inside the practice archive alongside their report as `.analysis-*.json`, with
 the report hash, model, endpoint, instructions, and generation time. Reopen them
 from **Saved analyses**, or export Markdown. They never replace the measured report
 and are shown only for the matching report content. Cancelled/failed partial
@@ -158,10 +162,10 @@ by the app. Interpretation should be checked against report coverage and the vid
 
 ```bash
 uv run tango-posture run --camera 0 --side left --facing right
-# Explicitly record raw video and annotated overlay (with embedded audio) into videos/
+# Open a named practice; R records, E saves a segment, Q saves and quits
 uv run tango-posture run --camera 0 --side left --facing right \
-  --record-video videos/practice_01.mp4 --record-overlay videos/overlay_01.mp4
-# Auto-number recordings through the original CLI launcher:
+   --practice-name 'Evening practice'
+# Use the CLI launcher:
 ./run_practice.sh --cli --calibration latest --confirm-camera-unchanged
 ```
 
@@ -173,12 +177,12 @@ On macOS, grant Camera and Microphone access to the terminal/application that la
 | --- | --- |
 | `C` | Start guided calibration (spoken `"Calibration starting"`, 3s positioning wait, 12s capture with 1s beeps, auto-saved to `calibrations/`) |
 | `A` | Accept a displayed calibration (when reviewing a video reference interval) |
-| `R` | Retry calibration |
+| `R` | Record raw video and overlay; after E, record the next segment in the same practice |
 | `S` | Start an evaluated practice session against the active reference |
 | `P` | Pause/resume session; pause time is excluded |
 | `B` | Manually sync Argentine Tango **Beat 1** / tap tempo (`1..8` phrase counter) |
-| `E` | End and save the current session |
-| `Q` / window close / `Ctrl+C` | Quit, mux recorded audio into `.mp4` videos, and write the Markdown report to `reports/` |
+| `E` | Stop recording/scoring and save the segment to the `.tp` archive; keep the preview open |
+| `Q` / window close / `Ctrl+C` | Save the current segment and quit |
 | `V` | Confirm unmirrored facing direction and enable requested display mirroring |
 | `Y` | Show/hide the torso axis and vertical reference |
 
@@ -240,9 +244,9 @@ Common environment settings:
 
 ## Saved Artifacts & Output Directories
 
-- **`videos/`**: Raw practice videos (`practice_XX.mp4`) and full-width annotated overlay videos (`overlay_XX.mp4`) with embedded 16 kHz PCM/AAC audio.
+- **`practice/<name>.tp`**: Portable ZIP archive containing `video_00.mp4`, `overlay_00.mp4`, `report_00.md`, `report_00.metadata.json`, and a manifest. Further recordings increment to `01`, `02`, and beyond, preserving earlier recordings. Observation-only runs have a report but no recorded videos.
 - **`calibrations/`**: Timestamped calibration JSON files (`calibration_<YYYYMMDD_HHMMSS>_<id>.json`) and `latest_calibration.json`. Reuse any saved calibration via `--calibration latest`, a filename in `calibrations/`, or a calibration UUID.
-- **`reports/`**: Automated post-run Markdown reports (`report_<YYYYMMDD_HHMMSS>.md` and `latest_report.md`) linking directly to your saved raw and overlay videos and detailing every posture, shoulder, knee, and head-alignment issue by timestamp and musical Phrase/Beat.
+- **Legacy `reports/` and `videos/`**: Existing loose files remain untouched and readable; new practice reports and recordings are archived instead.
 - **`data/tango.sqlite3` & `data/exports/SESSION_ID/`**: SQLite session storage (`summary.json`, `observations.csv`, `events.csv`).
 
 ---
