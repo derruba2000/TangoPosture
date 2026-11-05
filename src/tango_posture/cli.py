@@ -18,11 +18,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, help="Validated TOML configuration")
     p.add_argument("--data-dir", help="Local SQLite and exports directory")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("gui", help="Open the graphical practice setup and controls").add_argument(
-        "--ignore-env",
-        action="store_true",
-        help="Open with defaults/TOML to migrate an old .env through Settings → Import",
-    )
+    sub.add_parser("gui", help="Open the graphical practice setup and controls")
     models = sub.add_parser("models")
     models.add_subparsers(dest="action", required=True).add_parser("fetch").add_argument(
         "--output", type=Path, help="Model destination; explicit setup-only network operation"
@@ -98,11 +94,7 @@ def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = Non
                 "mirror",
             )
         }
-        cfg = load(
-            args.config,
-            overrides,
-            use_env=display is None and not (args.command == "gui" and args.ignore_env),
-        )
+        cfg = load(args.config, overrides)
         if args.command == "gui":
             from .gui import launch
 

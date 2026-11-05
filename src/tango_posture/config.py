@@ -1,65 +1,10 @@
 import json
-import os
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-_ENV_SUFFIXES = {
-    "head_neutral_offset": "HEAD_NEUTRAL_OFFSET_DEGREES",
-    "head_down_duration": "HEAD_DOWN_DURATION_SECONDS",
-    "head_down_angle": "HEAD_DOWN_ANGLE_DEGREES",
-    "beat_tracking": "BEAT_TRACKING_ENABLED",
-    "tango_bpm": "TANGO_BPM",
-    "beat_analysis_seconds": "BEAT_ANALYSIS_SECONDS",
-    "role_assign_ms": "ROLE_ASSIGN_MS",
-    "role_hold_ms": "ROLE_HOLD_MS",
-    "shoulder_tension_duration": "SHOULDER_TENSION_DURATION_SECONDS",
-    "shoulder_raise_threshold": "SHOULDER_RAISE_THRESHOLD_PCT",
-    "shoulder_neutral_clearance": "SHOULDER_NEUTRAL_CLEARANCE",
-    "allow_all_angles": "ALLOW_ALL_ANGLES",
-    "embrace_closed_threshold": "EMBRACE_CLOSED_THRESHOLD",
-    "closed_embrace_min_knee_bend": "CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES",
-    "knee_straight_duration": "KNEE_STRAIGHT_DURATION_SECONDS",
-    "axis_curve_entry": "AXIS_CURVE_ENTRY",
-    "axis_curve_clear": "AXIS_CURVE_CLEAR",
-    "axis_curve_duration": "AXIS_CURVE_DURATION_SECONDS",
-    "axis_curve_clear_duration": "AXIS_CURVE_CLEAR_DURATION_SECONDS",
-    "axis_neutral_offset": "AXIS_NEUTRAL_OFFSET",
-}
-
-
-def load_dotenv(
-    env_path: Path = Path(".env"), *, include_process: bool = True, allow_legacy: bool = False
-) -> dict:
-    values: dict = {}
-    if env_path.is_file():
-        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, val = (part.strip() for part in line.split("=", 1))
-            key = key.removeprefix("export ")
-            if key in _ENV_SUFFIXES.values():
-                if not allow_legacy:
-                    raise ValueError(
-                        f"Rename {key} to tp_{key} in {env_path}; or use gui --ignore-env to import and migrate this file"
-                    )
-                key = "tp_" + key
-            if key in ENV_MAP:
-                if val.startswith('"'):
-                    val = json.loads(val)
-                elif val.startswith("'") and val.endswith("'"):
-                    val = val[1:-1]
-                set_setting(values, key, val)
-    if include_process:
-        for env_key in ENV_MAP:
-            if env_key in os.environ:
-                set_setting(values, env_key, os.environ[env_key])
-    return values
-
 
 class Threshold(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -160,7 +105,7 @@ def parse_bool(value: str) -> bool:
 
 
 # Each editable field belongs to exactly one group. The redundant axis_curve TOML
-# alias is represented by axis_curve_entry/clear in the editor and environment.
+# alias is represented by axis_curve_entry/clear in the editor.
 SETTING_GROUPS = {
     "Camera & view": (
         "camera",
@@ -236,7 +181,7 @@ SETTING_GROUPS = {
     ),
 }
 
-ENV_MAP: dict[str, tuple[str, Callable]] = {}
+SETTING_MAP: dict[str, tuple[str, Callable]] = {}
 
 
 def _setting_parser(field: str) -> Callable:
@@ -252,16 +197,15 @@ def _setting_parser(field: str) -> Callable:
 
 for _fields in SETTING_GROUPS.values():
     for _field in _fields:
-        _name = "tp_" + _ENV_SUFFIXES.get(_field, _field.replace(".", "_").upper())
-        ENV_MAP[_name] = (_field, _setting_parser(_field))
+        SETTING_MAP[_field] = (_field, _setting_parser(_field))
 
 
-def set_setting(data: dict, env_key: str, value: str) -> None:
-    field, parse = ENV_MAP[env_key]
+def set_setting(data: dict, key: str, value: str) -> None:
+    field, parse = SETTING_MAP[key]
     try:
         parsed = parse(value)
     except (ValueError, TypeError) as error:
-        raise ValueError(f"{env_key}: {error}") from error
+        raise ValueError(f"{key}: {error}") from error
     target = data
     parts = field.split(".")
     for part in parts[:-1]:
@@ -276,16 +220,6 @@ def setting_value(cfg: Config, field: str):
     return value
 
 
-def export_dotenv(cfg: Config) -> str:
-    lines = ["# TangoPosture settings. Process environment overrides this file."]
-    for group, fields in SETTING_GROUPS.items():
-        lines.extend(("", f"# {group}"))
-        for key, (field, _) in ENV_MAP.items():
-            if field in fields:
-                lines.append(f"{key}={json.dumps(setting_value(cfg, field))}")
-    return "\n".join(lines) + "\n"
-
-
 def export_toml(cfg: Config) -> str:
     data = cfg.model_dump(exclude={"axis_curve"})
     lines = [
@@ -298,9 +232,7 @@ def export_toml(cfg: Config) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load(
-    path: Path | None, overrides: dict, env_path: Path = Path(".env"), *, use_env: bool = True
-) -> Config:
+def load(path: Path | None, overrides: dict) -> Config:
     data: dict = {}
     if path:
         data.update(tomllib.loads(path.read_text()))

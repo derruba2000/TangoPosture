@@ -3,17 +3,15 @@ import tomllib
 import pytest
 
 from tango_posture.config import (
-    ENV_MAP,
+    SETTING_MAP,
     SETTING_GROUPS,
     Config,
-    export_dotenv,
     export_toml,
     load,
-    load_dotenv,
 )
 
 
-def test_every_setting_has_a_prefixed_variable_and_editor_group():
+def test_every_setting_has_a_toml_name_and_editor_group():
     expected = set(Config.model_fields) - {
         "head_forward",
         "head_inclination",
@@ -27,12 +25,11 @@ def test_every_setting_has_a_prefixed_variable_and_editor_group():
     }
     fields = [field for group in SETTING_GROUPS.values() for field in group]
     assert len(fields) == len(set(fields))
-    assert set(fields) == expected == {field for field, _ in ENV_MAP.values()}
-    assert all(key.startswith("tp_") for key in ENV_MAP)
-    assert ENV_MAP["tp_HEAD_DOWN_ANGLE_DEGREES"][0] == "head_down_angle"
+    assert set(fields) == expected == set(SETTING_MAP)
+    assert SETTING_MAP["head_down_angle"][0] == "head_down_angle"
 
 
-def test_full_environment_and_toml_round_trip(tmp_path):
+def test_full_toml_round_trip(tmp_path):
     cfg = Config(
         camera=2,
         mirror=True,
@@ -44,23 +41,20 @@ def test_full_environment_and_toml_round_trip(tmp_path):
         auto_record_stop_delay=5.0,
         max_recordings=3,
     )
-    env = tmp_path / ".env"
-    env.write_text(export_dotenv(cfg))
-    assert Config.model_validate(load_dotenv(env, include_process=False)) == cfg
     assert Config.model_validate(tomllib.loads(export_toml(cfg))) == cfg
 
 
 def test_environment_is_ignored_and_toml_cli_precedence_is_preserved(tmp_path, monkeypatch):
     env = tmp_path / ".env"
+    monkeypatch.chdir(tmp_path)
     env.write_text("HEAD_DOWN_ANGLE_DEGREES=-19\ntp_HEAD_DOWN_ANGLE_DEGREES=-21\n")
     monkeypatch.setenv("HEAD_DOWN_ANGLE_DEGREES", "-99")
     monkeypatch.setenv("tp_HEAD_DOWN_ANGLE_DEGREES", "-21")
-    assert load(None, {}, env).head_down_angle == -15
-    assert load(None, {}, env, use_env=False).head_down_angle == -15
+    assert load(None, {}).head_down_angle == -15
     settings = tmp_path / "settings.toml"
     settings.write_text("head_down_angle=-23\n")
-    assert load(settings, {}, env).head_down_angle == -23
-    assert load(settings, {"head_down_angle": -25}, env).head_down_angle == -25
+    assert load(settings, {}).head_down_angle == -23
+    assert load(settings, {"head_down_angle": -25}).head_down_angle == -25
 
 
 @pytest.mark.parametrize("line", ['mirror="maybe"', 'camera="foo"', 'tango_bpm=nan', 'axis_curve_clear=0.8'])

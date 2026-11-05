@@ -7,6 +7,7 @@ import threading
 import time
 import tkinter as tk
 import tomllib
+import webbrowser
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict, replace
@@ -20,12 +21,10 @@ from tkinter import filedialog, messagebox, ttk
 from .archive import practice_directory, practice_path, read_manifest
 from .calibration import load_calibration_file
 from .config import (
-    ENV_MAP,
+    SETTING_MAP,
     SETTING_GROUPS,
     Config,
-    export_dotenv,
     export_toml,
-    load_dotenv,
     set_setting,
     setting_value,
 )
@@ -93,8 +92,8 @@ class PracticeGUI:
         root.iconphoto(True, self.brand_logo)
         self.status = tk.StringVar(value="Set up your practice, then open the live coach.")
         self.settings: dict[str, tk.Variable] = {}
-        self.fields = {field: key for key, (field, _) in ENV_MAP.items()}
-        for key, (field, _) in ENV_MAP.items():
+        self.fields = {field: key for key, (field, _) in SETTING_MAP.items()}
+        for key, (field, _) in SETTING_MAP.items():
             value = setting_value(cfg, field)
             self.settings[key] = (
                 tk.BooleanVar(value=value) if isinstance(value, bool) else tk.StringVar(value=value)
@@ -312,10 +311,10 @@ class PracticeGUI:
             settings.add_command(label=group, command=partial(self.select_group, group))
         settings.add_separator()
         settings.add_command(
-            label="Import tp_ environment settings...", command=lambda: self._guard(self.import_env)
+            label="Import settings TOML...", command=lambda: self._guard(self.import_toml)
         )
         settings.add_command(
-            label="Export tp_ environment settings...", command=lambda: self._guard(self.save_env)
+            label="Export settings TOML...", command=lambda: self._guard(self.save_toml)
         )
         settings.add_command(
             label="Reset settings to defaults", command=lambda: self.apply_config(Config())
@@ -335,6 +334,7 @@ class PracticeGUI:
         window = self.splash_window = tk.Toplevel(self.root)
         window.title("TangoPosture")
         window.overrideredirect(True)
+        window.configure(cursor="watch")
         width, height = 440, 380
         left = max(0, (window.winfo_screenwidth() - width) // 2)
         top = max(0, (window.winfo_screenheight() - height) // 2)
@@ -343,12 +343,16 @@ class PracticeGUI:
         content.pack(fill="both", expand=True)
         ttk.Label(content, image=self.splash_logo).pack(expand=True)
         ttk.Label(content, text="TangoPosture", font=("Helvetica", 24, "bold")).pack(pady=(12, 0))
+        self.splash_progress = ttk.Progressbar(content, mode="indeterminate", length=200)
+        self.splash_progress.pack(pady=(8, 0))
+        self.splash_progress.start(15)
         window.lift()
         self.splash_timer = self.root.after(3000, self.finish_splash)
 
     def finish_splash(self):
         self.splash_timer = None
         if self.splash_window is not None:
+            self.splash_progress.stop()
             self.splash_window.destroy()
             self.splash_window = None
         self.root.deiconify()
@@ -374,6 +378,12 @@ class PracticeGUI:
         ttk.Label(content, text="TangoPosture", font=("Helvetica", 20, "bold")).pack()
         ttk.Label(content, text=f"Version {app_version}").pack(pady=(6, 0))
         ttk.Label(content, text="License: Apache-2.0").pack(pady=(6, 12))
+        self.about_repo_link = ttk.Label(
+            content, text="GitHub repository", foreground="#146c9c", cursor="hand2", takefocus=True,
+        )
+        self.about_repo_link.pack(pady=(0, 12))
+        for event in ("<Button-1>", "<Return>", "<space>"):
+            self.about_repo_link.bind(event, lambda _: webbrowser.open("https://github.com/derruba2000/TangoPosture"))
         ttk.Label(
             content, text="Experimental movement observation, not a medical assessment.",
             wraplength=350, justify="center",
@@ -469,7 +479,7 @@ class PracticeGUI:
         return PracticeOptions(**values)
 
     def apply_config(self, cfg: Config):
-        for key, (field, _) in ENV_MAP.items():
+        for key, (field, _) in SETTING_MAP.items():
             self.settings[key].set(setting_value(cfg, field))
 
     def select_group(self, group):
@@ -587,26 +597,11 @@ class PracticeGUI:
         if path:
             self.apply_config(Config.model_validate(tomllib.loads(Path(path).read_text())))
 
-    def import_env(self):
-        path = filedialog.askopenfilename(parent=self.root, title="Import tp_ environment settings")
-        if path:
-            data = self.config().model_dump(exclude={"axis_curve"})
-            incoming = load_dotenv(Path(path), include_process=False, allow_legacy=True)
-            for field, value in incoming.items():
-                if isinstance(value, dict):
-                    data[field].update(value)
-                else:
-                    data[field] = value
-            self.apply_config(Config.model_validate(data))
-
     def _save(self, content, extension):
         path = filedialog.asksaveasfilename(parent=self.root, defaultextension=extension)
         if path:
             Path(path).write_text(content, encoding="utf-8")
             self.status.set(f"Saved {Path(path).name}")
-
-    def save_env(self):
-        self._save(export_dotenv(self.config()), ".env")
 
     def save_toml(self):
         self._save(export_toml(self.config()), ".toml")

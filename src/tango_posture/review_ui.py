@@ -313,7 +313,7 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
             side="left", padx=6
         )
-        self.player = ReplayPlayer(videos, settings["tp_REPLAY_AUDIO"])
+        self.player = ReplayPlayer(videos, settings["replay_audio"])
         self.player.pack(fill="both", expand=True)
         self._analysis_page()
         self.timer = self.after(50, self.pump)
@@ -337,18 +337,18 @@ class ReviewPanel(ttk.Frame):
         form.pack(fill="x")
         form.columnconfigure(1, weight=1)
         ttk.Label(form, text="Ollama server").grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Entry(form, textvariable=self.settings["tp_OLLAMA_BASE_URL"]).grid(
+        ttk.Entry(form, textvariable=self.settings["ollama_base_url"]).grid(
             row=0, column=1, sticky="ew", pady=3
         )
         ttk.Label(form, text="Model").grid(row=1, column=0, sticky="w")
-        self.model_combo = ttk.Combobox(form, textvariable=self.settings["tp_OLLAMA_MODEL"])
+        self.model_combo = ttk.Combobox(form, textvariable=self.settings["ollama_model"])
         self.model_combo.grid(row=1, column=1, sticky="ew", pady=3)
         self.models_button = ttk.Button(
             form, text="List installed models", command=lambda: self.guard(self.list_models)
         )
         self.models_button.grid(row=1, column=2, padx=6)
         ttk.Label(form, text="Analysis focus").grid(row=2, column=0, sticky="w")
-        ttk.Entry(form, textvariable=self.settings["tp_OLLAMA_INSTRUCTION"]).grid(
+        ttk.Entry(form, textvariable=self.settings["ollama_instruction"]).grid(
             row=2, column=1, columnspan=2, sticky="ew", pady=3
         )
         actions = ttk.Frame(page)
