@@ -36,7 +36,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--model-path")
     run.add_argument("--capture-profile")
     run.add_argument("--mirror", action="store_true", default=None)
-    run.add_argument("--calibration", help="Saved reference UUID")
+    run.add_argument("--calibration", help="Calibration .tpc archive, legacy JSON, latest, or UUID")
+    run.add_argument("--calibration-only", action="store_true", help="Open a dedicated calibration capture")
     run.add_argument(
         "--confirm-camera-unchanged",
         action="store_true",
@@ -197,6 +198,7 @@ def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = Non
             record_overlay=args.record_overlay,
             display=display,
             practice_name=args.practice_name,
+            calibration_only=args.calibration_only,
         ).run()
         return 0
     except (ValueError, OSError, sqlite3.Error, RuntimeError, ImportError) as error:

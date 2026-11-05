@@ -1,5 +1,6 @@
 import pytest
 
+from tango_posture.archive import save_calibration_archive
 from tango_posture.cli import main
 from tango_posture.models import MANIFEST
 from tango_posture.storage import Storage
@@ -55,3 +56,27 @@ def test_reference_confirmation(tmp_path, reference):
         )
         == 2
     )
+
+
+def test_coach_loads_reference_json_from_calibration_archive(tmp_path, reference, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    archive = tmp_path / "Reference.tpc"
+    raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+    raw.write_bytes(b"raw")
+    overlay.write_bytes(b"overlay")
+    save_calibration_archive(archive, reference, raw, overlay, [0.0])
+    received = []
+
+    class Coach:
+        def __init__(self, *args, **kwargs):
+            received.append(args[4])
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr("tango_posture.app.Application", Coach)
+    assert main([
+        "--data-dir", str(tmp_path), "run", "--video", "fixture", "--headless",
+        "--calibration", str(archive), "--confirm-camera-unchanged",
+    ]) == 0
+    assert received == [reference]

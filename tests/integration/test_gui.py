@@ -7,10 +7,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tango_posture.archive import append_segment
+from tango_posture.archive import append_segment, save_calibration_archive
 from tango_posture.calibration import save_calibration_file
 from tango_posture.config import ENV_MAP, Config
 from tango_posture.gui import PracticeGUI
+from tango_posture.practice import GuiDisplay
 from tango_posture.review import write_metadata
 
 
@@ -28,6 +29,66 @@ def studio(tmp_path, monkeypatch):
     yield root, gui
     gui.close()
     assert not errors
+
+
+def test_splash_hides_studio_until_three_second_timer_finishes(studio, monkeypatch):
+    root, gui = studio
+    scheduled = []
+    after = root.after
+
+    def schedule(delay, callback, *args):
+        if delay == 3000:
+            scheduled.append((delay, callback))
+            return after(60000, callback)
+        return after(delay, callback, *args)
+
+    monkeypatch.setattr(root, "after", schedule)
+    gui.show_splash()
+    root.update()
+    assert root.state() == "withdrawn"
+    assert gui.splash_window.winfo_ismapped()
+    assert scheduled[0][0] == 3000
+    splash = gui.splash_window
+    gui.show_splash()
+    assert gui.splash_window is splash and len(scheduled) == 1
+    root.after_cancel(gui.splash_timer)
+    scheduled[0][1]()
+    root.update()
+    assert gui.splash_window is None and gui.splash_timer is None
+    assert root.state() == "normal"
+
+
+def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
+    root, gui = studio
+    monkeypatch.setattr("tango_posture.gui.version", lambda _: "0.1.0")
+    menu = root.nametowidget(root.cget("menu"))
+    help_index = next(
+        index for index in range(menu.index("end") + 1)
+        if menu.entrycget(index, "label") == "Help"
+    )
+    help_menu = root.nametowidget(menu.entrycget(help_index, "menu"))
+    about_index = next(
+        index for index in range(help_menu.index("end") + 1)
+        if help_menu.type(index) == "command"
+        and help_menu.entrycget(index, "label") == "About TangoPosture"
+    )
+    help_menu.invoke(about_index)
+    root.update()
+    window = gui.about_window
+    assert window.winfo_ismapped()
+    labels = [
+        child.cget("text") for child in window.winfo_children()[0].winfo_children()
+        if child.winfo_class() == "TLabel"
+    ]
+    assert "TangoPosture" in labels
+    assert "Version 0.1.0" in labels
+    assert "License: Apache-2.0" in labels
+    gui.open_about()
+    assert gui.about_window is window
+    window.withdraw()
+    gui.open_about()
+    root.update()
+    assert gui.about_window is window and window.winfo_ismapped()
 
 
 def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path):
@@ -62,6 +123,126 @@ def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path
     assert not extracted.exists()
 
 
+def test_review_opens_calibration_reference_and_its_videos(studio, tmp_path, reference):
+    root, gui = studio
+    import cv2
+
+    raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+    for path in (raw, overlay):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
+        writer.write(np.zeros((64, 64, 3), np.uint8))
+        writer.release()
+    archive = tmp_path / "calibrations" / "My reference.tpc"
+    save_calibration_archive(archive, reference, raw, overlay, [0.1])
+    gui.review.refresh()
+    assert str(archive.resolve()) in gui.review.report_paths
+    gui.review.load_report(archive)
+    root.update()
+    assert list(gui.review.segment_paths) == ["Calibration"]
+    assert reference.id in gui.review.report.markdown
+    assert gui.review.player.reader.path.name == "overlay_00.mp4"
+    gui.review.video_selection.set("Raw video")
+    gui.review.switch_video()
+    assert gui.review.player.reader.path.name == "video_00.mp4"
+    gui.refresh_references()
+    assert str(archive.resolve()) in gui.reference_ids.values()
+    gui.options["calibration"].set(str(archive))
+    gui.match_reference()
+    assert gui.options["reference_mode"].get() == "saved"
+
+
+def test_calibration_camera_has_separate_controls_and_uses_camera(studio, tmp_path, reference, monkeypatch):
+    root, gui = studio
+    monkeypatch.setattr("tango_posture.gui.verify", lambda _: "verified")
+    monkeypatch.setattr("tango_posture.gui.messagebox.showinfo", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gui.review, "add_report", lambda _: None)
+    received = []
+    reference.profile["source"] = "camera:0"
+    archive = tmp_path / "calibrations" / "Reference.tpc"
+
+    def run(args, *, display):
+        received.extend(args)
+        display.show(np.zeros((240, 320, 3), np.uint8))
+        display.stopped.wait(3)
+        raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+        raw.write_bytes(b"raw")
+        overlay.write_bytes(b"overlay")
+        save_calibration_archive(archive, reference, raw, overlay, [0.0])
+        display.report_ready(archive)
+        return 0
+
+    monkeypatch.setattr("tango_posture.cli.main", run)
+    gui.options["source"].set("video")
+    gui.options["headless"].set(True)
+    gui.calibration_button.invoke()
+    deadline = time.monotonic() + 3
+    while gui.photo is None and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert "Calibration camera" in gui.preview.title()
+    assert "--calibration-only" in received
+    assert "--video" not in received and "--headless" not in received
+    controls = gui.preview.winfo_children()[0]
+    labels = [child.cget("text") for child in controls.winfo_children()]
+    assert "Calibrate / retry (C)" in labels
+    assert not any("Record" in label or "scoring" in label for label in labels)
+    gui.control("q")
+    while gui.running and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert not gui.running
+    assert gui.options["calibration"].get() == str(archive.resolve())
+    assert gui.options["reference_mode"].get() == "saved"
+    assert gui.options["source"].get() == "camera"
+    assert gui.options["headless"].get() is False
+    assert gui.options["confirm_camera"].get() is False
+
+
+def test_coach_abort_and_auto_record_controls(studio, tmp_path, monkeypatch):
+    root, gui = studio
+    monkeypatch.setattr("tango_posture.gui.verify", lambda _: "verified")
+    monkeypatch.setattr("tango_posture.gui.messagebox.askyesno", lambda *args, **kwargs: True)
+    notices = []
+    monkeypatch.setattr("tango_posture.gui.messagebox.showinfo", lambda *args, **kwargs: notices.append(args))
+
+    def run(args, *, display):
+        display.show(np.zeros((240, 320, 3), np.uint8))
+        display.stopped.wait(3)
+        assert display.aborted.is_set()
+        return 0
+
+    monkeypatch.setattr("tango_posture.cli.main", run)
+    gui.start()
+    deadline = time.monotonic() + 3
+    while gui.photo is None and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    gui.auto_record_checkbox.invoke()
+    assert gui.display.auto_recording.is_set()
+    gui.auto_record_checkbox.invoke()
+    assert not gui.display.auto_recording.is_set()
+    gui.display.recording_states.put("recording")
+    gui.pump()
+    assert gui.live_record_button.instate(["disabled"])
+    gui.display.recording_states.put("ready")
+    gui.pump()
+    assert gui.live_record_button.instate(["!disabled"])
+    gui.display.recording_states.put("limit")
+    gui.pump()
+    assert gui.live_record_button.instate(["disabled"])
+    assert {"tp_AUTO_RECORD_START_DELAY", "tp_AUTO_RECORD_STOP_DELAY", "tp_MAX_RECORDINGS"} <= set(gui.settings)
+    archive = tmp_path / "Earlier.tp"
+    archive.write_bytes(b"already saved")
+    gui.saved_practice = archive
+    gui.control("x")
+    while gui.running and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert not gui.running and gui.preview is None
+    assert "aborted" in gui.status.get()
+    assert archive.read_bytes() == b"already saved" and not notices
+
+
 def test_all_tabs_and_setting_edits(studio):
     root, gui = studio
     for group in gui.group_pages:
@@ -86,11 +267,16 @@ def test_markdown_text_has_explicit_contrast_colors(studio):
     assert text.tag_cget("code", "foreground") == "#202124"
 
 
-def test_recording_button_replaces_custom_minimize_controls(studio):
+def test_main_window_has_no_duplicate_coach_or_minimize_controls(studio):
     root, gui = studio
     assert not hasattr(gui, "minimize_button")
-    assert gui.record_button.cget("text") == "Start recording video"
-    assert gui.record_button.instate(["disabled"])
+    assert not hasattr(gui, "record_button")
+    assert not hasattr(gui, "stop_button")
+    footer_labels = [
+        child.cget("text") for child in gui.start_button.master.winfo_children()
+        if child.winfo_class() == "TButton"
+    ]
+    assert footer_labels == ["Open practice coach"]
     menu = root.nametowidget(root.cget("menu"))
     files = root.nametowidget(menu.entrycget(0, "menu"))
     labels = [
@@ -182,6 +368,36 @@ def test_reference_picker_restores_capture_profile_and_resets_confirmation(studi
     assert gui.options["confirm_camera"].get() is False
 
 
+@pytest.mark.parametrize("result,save_file", [(0, True), (2, True), (0, False)])
+def test_quit_popup_names_the_successfully_saved_practice(studio, tmp_path, monkeypatch, result, save_file):
+    root, gui = studio
+    notices = []
+    monkeypatch.setattr(
+        "tango_posture.gui.messagebox.showinfo",
+        lambda title, message, **kwargs: notices.append((title, message, kwargs)),
+    )
+    monkeypatch.setattr(gui.review, "add_report", lambda _: None)
+    practice = tmp_path / "Evening practice.tp"
+    gui.display = GuiDisplay()
+    gui.running = True
+    if save_file:
+        practice.write_bytes(b"saved practice")
+        gui.display.report_ready(practice)
+        gui.pump()
+        assert gui.saved_practice == practice
+        assert not notices
+    gui.events.put(("done", result))
+    gui.pump()
+    if result == 0 and save_file:
+        assert len(notices) == 1
+        title, message, kwargs = notices[0]
+        assert title == "Practice saved"
+        assert practice.name in message and str(practice) in message
+        assert kwargs["parent"] is root
+    else:
+        assert not notices
+
+
 def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     root, gui = studio
     monkeypatch.setattr("tango_posture.gui.verify", lambda _: "verified")
@@ -210,21 +426,19 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert gui.photo is not None
     assert gui.start_button.instate(["disabled"])
     assert not gui.display.recording.is_set()
-    assert gui.record_button.instate(["!disabled"])
+    assert gui.live_record_button.instate(["!disabled"])
     assert gui.live_record_button.cget("text") == "Record (R)"
     labels = [child.cget("text") for child in gui.live_record_button.master.winfo_children()]
     assert "Retry (R)" not in labels
     assert "Start scoring (S)" in labels
     gui.live_record_button.invoke()
     assert gui.display.poll_key() == ord("r")
-    assert gui.record_button.instate(["disabled"])
     assert gui.live_record_button.instate(["disabled"])
     assert Path(received[received.index("--config") + 1]).is_file()
     gui.control("p")
     assert gui.display.poll_key() == ord("p")
     gui.control("e")
     assert gui.display.poll_key() == ord("e")
-    assert gui.record_button.instate(["!disabled"])
     assert gui.live_record_button.instate(["!disabled"])
     gui.control("r")
     assert gui.display.poll_key() == ord("r")
@@ -235,7 +449,6 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert stopped.is_set() and not gui.running
     assert gui.preview is None
     assert gui.start_button.instate(["!disabled"])
-    assert gui.record_button.instate(["disabled"])
     assert "Saved report" in gui.log.get("1.0", "end")
     assert gui.review.report.path == (Path.cwd() / "report_saved.md")
     assert gui.tabs.select() == str(gui.review)
@@ -272,7 +485,7 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
     panel.seek_report_time(1.2)
     root.geometry("840x640")
     root.update()
-    for button in (panel.player.play_button, gui.start_button, gui.stop_button):
+    for button in (panel.player.play_button, gui.start_button):
         assert button.winfo_ismapped()
         assert (
             button.winfo_rooty() + button.winfo_height() <= root.winfo_rooty() + root.winfo_height()

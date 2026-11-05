@@ -132,9 +132,17 @@ Camera device indices are explicit. The application does not silently switch to 
 
 ### Record the reference and start
 
-Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by a twelve-second capture. Review the result, then press A to accept or C to retry. Press S to begin reference-based scoring and session statistics; it does not start video recording. Press R (Record) to start video recording. E stops and saves recording and scoring while leaving the preview open; Q saves and quits. Press R again after E to add the next numbered recording to the same practice archive.
+In **References**, name your reference and click **Open calibration camera**. Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by the configured capture interval (twelve seconds by default). A valid capture saves `calibrations/<name>.tpc` with its raw video, annotated overlay, and `reference.json`. Press C to capture again: a successful calibration replaces the same archive rather than appending recordings. A failed capture leaves the previous valid archive intact. Q closes the calibration camera.
+
+The saved `.tpc` is selected for the next coach run. Confirm physical camera placement before reuse; the coach loads the reference JSON directly from the archive. Press S to begin reference-based scoring and session statistics; it does not start video recording. Press R (Record) to start video recording. E stops and saves recording and scoring while leaving the preview open; Q saves and quits. Press R again after E to add the next numbered recording to the same practice archive.
 
 During practice, P pauses or resumes. E ends and saves the session. Q quits and saves an unfinished session with an explicit stopped status. Ctrl+C and closing the window also stop the run cleanly through the application lifecycle.
+
+**Abort / exit (X)** asks for confirmation, then closes the coach without saving the current recording, overlay, report, or scoring session. Previously saved practice segments are preserved. Abort does not display a saved-file notification.
+
+The coach's **Automatically record songs** checkbox starts a recording after sustained live-microphone music detection, then stops and saves it after sustained detected silence. Subsequent songs append more numbered video/overlay/report segments while the checkbox stays checked. Unchecking it saves an active automatic recording and disables further automatic starts. It requires camera mode, enabled beat tracking, and a working microphone; clock and tap-tempo fallbacks cannot trigger it.
+
+Use **Parameters > Music recording parameters** in the coach or **Settings > Music** in the studio to set the start delay, stop delay, and maximum recordings. Settings changes apply to the next coach run. Short pauses below the stop delay do not split the recording, and manual stopping does not restart recording in the middle of the same detected song. The limit counts manual and automatic recording starts in that run, not old segments already in the archive.
 
 With the current workspace beat-tracking extension enabled, a GUI webcam run also attempts to open the microphone. To run without that input, set `beat_tracking = false` in your TOML file; see Section 23.
 
@@ -885,6 +893,9 @@ The torso-axis drawing (hip midpoint to shoulder midpoint) is a separate image-o
 | `beat_tracking` (`tp_BEAT_TRACKING_ENABLED`) | `true` | Enables local microphone-based beat tracking in the GUI. Set `false` if you do not want microphone input or do not have a usable audio device. |
 | `tango_bpm` (`tp_TANGO_BPM`) | `120.0` BPM | Starting tempo estimate before the live tracker adjusts. If the song is near 100 BPM, entering `100` gives the tracker a closer starting point; it is not a tempo measurement guarantee. |
 | `beat_analysis_seconds` (`tp_BEAT_ANALYSIS_SECONDS`) | `30.0` s | Duration used by the beat tracker's phrase-start analysis. A longer window delays initial lock; a shorter window may provide less evidence. The beat/phrase labels remain heuristic. |
+| `auto_record_start_delay` (`tp_AUTO_RECORD_START_DELAY`) | `1.0` s | Continuous detected music required before an automatic recording begins. Range: 0 to 60 seconds. |
+| `auto_record_stop_delay` (`tp_AUTO_RECORD_STOP_DELAY`) | `3.0` s | Continuous detected silence required before stopping and saving. Range: 0 to 120 seconds. This is in addition to the detector's own sound/silence hysteresis. |
+| `max_recordings` (`tp_MAX_RECORDINGS`) | `10` | Maximum recording starts in one coach run, including manual starts. Range: 1 to 1,000. Existing archive recordings do not count against a new run. |
 
 ### Review & Ollama
 
@@ -910,7 +921,7 @@ This workflow brings the earlier reference/comparison guide into the same search
 
 1. Fix the camera at a level, approximately waist-to-chest height and frame the entire movement area from head to at least one ankle. Keep the camera and lighting consistent.
 2. In **Settings → Camera & view**, select the anatomical side closest to the camera and the direction you face in the original unmirrored image. For example, left side toward the camera and facing image-right means `side = left`, `facing = right`.
-3. Open the coach and press **C**. Use the countdown to settle into the reference you intend to study; remain steady through the capture. Accept only if the quality/coverage result is suitable; otherwise retry after fixing the view.
+3. In **References**, click **Open calibration camera** and press **C**. Use the countdown to settle into the reference you intend to study; remain steady through the capture. Valid captures are saved as a named `.tpc` archive. Retry with C after fixing the view; the next valid capture replaces that file.
 4. Reuse that reference only with the same camera placement, image size, side, facing, and profile. If any of those change, make a new reference rather than comparing unlike setups.
 
 The captured median is a personal experimental baseline, not a model of an ideal dancer. It is reasonable for two teachers or two exercises to use different references.
@@ -918,7 +929,7 @@ The captured median is a personal experimental baseline, not a model of an ideal
 ### Read the overlay and report together
 
 - **Overlay:** use the head horizontal cue and its configured warning as an ear-to-nose image angle; the magenta torso axis and cyan vertical describe image-plane orientation; `Hip offset` is a separate ankle-to-head proxy. Role, embrace, knee, and beat cues are heuristic branches, not validated tango assessments.
-- **Report:** open `practice/<name>.tp` in the Review tab and choose a recording. Each recording has its own Markdown report with metric summaries, event timelines, coverage/unknown information, and metadata for its matching raw and overlay videos. Older standalone Markdown reports remain readable.
+- **Report:** open `practice/<name>.tp` in the Review tab and choose a recording. Each recording has its own Markdown report with metric summaries, event timelines, coverage/unknown information, and metadata for its matching raw and overlay videos. Open `calibrations/<name>.tpc` to inspect the calibration reference JSON, baseline summary, and its raw/overlay videos. Older standalone Markdown reports remain readable.
 - **Replay:** use report timestamps to seek the matching video when a recording is available. If camera frames were dropped or the report is from an older run without frame metadata, treat timestamp seeking as approximate.
 - **Session export:** read `summary.json`, `observations.csv`, and `events.csv` together. The JSON supplies units, reference, configuration, and denominators; CSV alone can be misleading.
 

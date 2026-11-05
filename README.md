@@ -18,9 +18,9 @@ and pose-model setup. Optional report interpretation connects to your configured
 1. **All-Angle Calibration & 360° Pivot / Side-Step Support (`tp_ALLOW_ALL_ANGLES=true`)**
    - Calibrate and practice **facing the camera**, in **side-on profile**, or while executing **side steps (*pasos al costado*), ochos, and 360° pivots** without losing tracking.
    - Uses your central spine axis (midpoint of shoulders to midpoint of hips) when both sides are visible, and seamlessly falls back to the visible side during pivots.
-2. **Guided Audio Calibration & Timestamped Storage (`calibrations/`)**
+2. **Dedicated Calibration Camera & Reference Archives (`calibrations/`)**
    - Pressing `C` speaks **"Calibration starting"**, gives you a **3-second countdown** to get into position, plays a **1-second beep** throughout the 12-second capture window, and announces **"Calibration completed"** (or speaks the specific reason if calibration failed).
-   - Automatically accepts and saves valid calibrations to `calibrations/calibration_<timestamp>_<id>.json` and `calibrations/latest_calibration.json` for instant reuse across sessions (`--calibration latest`).
+   - **References > Open calibration camera** opens a dedicated camera window. A valid capture saves `calibrations/<reference name>.tpc`, containing raw video, overlay video, and `reference.json`. Capturing again with the same name replaces that archive rather than adding recordings; failed captures preserve the previous valid file.
 3. **Head Horizontal Alignment & Neutral Camera Offset**
    - Draws a cyan horizontal reference line from the ear and a live ear-to-nose pitch vector (`Head horiz: +0.0 deg`).
    - Compensates for natural ear-to-nose landmark geometry and camera tilt via `tp_HEAD_NEUTRAL_OFFSET_DEGREES=-12.0` (or auto-zeroes to your calibrated straight posture) and triggers a red **`BAD HEAD ALIGNMENT`** alert when the head drops below `tp_HEAD_DOWN_ANGLE_DEGREES` (`-15.0 deg`) for longer than `tp_HEAD_DOWN_DURATION_SECONDS` (`3.0s`).
@@ -75,39 +75,70 @@ uv run tango-posture
 uv run tango-posture gui
 ```
 
+Startup shows a branded splash screen for three seconds. **Help > About TangoPosture**
+shows the application version and license.
+
 The **Practice** tab selects a camera or video and shows the run log; it also offers
 video analysis without a live preview. **References**
-lets you name a new calibration, choose saved references (including JSON files and
-SQLite records), or define a reference interval in a video. Use **Match reference
+lets you name a calibration and open its dedicated camera window, choose saved
+`.tpc` references (with legacy JSON/SQLite support), or define a reference interval
+in a video. Press **C** in the calibration window to capture or retry, then close
+it. The saved `.tpc` becomes the selected reference; the coach reads its embedded
+`reference.json`. Use **Match reference
 camera settings** to restore the recorded side, facing, resolution, and capture
 profile. Confirm physical camera placement each time you reuse a reference.
 
 **Files & recording** controls model/data paths and the **Practice name**.
 Practices are saved as `practice/<name>.tp`; an existing name appends recordings
 without replacing earlier segments. **New practice name** starts a separate archive.
-**Settings** groups all 58 configuration values into camera/view, quality/calibration,
+**Settings** groups configuration values into camera/view, quality/calibration,
 tracking, head/shoulders, embrace/knees, hip offset, music, and review/Ollama tabs. The Settings menu
 also imports/exports `.env` settings; the File menu imports/exports TOML and saves
 complete practice presets, including filenames and reference choices.
 
 Click **Open practice coach** for a live preview with Calibrate, Accept, Record,
-Start scoring, Pause/resume, Stop recording/save, Beat 1, Skeleton, Torso axis, and Quit/save buttons.
-**C** captures or retries calibration; **R** starts video recording (also available
-as **Start recording video**). **S** starts reference-based scoring and session
+Start scoring, Pause/resume, Stop recording/save, Beat 1, Skeleton, Torso axis, Quit/save,
+and Abort/exit buttons.
+**C** captures or retries calibration; **R / Record** starts video recording in
+the coach window. **S** starts reference-based scoring and session
 statistics, not video recording, and requires an accepted reference. **E** stops
 and saves recording and scoring while keeping the preview open; **Q** saves and
 quits. Press **R** again after **E** to add another recording to the same practice.
 The existing keyboard shortcuts work in this window too. Settings changes apply to
 the next run; closing the coach releases capture and saves reports and recordings.
 
+**Abort / exit (X)** closes the coach and discards the current unsaved video, overlay,
+report, and scoring session. Previously saved segments remain intact; Abort requires
+confirmation and does not show the saved-file popup.
+
+Tick **Automatically record songs** in the coach to record when the live microphone
+detects music and save when it detects a sustained stop. It repeats for subsequent
+songs while checked, appending numbered recordings to the same `.tp` file. Unchecking
+it saves an active automatic recording and stops automation. This option requires
+camera mode, enabled beat tracking, and a usable microphone; it does not use clock
+or tap-tempo fallback as evidence of a song.
+
+Set the following under **Settings > Music** (also accessible from the coach's
+**Parameters > Music recording parameters** menu). Changes apply to the next run:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `auto_record_start_delay` | 1 second | Continuous detected music before starting |
+| `auto_record_stop_delay` | 3 seconds | Continuous detector silence before stopping/saving |
+| `max_recordings` | 10 | Maximum manual or automatic recordings started in one coach run |
+
+Short silent gaps below the stop delay do not split a recording. Song detection is
+heuristic; the configured delays apply after the detector reports music or silence.
+
 The GUI needs a desktop display and Python's Tk support (check with
 `uv run python -m tkinter`). Headless processing continues to use the CLI below.
 
 ### Read reports, replay recordings, and review with Ollama
 
-The **Review** tab opens saved practices automatically. Select a `.tp` archive
+The **Review** tab opens saved practices and calibrations automatically. Select a `.tp` or `.tpc` archive
 from the list or **Open practice**, then choose **Recording 00**, **Recording 01**,
-and so on to load its matching report and videos. **Refresh** finds saved practices
+and so on to load its matching report and videos. A `.tpc` has one **Calibration**
+entry showing its reference values/JSON and raw/overlay videos. **Refresh** finds saved practices and calibrations
 in the selected data directory. Legacy Markdown reports remain readable. Reports have formatted
 headings, search, line wrapping, and clickable timestamps.
 
@@ -183,6 +214,7 @@ On macOS, grant Camera and Microphone access to the terminal/application that la
 | `B` | Manually sync Argentine Tango **Beat 1** / tap tempo (`1..8` phrase counter) |
 | `E` | Stop recording/scoring and save the segment to the `.tp` archive; keep the preview open |
 | `Q` / window close / `Ctrl+C` | Save the current segment and quit |
+| `X` | Confirm Abort, discard the current unsaved recording/scoring session, and exit the coach |
 | `V` | Confirm unmirrored facing direction and enable requested display mirroring |
 | `Y` | Show/hide the torso axis and vertical reference |
 
@@ -245,7 +277,7 @@ Common environment settings:
 ## Saved Artifacts & Output Directories
 
 - **`practice/<name>.tp`**: Portable ZIP archive containing `video_00.mp4`, `overlay_00.mp4`, `report_00.md`, `report_00.metadata.json`, and a manifest. Further recordings increment to `01`, `02`, and beyond, preserving earlier recordings. Observation-only runs have a report but no recorded videos.
-- **`calibrations/`**: Timestamped calibration JSON files (`calibration_<YYYYMMDD_HHMMSS>_<id>.json`) and `latest_calibration.json`. Reuse any saved calibration via `--calibration latest`, a filename in `calibrations/`, or a calibration UUID.
+- **`calibrations/<name>.tpc`**: Calibration ZIP archive containing `reference.json`, `video_00.mp4`, `overlay_00.mp4`, a calibration summary, metadata, and manifest. A new accepted capture replaces the named archive. Reuse via `--calibration latest`, a `.tpc` path, or UUID; legacy JSON references remain readable.
 - **Legacy `reports/` and `videos/`**: Existing loose files remain untouched and readable; new practice reports and recordings are archived instead.
 - **`data/tango.sqlite3` & `data/exports/SESSION_ID/`**: SQLite session storage (`summary.json`, `observations.csv`, `events.csv`).
 
@@ -257,7 +289,7 @@ Common environment settings:
 # List saved calibrations (from both calibrations/ and SQLite storage)
 uv run tango-posture calibrations list
 
-# Reuse the most recent calibration in calibrations/latest_calibration.json
+# Reuse the most recent .tpc calibration (with legacy JSON fallback)
 uv run tango-posture run --camera 0 --side left --facing right \
   --calibration latest --confirm-camera-unchanged
 

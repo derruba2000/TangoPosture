@@ -14,7 +14,7 @@ from tkinter import font as tkfont
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .archive import PracticeArchive, practice_directory
+from .archive import PracticeArchive, calibration_directory, practice_directory
 from .config import Config
 from .ollama import OllamaClient
 from .replay import ReplayPlayer, parse_time
@@ -388,8 +388,9 @@ class ReviewPanel(ttk.Frame):
     def refresh(self):
         folder = report_directory(self.config_provider().data_dir)
         practice_folder = practice_directory(self.config_provider().data_dir)
+        calibration_folder = calibration_directory(self.config_provider().data_dir)
         paths = sorted(
-            [*practice_folder.glob("*.tp"), *folder.glob("report_*.md")],
+            [*practice_folder.glob("*.tp"), *calibration_folder.glob("*.tpc"), *folder.glob("report_*.md")],
             key=lambda p: p.stat().st_mtime_ns, reverse=True,
         )
         if not paths and (folder / "latest_report.md").exists():
@@ -401,7 +402,7 @@ class ReviewPanel(ttk.Frame):
 
     def open_report(self):
         path = filedialog.askopenfilename(
-            parent=self, filetypes=[("Tango practice", "*.tp"), ("Legacy report", "*.md")],
+            parent=self, filetypes=[("Tango practice / calibration", "*.tp *.tpc"), ("Legacy report", "*.md")],
         )
         if path:
             self.load_report(Path(path))
@@ -417,7 +418,7 @@ class ReviewPanel(ttk.Frame):
             self.load_report(path)
 
     def load_report(self, path: Path, archived: bool = False):
-        if path.suffix.lower() == ".tp":
+        if path.suffix.lower() in (".tp", ".tpc"):
             archive = PracticeArchive(path)
             if not archive.manifest["segments"]:
                 archive.close()
@@ -428,7 +429,8 @@ class ReviewPanel(ttk.Frame):
                 self.archive.close()
             self.archive = archive
             self.segment_paths = {
-                f"Recording {segment['index']:02d}": archive.report(segment["index"])
+                ("Calibration" if archive.manifest.get("kind") == "calibration"
+                 else f"Recording {segment['index']:02d}"): archive.report(segment["index"])
                 for segment in archive.manifest["segments"]
             }
             self.segment_combo.configure(values=list(self.segment_paths), state="readonly")

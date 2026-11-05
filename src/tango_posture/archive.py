@@ -4,9 +4,12 @@ import json
 import shutil
 import stat
 import threading
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
+
+from .domain import Calibration
 
 _locks: dict[Path, threading.RLock] = {}
 _locks_guard = threading.Lock()
@@ -19,6 +22,14 @@ def _archive_lock(path: Path):
 
 def practice_directory(data_dir: str) -> Path:
     return Path("practice") if data_dir == "data" else Path(data_dir) / "practice"
+
+
+def calibration_directory(data_dir: str) -> Path:
+    return Path("calibrations") if data_dir == "data" else Path(data_dir) / "calibrations"
+
+
+def calibration_path(folder: Path, name: str) -> Path:
+    return practice_path(folder, name.removesuffix(".tpc")).with_suffix(".tpc")
 
 
 def practice_path(folder: Path, name: str) -> Path:
@@ -37,6 +48,11 @@ def read_manifest(path: Path) -> dict:
             segments = data.get("segments")
             if not isinstance(segments, list):
                 raise TypeError("Invalid practice segment list")
+            if path.suffix.lower() == ".tpc" and (
+                data.get("kind") != "calibration" or data.get("reference") != "reference.json"
+                or "reference.json" not in archive.namelist() or len(segments) != 1
+            ):
+                raise ValueError("Invalid calibration archive")
             for index, segment in enumerate(segments):
                 if not isinstance(segment, dict) or segment.get("index") != index:
                     raise ValueError("Invalid practice segment index")
@@ -108,6 +124,55 @@ def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path 
     finally:
         temporary.unlink(missing_ok=True)
     return index
+
+
+def save_calibration_archive(path: Path, reference: Calibration, video: Path,
+                             overlay: Path, timestamps: list[float]) -> None:
+    segment = {
+        "index": 0, "video": "video_00.mp4", "overlay": "overlay_00.mp4",
+        "report": "report_00.md", "metadata": "report_00.metadata.json",
+    }
+    manifest = {
+        "version": 1, "kind": "calibration", "name": reference.name,
+        "reference": "reference.json", "segments": [segment],
+    }
+    metadata = {
+        "version": 1, "report_file": segment["report"], "raw_video": segment["video"],
+        "overlay_video": segment["overlay"], "source_video": None,
+        "frame_timestamps": timestamps,
+    }
+    report = (
+        f"# Calibration: {reference.name}\n\n"
+        f"Created: {reference.created_at_utc}\n\n"
+        "## Reference baseline\n\n| Metric | Value |\n| --- | --- |\n"
+        + "".join(f"| {metric} | {value} |\n" for metric, value in reference.baseline.items())
+        + "\n## Calibration reference JSON\n\n```json\n"
+        + json.dumps(asdict(reference), indent=2, allow_nan=False) + "\n```\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _archive_lock(path):
+        with NamedTemporaryFile(dir=path.parent, suffix=".tpc.tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as output:
+                output.write(video, segment["video"], compress_type=ZIP_STORED)
+                output.write(overlay, segment["overlay"], compress_type=ZIP_STORED)
+                output.writestr("reference.json", json.dumps(asdict(reference), allow_nan=False))
+                output.writestr(segment["report"], report)
+                output.writestr(segment["metadata"], json.dumps(metadata, allow_nan=False))
+                output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def read_calibration_archive(path: Path) -> Calibration:
+    read_manifest(path)
+    try:
+        with ZipFile(path) as archive:
+            return Calibration(**json.loads(archive.read("reference.json")))
+    except (BadZipFile, KeyError, TypeError) as error:
+        raise ValueError("Invalid calibration reference JSON") from error
 
 
 def store_analysis(path: Path, analysis: Path) -> None:

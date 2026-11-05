@@ -110,6 +110,17 @@ class Storage:
                 [{**e, "session_id": identifier} for e in events],
             )
 
+    def discard_running_session(self, identifier: str) -> None:
+        with self.db:
+            row = self.db.execute("SELECT status FROM sessions WHERE id=?", (identifier,)).fetchone()
+            if row is None:
+                return
+            if row["status"] != "running":
+                raise ValueError("Cannot discard a saved session")
+            self.db.execute("DELETE FROM events WHERE session_id=?", (identifier,))
+            self.db.execute("DELETE FROM observations WHERE session_id=?", (identifier,))
+            self.db.execute("DELETE FROM sessions WHERE id=? AND status='running'", (identifier,))
+
     def list(self, table: str) -> list[dict]:
         if table not in ("sessions", "calibrations"):
             raise ValueError("Invalid table")

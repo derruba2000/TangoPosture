@@ -9,8 +9,9 @@ import tkinter as tk
 import tomllib
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import partial
+from importlib.metadata import PackageNotFoundError, version
 from importlib.resources import files as package_files
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -62,11 +63,16 @@ class PracticeGUI:
         self.display: GuiDisplay | None = None
         self.preview: tk.Toplevel | None = None
         self.help_window: tk.Toplevel | None = None
+        self.about_window: tk.Toplevel | None = None
+        self.splash_window: tk.Toplevel | None = None
+        self.splash_timer: str | None = None
         self.help_view: MarkdownView | None = None
         self.help_outline: ttk.Treeview | None = None
         self.help_positions: dict[str, str] = {}
         self.exit_requested = False
         self.running = False
+        self.saved_practice: Path | None = None
+        self.calibration_run = False
         self.photo: tk.PhotoImage | None = None
         logo_resource = package_files("tango_posture").joinpath(
             "TangoPosture_logo_under_1MB.png"
@@ -82,6 +88,8 @@ class PracticeGUI:
         logo = tk.PhotoImage(data=logo_data)
         logo_scale = max(1, (logo.width() + 63) // 64)
         self.brand_logo = logo.subsample(logo_scale, logo_scale)
+        splash_scale = max(1, (logo.width() + 255) // 256)
+        self.splash_logo = logo.subsample(splash_scale, splash_scale)
         root.iconphoto(True, self.brand_logo)
         self.status = tk.StringVar(value="Set up your practice, then open the live coach.")
         self.settings: dict[str, tk.Variable] = {}
@@ -143,15 +151,6 @@ class PracticeGUI:
             footer, text="Open practice coach", command=lambda: self._guard(self.start)
         )
         self.start_button.pack(side="right", padx=(12, 0))
-        self.record_button = ttk.Button(
-            footer, text="Start recording video", state="disabled",
-            command=self.start_recording,
-        )
-        self.record_button.pack(side="right", padx=(12, 0))
-        self.stop_button = ttk.Button(
-            footer, text="Stop / save", state="disabled", command=lambda: self.control("q")
-        )
-        self.stop_button.pack(side="right")
         ttk.Label(footer, textvariable=self.status, wraplength=650).pack(
             side="left", fill="x", expand=True
         )
@@ -230,7 +229,7 @@ class PracticeGUI:
     def _references(self, page):
         for row, (value, label) in enumerate(
             (
-                ("new", "Create a new reference with the Calibrate button"),
+                ("new", "Create a new reference in the calibration camera"),
                 ("saved", "Reuse a saved reference"),
                 ("interval", "Use a stable interval from the input video"),
             )
@@ -238,7 +237,7 @@ class PracticeGUI:
             ttk.Radiobutton(
                 page, text=label, variable=self.options["reference_mode"], value=value
             ).grid(row=row, column=0, columnspan=3, sticky="w", pady=6)
-        ttk.Label(page, text="Saved reference (or type latest, a UUID, or a JSON path)").grid(
+        ttk.Label(page, text="Saved reference (.tpc, legacy JSON, latest, or UUID)").grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(15, 6)
         )
         self.reference_combo = ttk.Combobox(page, textvariable=self.options["calibration"])
@@ -248,11 +247,16 @@ class PracticeGUI:
         )
         ttk.Button(
             page,
-            text="Browse JSON...",
+            text="Browse reference...",
             command=lambda: self.browse(self.options["calibration"], "reference"),
         ).grid(row=4, column=2, padx=10)
         actions = ttk.Frame(page)
         actions.grid(row=5, column=0, columnspan=3, sticky="w", pady=12)
+        self.calibration_button = ttk.Button(
+            actions, text="Open calibration camera",
+            command=lambda: self._guard(partial(self.start, calibration_only=True)),
+        )
+        self.calibration_button.pack(side="left", padx=(0, 10))
         ttk.Button(
             actions, text="Refresh references", command=lambda: self._guard(self.refresh_references)
         ).pack(side="left")
@@ -317,8 +321,65 @@ class PracticeGUI:
         menu.add_cascade(label="Settings", menu=settings)
         help_menu = tk.Menu(menu, tearoff=False)
         help_menu.add_command(label="Search & browse Tango Posture Manual", command=self.open_help)
+        help_menu.add_separator()
+        help_menu.add_command(label="About TangoPosture", command=self.open_about)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.configure(menu=menu)
+
+    def show_splash(self):
+        if self.splash_window is not None:
+            return
+        self.root.withdraw()
+        window = self.splash_window = tk.Toplevel(self.root)
+        window.title("TangoPosture")
+        window.overrideredirect(True)
+        width, height = 440, 380
+        left = max(0, (window.winfo_screenwidth() - width) // 2)
+        top = max(0, (window.winfo_screenheight() - height) // 2)
+        window.geometry(f"{width}x{height}+{left}+{top}")
+        content = ttk.Frame(window, padding=24)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, image=self.splash_logo).pack(expand=True)
+        ttk.Label(content, text="TangoPosture", font=("Helvetica", 24, "bold")).pack(pady=(12, 0))
+        window.lift()
+        self.splash_timer = self.root.after(3000, self.finish_splash)
+
+    def finish_splash(self):
+        self.splash_timer = None
+        if self.splash_window is not None:
+            self.splash_window.destroy()
+            self.splash_window = None
+        self.root.deiconify()
+        self.root.lift()
+
+    def open_about(self):
+        if self.about_window is not None and self.about_window.winfo_exists():
+            self.about_window.deiconify()
+            self.about_window.lift()
+            self.about_window.focus_set()
+            return
+        try:
+            app_version = version("tango-posture")
+        except PackageNotFoundError:
+            app_version = "development"
+        window = self.about_window = tk.Toplevel(self.root)
+        window.title("About TangoPosture")
+        window.transient(self.root)
+        window.resizable(False, False)
+        window.iconphoto(True, self.brand_logo)
+        content = ttk.Frame(window, padding=24)
+        content.pack(fill="both", expand=True)
+        ttk.Label(content, image=self.brand_logo).pack(pady=(0, 12))
+        ttk.Label(content, text="TangoPosture", font=("Helvetica", 20, "bold")).pack()
+        ttk.Label(content, text=f"Version {app_version}").pack(pady=(6, 0))
+        ttk.Label(content, text="License: Apache-2.0").pack(pady=(6, 12))
+        ttk.Label(
+            content, text="Experimental movement observation, not a medical assessment.",
+            wraplength=350, justify="center",
+        ).pack()
+        ttk.Button(content, text="Close", command=window.withdraw).pack(pady=(18, 0))
+        window.protocol("WM_DELETE_WINDOW", window.withdraw)
+        window.bind("<Escape>", lambda _: window.withdraw())
 
     def open_help(self):
         if self.help_window and self.help_window.winfo_exists():
@@ -418,7 +479,7 @@ class PracticeGUI:
             types = {
                 "video": [("Video", "*.mp4 *.mov *.avi *.mkv")],
                 "model": [("Pose model", "*.task")],
-                "reference": [("Reference JSON", "*.json")],
+                "reference": [("Calibration archive", "*.tpc"), ("Legacy reference JSON", "*.json")],
             }
             path = filedialog.askopenfilename(
                 parent=self.root, filetypes=[*types[kind], ("All files", "*")]
@@ -444,7 +505,7 @@ class PracticeGUI:
                     refs[row["id"]] = (row["name"], row["id"])
             finally:
                 storage.close()
-        for path in sorted(folder.glob("calibration_*.json"), reverse=True):
+        for path in sorted([*folder.glob("calibration_*.json"), *folder.glob("*.tpc")], reverse=True):
             try:
                 ref = load_calibration_file(str(path), folder)
                 if ref:
@@ -536,10 +597,14 @@ class PracticeGUI:
     def save_toml(self):
         self._save(export_toml(self.config()), ".toml")
 
-    def start(self):
+    def start(self, calibration_only: bool = False):
         if self.running:
             return
         cfg, options = self.config(), self.practice_options()
+        if calibration_only:
+            options = replace(
+                options, source="camera", video="", headless=False, reference_mode="new",
+            )
         options.arguments(cfg, Path("settings.toml"))  # Validate before opening a camera.
         verify(Path(cfg.model_path))
         archive = practice_path(practice_directory(cfg.data_dir), options.practice_name)
@@ -547,16 +612,19 @@ class PracticeGUI:
             read_manifest(archive)
         self.review.player.pause()
         self.display = GuiDisplay()
+        self.saved_practice = None
+        self.calibration_run = calibration_only
         if not options.headless:
-            self._preview()
+            self._preview(calibration_only)
         self.start_button.configure(state="disabled")
-        self.record_button.configure(
-            state="disabled" if options.headless else "normal"
+        self.calibration_button.configure(state="disabled")
+        if not options.headless and not calibration_only:
+            self.live_record_button.configure(state="normal")
+        self.status.set(
+            "Calibration camera open. Press C to capture the reference."
+            if calibration_only else
+            "Coach open. Use the live controls; setting edits apply to your next run."
         )
-        if not options.headless:
-            self.live_record_button.configure(state=self.record_button.cget("state"))
-        self.stop_button.configure(state="normal")
-        self.status.set("Coach open. Use the live controls; setting edits apply to your next run.")
         display = self.display
         self.running = True
 
@@ -579,7 +647,10 @@ class PracticeGUI:
                     path = Path(directory) / "settings.toml"
                     path.write_text(export_toml(cfg))
                     with redirect_stdout(Log()), redirect_stderr(Log()):
-                        result = main(options.arguments(cfg, path), display=display)
+                        arguments = options.arguments(cfg, path)
+                        if calibration_only:
+                            arguments.append("--calibration-only")
+                        result = main(arguments, display=display)
             except Exception as error:  # noqa: BLE001 - worker boundary: report and restore controls
                 events.put(("log", f"Practice error: {error}\n"))
             finally:
@@ -592,24 +663,25 @@ class PracticeGUI:
     def start_recording(self):
         if (
             self.running and self.display and not self.display.stopped.is_set()
-            and not self.record_button.instate(["disabled"])
+            and self.preview is not None
+            and not self.calibration_run
+            and not self.live_record_button.instate(["disabled"])
         ):
             self.display.request("r")
-            self.record_button.configure(state="disabled")
-            if self.preview is not None:
-                self.live_record_button.configure(state="disabled")
+            self.live_record_button.configure(state="disabled")
             self.status.set("Recording video. Stop / save finishes and saves the recordings.")
 
-    def _preview(self):
+    def _preview(self, calibration_only: bool = False):
         self.preview = tk.Toplevel(self.root)
-        self.preview.title("TangoPosture  /  Live coach")
+        self.preview.title("TangoPosture  /  Calibration camera" if calibration_only else "TangoPosture  /  Live coach")
         self.preview.iconphoto(True, self.brand_logo)
         self.preview.geometry("1100x850")
         self.preview.minsize(760, 560)
         controls = ttk.Frame(self.preview, padding=8)
         controls.pack(fill="x")
-        for i, (key, label) in enumerate(
-            (
+        actions = (
+            (("c", "Calibrate / retry"), ("v", "Skeleton"), ("y", "Torso axis"), ("q", "Close / save"))
+            if calibration_only else (
                 ("c", "Calibrate"),
                 ("a", "Accept"),
                 ("r", "Record"),
@@ -620,8 +692,10 @@ class PracticeGUI:
                 ("v", "Skeleton / confirm view"),
                 ("y", "Torso axis"),
                 ("q", "Quit / save"),
+                ("x", "Abort / exit"),
             )
-        ):
+        )
+        for i, (key, label) in enumerate(actions):
             button = ttk.Button(
                 controls, text=f"{label} ({key.upper()})", command=partial(self.control, key)
             )
@@ -630,6 +704,24 @@ class PracticeGUI:
                 self.live_record_button = button
         for i in range(5):
             controls.columnconfigure(i, weight=1)
+        if not calibration_only:
+            self.auto_song_recording = tk.BooleanVar(value=False)
+            self.auto_record_checkbox = ttk.Checkbutton(
+                controls, text="Automatically record songs", variable=self.auto_song_recording,
+                command=self.toggle_auto_recording,
+            )
+            self.auto_record_checkbox.grid(row=2, column=1, columnspan=4, padx=3, pady=3, sticky="w")
+            if not self.config().beat_tracking or self.options["source"].get() != "camera":
+                self.auto_record_checkbox.configure(state="disabled")
+            menu = tk.Menu(self.preview)
+            actions_menu = tk.Menu(menu, tearoff=False)
+            actions_menu.add_command(label="Quit / save", command=lambda: self.control("q"))
+            actions_menu.add_command(label="Abort without saving", command=lambda: self.control("x"))
+            menu.add_cascade(label="Practice", menu=actions_menu)
+            parameters_menu = tk.Menu(menu, tearoff=False)
+            parameters_menu.add_command(label="Music recording parameters...", command=self.open_music_parameters)
+            menu.add_cascade(label="Parameters", menu=parameters_menu)
+            self.preview.configure(menu=menu)
         self.preview_label = tk.Label(
             self.preview,
             background="#151a1d",
@@ -642,24 +734,44 @@ class PracticeGUI:
             "<KeyPress>",
             lambda event: (
                 self.control(event.char.lower())
-                if event.char and event.char.lower() in "carspebvyq"
+                if event.char and event.char.lower() in ("cvyq" if calibration_only else "carspebvyqx")
                 else None
             ),
         )
         self.preview.focus_set()
 
+    def open_music_parameters(self):
+        self.select_group("Music")
+        self.root.lift()
+        self.root.focus_set()
+
+    def toggle_auto_recording(self):
+        if self.display is not None:
+            if self.auto_song_recording.get():
+                self.display.auto_recording.set()
+            else:
+                self.display.auto_recording.clear()
+
     def control(self, key):
         if self.display:
+            if key == "x" and not messagebox.askyesno(
+                "Abort practice?",
+                "Discard the current unsaved recording and close the coach? Previously saved segments will remain.",
+                parent=self.preview or self.root,
+            ):
+                return
             if key == "r":
                 self.start_recording()
                 return
             self.display.request(key)
-            if key in ("e", "q"):
+            if key in ("e", "q", "x"):
                 state = "normal" if key == "e" else "disabled"
-                self.record_button.configure(state=state)
-                if self.preview is not None:
+                if self.preview is not None and not self.calibration_run:
                     self.live_record_button.configure(state=state)
-                self.status.set("Saving recordings and practice outputs...")
+                self.status.set(
+                    "Aborting practice without saving..." if key == "x"
+                    else "Saving recordings and practice outputs..."
+                )
 
     def append_log(self, text):
         self.log.configure(state="normal")
@@ -669,6 +781,16 @@ class PracticeGUI:
 
     def pump(self):
         if self.display is not None:
+            recording_state = None
+            while True:
+                try:
+                    recording_state = self.display.recording_states.get_nowait()
+                except queue.Empty:
+                    break
+            if recording_state is not None and self.preview is not None and not self.calibration_run:
+                self.live_record_button.configure(
+                    state="normal" if recording_state == "ready" else "disabled"
+                )
             latest_practice = None
             while True:
                 try:
@@ -676,6 +798,8 @@ class PracticeGUI:
                 except queue.Empty:
                     break
             if latest_practice:
+                if latest_practice.suffix.lower() in (".tp", ".tpc"):
+                    self.saved_practice = latest_practice
                 self.review.guard(partial(self.review.add_report, latest_practice))
                 self.tabs.select(self.review)
         if self.display and self.preview:
@@ -707,6 +831,7 @@ class PracticeGUI:
                 self.append_log(value)
             elif kind == "done":
                 self.running = False
+                was_aborted = self.display is not None and self.display.aborted.is_set()
                 if self.display:
                     latest_report = None
                     while True:
@@ -715,6 +840,8 @@ class PracticeGUI:
                         except queue.Empty:
                             break
                     if latest_report:
+                        if latest_report.suffix.lower() in (".tp", ".tpc"):
+                            self.saved_practice = latest_report
                         self.review.guard(partial(self.review.add_report, latest_report))
                         self.tabs.select(self.review)
                 if self.preview:
@@ -722,14 +849,26 @@ class PracticeGUI:
                     self.preview = None
                 self.display = None
                 self.start_button.configure(state="normal")
-                self.record_button.configure(state="disabled")
-                self.stop_button.configure(state="disabled")
+                self.calibration_button.configure(state="normal")
                 self.status.set(
+                    "Practice aborted. The unsaved recording was discarded." if was_aborted else
                     "Practice finished. See the practice log for saved outputs."
                     if value == 0
                     else "Practice could not complete. See the practice log for the error."
                 )
                 self._guard(self.refresh_references)
+                if self.calibration_run and value == 0 and self.saved_practice is not None:
+                    self.options["calibration"].set(str(self.saved_practice))
+                    self.options["reference_mode"].set("saved")
+                    self.options["headless"].set(False)
+                    self._guard(self.match_reference)
+                if not was_aborted and value == 0 and self.saved_practice is not None and self.saved_practice.is_file():
+                    title = "Calibration saved" if self.calibration_run else "Practice saved"
+                    messagebox.showinfo(
+                        title,
+                        f"{title}: {self.saved_practice.name}\n\nSaved to: {self.saved_practice}",
+                        parent=self.root,
+                    )
                 if self.exit_requested:
                     self.review.close()
                     self.root.destroy()
@@ -742,6 +881,9 @@ class PracticeGUI:
             self.control("q")
         else:
             self.root.after_cancel(self.timer)
+            if self.splash_timer is not None:
+                self.root.after_cancel(self.splash_timer)
+                self.splash_timer = None
             self.review.close()
             self.root.destroy()
 
@@ -753,6 +895,8 @@ def launch(cfg: Config) -> int:
         raise RuntimeError(
             "The desktop GUI requires a graphical display and Tk. Use the run subcommand for CLI/headless practice."
         ) from error
-    PracticeGUI(root, cfg)
+    root.withdraw()
+    gui = PracticeGUI(root, cfg)
+    gui.show_splash()
     root.mainloop()
     return 0

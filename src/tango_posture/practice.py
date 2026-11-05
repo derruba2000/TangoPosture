@@ -118,7 +118,10 @@ class GuiDisplay:
         self.frames: queue.Queue = queue.Queue(maxsize=1)
         self.keys: queue.SimpleQueue[int] = queue.SimpleQueue()
         self.stopped = threading.Event()
+        self.aborted = threading.Event()
         self.recording = threading.Event()
+        self.auto_recording = threading.Event()
+        self.recording_states: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.reports: queue.SimpleQueue[Path] = queue.SimpleQueue()
 
     def show(self, image: Any) -> None:
@@ -129,12 +132,17 @@ class GuiDisplay:
         self.frames.put_nowait(image)
 
     def request(self, key: str) -> None:
-        if key == "q":
+        if key == "x":
+            self.aborted.set()
+            self.stopped.set()
+        elif key == "q":
             self.stopped.set()
         else:
             self.keys.put(ord(key))
 
     def poll_key(self, quit_only: bool = False) -> int:
+        if self.aborted.is_set():
+            return ord("x")
         if self.stopped.is_set():
             return ord("q")
         if not quit_only:

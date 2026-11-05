@@ -1,9 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from zipfile import ZipFile
 
 import pytest
 
-from tango_posture.archive import PracticeArchive, append_segment, read_manifest
+from tango_posture.archive import (
+    PracticeArchive,
+    append_segment,
+    read_manifest,
+    save_calibration_archive,
+)
+from tango_posture.calibration import load_calibration_file, save_calibration_file
 from tango_posture.review import read_report, save_analysis, saved_analyses
 
 
@@ -93,3 +100,48 @@ def test_concurrent_appends_do_not_replace_other_segments(tmp_path):
                    for _ in range(8)]
         assert sorted(future.result() for future in futures) == list(range(8))
     assert len(read_manifest(archive)["segments"]) == 8
+
+
+def test_calibration_archive_replaces_all_media_and_loads_its_reference(tmp_path, reference):
+    archive = tmp_path / "My reference.tpc"
+    raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+    for index in range(2):
+        current = replace(reference, name=f"Reference {index}")
+        raw.write_bytes(f"raw {index}".encode())
+        overlay.write_bytes(f"overlay {index}".encode())
+        save_calibration_archive(archive, current, raw, overlay, [0.1, 0.2])
+        assert load_calibration_file(str(archive)) == current
+    with ZipFile(archive) as stored:
+        assert stored.read("video_00.mp4") == b"raw 1"
+        assert stored.read("overlay_00.mp4") == b"overlay 1"
+        assert "video_01.mp4" not in stored.namelist()
+        assert len(stored.namelist()) == len(set(stored.namelist())) == 6
+    replay = PracticeArchive(archive)
+    try:
+        assert "Reference 1" in read_report(replay.report(0)).markdown
+    finally:
+        replay.close()
+
+
+def test_failed_calibration_save_keeps_the_previous_archive(tmp_path, reference):
+    archive = tmp_path / "Reference.tpc"
+    raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+    raw.write_bytes(b"raw")
+    overlay.write_bytes(b"overlay")
+    save_calibration_archive(archive, reference, raw, overlay, [0.1])
+    before = archive.read_bytes()
+    with pytest.raises(FileNotFoundError):
+        save_calibration_archive(archive, reference, tmp_path / "missing.mp4", overlay, [0.1])
+    assert archive.read_bytes() == before
+
+
+def test_latest_and_uuid_reference_loading_prefer_new_archives(tmp_path, reference):
+    save_calibration_file(reference, tmp_path)
+    current = replace(reference, id="archive-reference", name="New reference")
+    archive = tmp_path / "Reference.tpc"
+    raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
+    raw.write_bytes(b"raw")
+    overlay.write_bytes(b"overlay")
+    save_calibration_archive(archive, current, raw, overlay, [0.0])
+    assert load_calibration_file("latest", tmp_path) == current
+    assert load_calibration_file(current.id, tmp_path) == current

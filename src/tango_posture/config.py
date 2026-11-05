@@ -104,6 +104,9 @@ class Config(BaseModel):
     beat_tracking: bool = True
     tango_bpm: float = Field(default=120.0, gt=20, le=240)
     beat_analysis_seconds: float = Field(default=30.0, gt=0)
+    auto_record_start_delay: float = Field(default=1.0, ge=0, le=60)
+    auto_record_stop_delay: float = Field(default=3.0, ge=0, le=120)
+    max_recordings: int = Field(default=10, ge=1, le=1000)
     role_assign_ms: float = Field(default=300.0, ge=0)
     role_hold_ms: float = Field(default=5000.0, ge=0)
     shoulder_tension_duration: float = Field(default=1.0, gt=0)
@@ -216,7 +219,10 @@ SETTING_GROUPS = {
         "axis_curve_clear_duration",
         "axis_neutral_offset",
     ),
-    "Music": ("beat_tracking", "tango_bpm", "beat_analysis_seconds"),
+    "Music": (
+        "beat_tracking", "tango_bpm", "beat_analysis_seconds",
+        "auto_record_start_delay", "auto_record_stop_delay", "max_recordings",
+    ),
     "Review & Ollama": (
         "replay_audio",
         "ollama_base_url",

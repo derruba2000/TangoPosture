@@ -40,6 +40,9 @@ def test_full_environment_and_toml_round_trip(tmp_path):
         data_dir="my sessions",
         head_forward={"entry": 0.2, "clear": 0.1},
         axis_curve_entry=0.1,
+        auto_record_start_delay=2.0,
+        auto_record_stop_delay=5.0,
+        max_recordings=3,
     )
     env = tmp_path / ".env"
     env.write_text(export_dotenv(cfg))

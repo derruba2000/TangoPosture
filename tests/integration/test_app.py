@@ -327,6 +327,227 @@ def test_archive_save_failure_preserves_recordings_and_closes_capture(tmp_path, 
         storage.close()
 
 
+def test_calibration_window_capture_replaces_one_archive_on_retry(tmp_path, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def __init__(self):
+            super().__init__()
+            self.saved = []
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown in (1, 158):
+                self.request("c")
+            if app.saved_calibration_path and app.reference.id not in self.saved:
+                self.saved.append(app.reference.id)
+            if self.shown == 316:
+                self.request("q")
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    display = Buttons()
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(count=320),
+        estimator=FakeEstimator(), display=display, calibration_only=True, name="Reference",
+    )
+    try:
+        app.run()
+        assert len(display.saved) == 2
+        assert list((tmp_path / "calibrations").glob("*.tpc")) == [app.calibration_file]
+        assert not list((tmp_path / "calibrations").glob("*.json"))
+        assert not (tmp_path / "practice").exists()
+        loaded = load_calibration_file(str(app.calibration_file))
+        assert loaded.id == display.saved[-1]
+        replay = PracticeArchive(app.calibration_file)
+        try:
+            for name in ("video_00.mp4", "overlay_00.mp4"):
+                video = cv2.VideoCapture(str(replay.folder / name))
+                assert video.isOpened()
+                assert video.get(cv2.CAP_PROP_FRAME_COUNT) == 120
+                video.release()
+        finally:
+            replay.close()
+    finally:
+        storage.close()
+
+
+@pytest.mark.parametrize("save_first", [False, True])
+def test_abort_discards_unsaved_video_but_keeps_saved_segments(tmp_path, cfg, reference, monkeypatch, save_first):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown == 1 or (save_first and self.shown == 5):
+                self.request("r")
+            if self.shown == 2 or (save_first and self.shown == 6):
+                self.request("s")
+            if save_first and self.shown == 3:
+                self.request("e")
+            if self.shown == 75:
+                self.request("x")
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    storage.save_calibration(reference)
+    capture, estimator = FakeCapture(count=80), FakeEstimator()
+    app = Application(
+        cfg, storage, video="fixture", reference=reference, capture=capture,
+        estimator=estimator, display=Buttons(),
+    )
+    try:
+        app.run()
+        assert app.aborted and capture.closed and estimator.closed
+        assert not app.workspace_path.exists()
+        if save_first:
+            assert len(read_manifest(app.practice_file)["segments"]) == 1
+            assert len(storage.list("sessions")) == 1
+            assert storage.list("sessions")[0]["status"] == "completed"
+        else:
+            assert not app.practice_file.exists()
+            assert not storage.list("sessions")
+        assert not (tmp_path / "reports").exists()
+    finally:
+        storage.close()
+
+
+def test_auto_recording_repeats_songs_with_delays_and_limit(tmp_path, cfg, monkeypatch):
+    from tango_posture.beat import BeatTracker
+
+    cfg.data_dir = str(tmp_path)
+    cfg.auto_record_start_delay = 1
+    cfg.auto_record_stop_delay = 2
+    cfg.max_recordings = 2
+    storage = Storage(tmp_path)
+    display = GuiDisplay()
+    display.auto_recording.set()
+    app = Application(cfg, storage, display=display)
+    app.beat_tracker = BeatTracker(enable_audio=False)
+    app.beat_tracker.using_live_stream = True
+    stops = []
+    monkeypatch.setattr(app, "finish", lambda timestamp, status: stops.append(timestamp))
+    try:
+        app.update_auto_recording(True, 0)
+        app.update_auto_recording(True, 0.9)
+        assert not app.recording
+        app.update_auto_recording(True, 1)
+        assert app.recording
+        app.update_auto_recording(False, 4)
+        app.update_auto_recording(True, 5)
+        assert app.recording and not stops
+        app.update_auto_recording(False, 7)
+        app.update_auto_recording(False, 9)
+        assert not app.recording and stops == [9]
+        app.update_auto_recording(True, 10)
+        app.update_auto_recording(True, 11)
+        assert app.recording and app.recordings_started == 2
+        app.update_auto_recording(False, 12)
+        app.update_auto_recording(False, 14)
+        app.update_auto_recording(True, 15)
+        app.update_auto_recording(True, 16)
+        assert not app.recording and app.recordings_started == 2
+        assert stops == [9, 14]
+    finally:
+        import shutil
+
+        shutil.rmtree(app.workspace_path)
+        storage.close()
+
+
+def test_auto_recording_requires_live_microphone_and_stops_when_unchecked(tmp_path, cfg, monkeypatch):
+    from tango_posture.beat import BeatTracker
+
+    cfg.data_dir = str(tmp_path)
+    cfg.auto_record_start_delay = 0
+    storage = Storage(tmp_path)
+    display = GuiDisplay()
+    display.auto_recording.set()
+    app = Application(cfg, storage, display=display)
+    app.beat_tracker = BeatTracker(enable_audio=False)
+    stops = []
+    monkeypatch.setattr(app, "finish", lambda *args: stops.append(True))
+    try:
+        app.update_auto_recording(True, 0)
+        assert not app.recording
+        app.beat_tracker.using_live_stream = True
+        app.update_auto_recording(True, 1)
+        assert app.recording
+        display.auto_recording.clear()
+        app.update_auto_recording(True, 2)
+        assert not app.recording and stops == [True]
+    finally:
+        import shutil
+
+        shutil.rmtree(app.workspace_path)
+        storage.close()
+
+
+def test_auto_songs_save_matching_video_overlay_and_report_segments(tmp_path, cfg, monkeypatch):
+    from tango_posture.beat import BeatTracker
+    from tango_posture.review import read_report
+
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    cfg.data_dir = str(tmp_path)
+    cfg.auto_record_start_delay = 0.1
+    cfg.auto_record_stop_delay = 0.2
+    cfg.max_recordings = 2
+    storage = Storage(tmp_path)
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown == 40:
+                self.request("q")
+
+    display = Buttons()
+    display.auto_recording.set()
+    tracker = BeatTracker(enable_audio=False)
+    tracker.using_live_stream = True
+
+    def beat_state(timestamp):
+        playing = any(start <= timestamp < end for start, end in ((0.2, 0.8), (1.5, 2.1), (2.8, 3.4)))
+        return {
+            "playing": playing, "beat": 1 if playing else 0, "phrase": 1, "phase": 0.0,
+            "bpm": 120, "analyzing": False, "analyzed_seconds": 30,
+            "analysis_target_seconds": 30, "phrase_locked": True, "source": "test-microphone",
+        }
+
+    monkeypatch.setattr(tracker, "state_at", beat_state)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(count=40),
+        estimator=FakeEstimator(), display=display,
+    )
+    app.beat_tracker = tracker
+    try:
+        app.run()
+        assert app.recordings_started == 2
+        assert len(read_manifest(app.practice_file)["segments"]) == 2
+        replay = PracticeArchive(app.practice_file)
+        try:
+            for index in range(2):
+                record = read_report(replay.report(index))
+                assert len(record.timestamps) == 7
+                for label in ("Raw video", "Overlay"):
+                    path = record.videos[label]
+                    capture = cv2.VideoCapture(str(path))
+                    assert capture.isOpened()
+                    assert capture.get(cv2.CAP_PROP_FRAME_COUNT) == len(record.timestamps)
+                    capture.release()
+        finally:
+            replay.close()
+    finally:
+        storage.close()
+
+
 def test_headless_interval(tmp_path, cfg, monkeypatch):
     monkeypatch.setattr("tango_posture.app.verify", lambda p: MANIFEST["sha256"])
     cfg.data_dir = str(tmp_path)
@@ -344,7 +565,7 @@ def test_headless_interval(tmp_path, cfg, monkeypatch):
         app.run()
         assert len(storage.list("calibrations")) == 1
         assert app.saved_calibration_path is not None and app.saved_calibration_path.is_file()
-        loaded_cal = load_calibration_file("latest", tmp_path / "calibrations")
+        loaded_cal = load_calibration_file(str(app.saved_calibration_path), tmp_path / "calibrations")
         assert loaded_cal is not None and loaded_cal.id == app.reference.id
         assert storage.list("sessions")[0]["active_duration"] == pytest.approx(3)
         assert min(r["timestamp"] for r in app.session.rows) > 12
