@@ -7,9 +7,7 @@ A local Python desktop coach and movement analysis tool for Argentine Tango danc
 Practice and pose analysis run locally without an account or API key after installation
 and pose-model setup. Optional report interpretation connects to your configured Ollama server.
 
-**Experimental movement observation, not medical assessment or a judgement of artistic tango quality.** For detailed guides, see:
-- [Reference & Practice Comparison Manual](docs/REFERENCE_AND_COMPARISON_MANUAL.md) — step-by-step guide to calibrating a reference and comparing practice overlays and reports.
-- [Argentine Tango Practice Guide](docs/TANGO_POSTURE_GUIDE.md) — dancer-facing biomechanical and technical guide.
+**Experimental movement observation, not medical assessment or a judgement of artistic tango quality.** See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md) for one guide to practice, references, reports, configuration, examples, and limitations. Open **Help → Search & browse Tango Posture Manual** in the desktop app for the same guide with search and section navigation.
 
 ---
 
@@ -268,4 +266,4 @@ uv run mypy src
 uv build
 ```
 
-Tests cover synthetic and all-angle geometry, confidence gates, calibration storage/reuse, head pitch offset, shoulder tension, Leader/Follower hysteresis, Closed/Open embrace classification, closed-embrace knee flexion, 30-second musical phrase-start locking, silence gating, CLI safeguards, and real-model inference. See [Reference & Comparison Manual](docs/REFERENCE_AND_COMPARISON_MANUAL.md), [Manual Validation](docs/manual_validation.md), and [Implementation Report](docs/implementation_report.md).
+Tests cover synthetic and all-angle geometry, confidence gates, calibration storage/reuse, head pitch offset, shoulder tension, Leader/Follower hysteresis, Closed/Open embrace classification, closed-embrace knee flexion, 30-second musical phrase-start locking, silence gating, CLI safeguards, and real-model inference. See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md), [Manual Validation](docs/manual_validation.md), and [Implementation Report](docs/implementation_report.md).

@@ -28,7 +28,7 @@ from .config import (
 )
 from .models import verify
 from .practice import GuiDisplay, PracticeOptions, next_recordings
-from .review_ui import ReviewPanel
+from .review_ui import MarkdownView, ReviewPanel
 from .storage import Storage
 
 
@@ -59,6 +59,10 @@ class PracticeGUI:
         self.worker: threading.Thread | None = None
         self.display: GuiDisplay | None = None
         self.preview: tk.Toplevel | None = None
+        self.help_window: tk.Toplevel | None = None
+        self.help_view: MarkdownView | None = None
+        self.help_outline: ttk.Treeview | None = None
+        self.help_positions: dict[str, str] = {}
         self.exit_requested = False
         self.running = False
         self.photo: tk.PhotoImage | None = None
@@ -306,7 +310,66 @@ class PracticeGUI:
             label="Reset settings to defaults", command=lambda: self.apply_config(Config())
         )
         menu.add_cascade(label="Settings", menu=settings)
+        help_menu = tk.Menu(menu, tearoff=False)
+        help_menu.add_command(label="Search & browse Tango Posture Manual", command=self.open_help)
+        menu.add_cascade(label="Help", menu=help_menu)
         self.root.configure(menu=menu)
+
+    def open_help(self):
+        if self.help_window and self.help_window.winfo_exists():
+            self.help_window.deiconify()
+            self.help_window.lift()
+            self.help_window.focus_set()
+            return
+
+        manual = package_files("tango_posture").joinpath("TANGO_POSTURE_MANUAL.md")
+        try:
+            content = manual.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            path = Path(__file__).resolve().parents[2] / "docs" / "TANGO_POSTURE_GUIDE.md"
+            content = path.read_text(encoding="utf-8")
+
+        window = self.help_window = tk.Toplevel(self.root)
+        window.title("Tango Posture Manual")
+        window.geometry("1180x820")
+        window.minsize(840, 600)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        panes = ttk.Panedwindow(window, orient="horizontal")
+        panes.grid(row=0, column=0, sticky="nsew")
+        navigation = ttk.Frame(panes, padding=(8, 8, 4, 8))
+        navigation.rowconfigure(0, weight=1)
+        outline = self.help_outline = ttk.Treeview(
+            navigation, show="tree", selectmode="browse"
+        )
+        outline.grid(row=0, column=0, sticky="nsew")
+        outline_scroll = ttk.Scrollbar(navigation, orient="vertical", command=outline.yview)
+        outline_scroll.grid(row=0, column=1, sticky="ns")
+        outline.configure(yscrollcommand=outline_scroll.set)
+        reader = self.help_view = MarkdownView(panes, lambda _: None)
+        panes.add(navigation, weight=0)
+        panes.add(reader, weight=1)
+        reader.set(content)
+
+        parents: dict[int, str] = {}
+        self.help_positions = {}
+        for index, (level, title, position) in enumerate(reader.headings):
+            parents = {depth: node for depth, node in parents.items() if depth < level}
+            parent = parents.get(level - 1, "")
+            node = f"section-{index}"
+            outline.insert(parent, "end", iid=node, text=title)
+            parents[level] = node
+            self.help_positions[node] = position
+
+        def navigate(_event=None):
+            selected = outline.selection()
+            if selected:
+                position = self.help_positions[selected[0]]
+                reader.text.see(position)
+                reader.text.mark_set("insert", position)
+
+        outline.bind("<<TreeviewSelect>>", navigate)
+        window.protocol("WM_DELETE_WINDOW", window.withdraw)
 
     def _guard(self, action: Callable):
         try:

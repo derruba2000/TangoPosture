@@ -45,6 +45,32 @@ def test_all_tabs_and_setting_edits(studio):
         gui.config()
 
 
+def test_help_menu_opens_searchable_manual_with_section_navigation(studio):
+    root, gui = studio
+    assert gui.help_window is None
+    menu = root.nametowidget(root.cget("menu"))
+    assert "Help" in [menu.entrycget(index, "label") for index in range(menu.index("end") + 1)]
+    gui.open_help()
+    root.update()
+    assert gui.help_window is not None
+    assert gui.help_view is not None and gui.help_outline is not None
+    assert "Settings explained" in [title for _, title, _ in gui.help_view.headings]
+    assert gui.help_outline.get_children()
+
+    gui.help_view.query.set("confidence")
+    gui.help_view.search()
+    assert gui.help_view.text.tag_ranges("found")
+
+    target = next(
+        node for node, position in gui.help_positions.items()
+        if gui.help_view.text.get(position, f"{position} lineend").strip() == "Settings explained"
+    )
+    gui.help_outline.selection_set(target)
+    gui.help_outline.event_generate("<<TreeviewSelect>>")
+    root.update()
+    assert gui.help_view.text.index("insert") == gui.help_positions[target]
+
+
 def test_preset_keeps_filenames_and_reference_but_resets_confirmation(
     studio, tmp_path, monkeypatch
 ):
@@ -203,13 +229,15 @@ def test_markdown_view_formats_report_blocks_and_inline_styles(studio):
         "**Observation:** *shoulders relaxed* with `clearance`.\n\n"
         "- First item\n1. Second item\n\n"
         "> Coverage note\n\n"
-        "| Metric | Value |\n| --- | --- |\n| Head | UNKNOWN |\n"
+        "| Metric | Value |\n| --- | --- |\n| Head | UNKNOWN |\n\n"
+        "```text\n**literal code**\n```\n"
     )
     rendered = view.text.get("1.0", "end")
     assert "# Posture" not in rendered
-    assert "**" not in rendered and "`" not in rendered
+    assert "**Observation:**" not in rendered and "`" not in rendered
     assert "First item" in rendered and "Second item" in rendered
     assert "Coverage note" in rendered and "UNKNOWN" in rendered
+    assert "**literal code**" in rendered
     assert view.text.tag_ranges("h1")
     assert view.text.tag_ranges("bold")
     assert view.text.tag_ranges("italic")
@@ -217,6 +245,19 @@ def test_markdown_view_formats_report_blocks_and_inline_styles(studio):
     assert view.text.tag_ranges("quote")
     assert view.text.tag_ranges("list")
     assert view.text.tag_ranges("table")
+
+
+def test_analyze_button_shows_preflight_errors_in_ollama_pane(studio, tmp_path):
+    _, gui = studio
+    panel = gui.review
+    panel.analyze_button.invoke()
+    assert "Open a practice report first" in panel.analysis_status.get()
+    report = tmp_path / "report_invalid_ollama.md"
+    report.write_text("# Report\n")
+    panel.load_report(report)
+    gui.settings["tp_OLLAMA_BASE_URL"].set("not-a-server-url")
+    panel.analyze_button.invoke()
+    assert "Ollama URL must be an http(s) server URL" in panel.analysis_status.get()
 
 
 def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_path, ollama_server):

@@ -26,6 +26,7 @@ class MarkdownView(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
         self.on_time = on_time
+        self.headings: list[tuple[int, str, str]] = []
         self.query = tk.StringVar()
         toolbar = ttk.Frame(self, padding=4)
         toolbar.grid(row=0, column=0, sticky="ew")
@@ -87,6 +88,7 @@ class MarkdownView(ttk.Frame):
     def set(self, markdown: str):
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
+        self.headings = []
         for tag in self.text.tag_names():
             if tag.startswith(("time-", "link-")):
                 self.text.tag_delete(tag)
@@ -100,7 +102,7 @@ class MarkdownView(ttk.Frame):
                 index += 1
                 continue
             if fenced:
-                self._insert_line(line, "code")
+                self._insert_line(line, "code", literal=True)
             elif line.lstrip().startswith("|"):
                 table = []
                 while index < len(lines) and lines[index].lstrip().startswith("|"):
@@ -113,6 +115,9 @@ class MarkdownView(ttk.Frame):
             else:
                 heading = re.match(r"^\s*(#{1,3})\s+(.*)", line)
                 if heading:
+                    self.headings.append(
+                        (len(heading[1]), heading[2], self.text.index("end-1c"))
+                    )
                     self._insert_line(heading[2], f"h{len(heading[1])}")
                 elif re.match(r"^\s*(?:-{3,}|_{3,}|\*{3,})\s*$", line):
                     self._insert_line("--------------------------------", "table")
@@ -149,7 +154,10 @@ class MarkdownView(ttk.Frame):
                 rule = "-+-".join("-" * width for width in widths)
                 self._insert_line(rule, "table")
 
-    def _insert_line(self, line: str, block_tag: str = ""):
+    def _insert_line(self, line: str, block_tag: str = "", *, literal: bool = False):
+        if literal:
+            self.text.insert("end", line + "\n", (block_tag,) if block_tag else ())
+            return
         start = self.text.index("end-1c")
         displayed = []
         pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\*(.+?)\*|_(.+?)_|~~(.+?)~~")

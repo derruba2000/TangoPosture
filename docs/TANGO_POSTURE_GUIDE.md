@@ -1,4 +1,4 @@
-# Tango Posture Coach: an extensive guide for Argentine tango practice
+# Tango Posture Coach Manual
 
 **Stage 1 · application version 0.1.0 · 1 November 2026**
 
@@ -8,7 +8,7 @@ The intended setting is **individual Argentine tango practice: one dancer, a fix
 
 **Scope note:** the main guide describes the reference-based Stage 1 pipeline. Additional features appeared in the workspace during documentation: beat tracking, recording, Markdown reports, and extra head/arm heuristics. [Section 23](#23-additional-features-in-the-current-workspace) describes their actual behaviour and limitations; they do not inherit validation from the three core metrics.
 
-This guide covers the dancer's workflow, the meaning of the measurements, the software architecture, the individual components and technologies, and the evidence needed to judge the tool's usefulness.
+This manual combines the dancer's practice guide, reference and report comparison workflow, configuration explanations, and technical limits. It describes the current workspace; where experimental extensions exceed the original Stage 1 scope, that boundary is called out explicitly.
 
 ## Contents
 
@@ -35,6 +35,8 @@ This guide covers the dancer's workflow, the meaning of the measurements, the so
 21. [A practical review worksheet](#21-a-practical-review-worksheet)
 22. [Glossary and further reading](#22-glossary-and-further-reading)
 23. [Additional features in the current workspace](#23-additional-features-in-the-current-workspace)
+24. [Settings explained](#settings-explained)
+25. [One-reference comparison workflow](#one-reference-comparison-workflow)
 
 ## 1. The practice question the tool addresses
 
@@ -761,6 +763,172 @@ Primary upstream references:
 - [BlazePose GHUM model card](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf)
 
 The useful question remains specific: what changed relative to the reference, how reliably could the camera observe it, and what does that observation mean for the Argentine tango exercise you chose?
+
+## Settings explained
+
+Open **Help → Search & browse Tango Posture Manual** in the desktop app. The left outline jumps to a section; the Find box searches the whole manual. The parameter tables below use the same setting names shown in the Settings tabs. Each environment-variable name is also shown so you can search `.env` files. Use the GUI for a beginner-friendly edit, or export TOML to create a repeatable preset.
+
+The defaults below are the application's current `Config` defaults. `configs/default.toml` contains the core reference-relative subset; the GUI's **Export settings TOML** writes the complete configuration. These values are experimental software defaults, not tango technique standards, health guidance, or a score for a body.
+
+### Before changing anything
+
+1. Get the camera view working first: keep the camera fixed and level, fit your whole moving area in frame, and make sure the required landmarks are visible.
+2. Record a steady reference using the same camera placement, resolution, side, and facing direction you plan to use for practice.
+3. Keep the defaults for an initial run. Change one parameter only after the same, observable problem repeats; record the old value, new value, and coverage change.
+4. If a change increases events but reduces valid coverage, that is not automatically an improvement. Restore the previous value if the view becomes unreliable.
+
+### Framing examples for different builds
+
+There are no shorter-person, taller-person, slimmer-person, or bigger-person presets. Most movement measurements are ratios to a torso segment or angles in degrees, so changing those thresholds solely because of body size would change the experiment rather than personalize a universal ideal.
+
+| Situation | First adjustment | What not to change automatically |
+| --- | --- | --- |
+| Shorter dancer appears tiny in a wide frame | Move the camera closer if the full movement still fits, or use a supported higher capture resolution. Keep head and at least one ankle visible. If `min_torso` is still the specific blocker, test a small decrease such as `0.12` to `0.10`, then compare coverage and landmark stability. | Do not reduce `confidence` to make missing landmarks count as reliable. Do not use a threshold change to excuse cropped ankles or head. |
+| Taller dancer is cropped at the head or ankles | Move the camera farther back, raise the camera while keeping it level, and check the whole movement path. Select a supported capture size if needed. | Do not lower `min_torso` just to hide a framing problem; a tall person is not a reason to change posture thresholds. |
+| Slim build or loose clothing makes joints hard to see | Improve light and background contrast, avoid clothing/background blends, and inspect the confidence/coverage results. Clothing is an image-visibility aid, not a requirement about appearance. | Do not lower `confidence` until the model accepts low-quality joints; first fix the image and repeat the reference. |
+| Broad shoulders or a larger build makes the view-width gate repeatably fail in a true side view | Check the overlay/reference and physical camera angle first. If the measured width ratio is consistently just over `max_view_width` while the view is demonstrably side-on, test a small increase, for example `0.45` to `0.48`, and verify that turning toward the camera is still rejected. | Do not assume the width threshold should scale with clothing size or body weight. This heuristic can also admit a more frontal view when loosened. |
+| Any build has a very small shoulder-to-ear segment in the image | Improve distance, camera position, lighting, and resolution. If this specific segment gate still blocks repeated, clear images, test `min_head` in small steps from `0.04`, reviewing unknown time after each change. | Do not infer neck shape, gaze, or correctness from this 2D segment gate. |
+
+`width` and `height` below are camera-frame pixels, not the dancer's physical width or height. For example, `1280 × 720` asks a supported camera for a larger image; it does not mean “configure for a 1.28 m by 0.72 m person.” The pixel-size gates (`min_torso`, `min_head`) use fractions of frame height. Ratios such as `head_forward` and `axis_curve` are normalized by their defined body segment. A bigger image does not, by itself, require a different ratio threshold.
+
+### Camera & view
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `camera` (`tp_CAMERA`) | `0` | Camera device number. If the intended webcam is listed as the second device, select `1`; this is not a body setting. |
+| `width` (`tp_WIDTH`) | `640` | Requested image width in pixels. Try a supported larger size such as `1280` if landmarks are visibly coarse and the computer can keep up. Keep the same size when reusing a reference. |
+| `height` (`tp_HEIGHT`) | `480` | Requested image height in pixels. `640 × 480` is a common starting size; choose a size the camera actually supports and preserve its aspect ratio. It is not physical dancer height. |
+| `side` (`tp_SIDE`) | `left` | Anatomical side closest/selected for side-view measurement. Set `right` when the right side is the one consistently presented to the camera, then capture a new reference. |
+| `facing` (`tp_FACING`) | `right` | Direction the dancer faces in the original, unmirrored image. Choose `left` if facing toward the left edge; a mirrored preview does not reverse this setting. |
+| `capture_profile` (`tp_CAPTURE_PROFILE`) | `default` | A descriptive setup identity stored with references. Use names such as `living-room-side-camera`; a name does not measure or guarantee physical camera placement. |
+| `mirror` (`tp_MIRROR`) | `false` | Mirrors the displayed image only. Turn it on if you prefer a mirror-like preview; do not change side/facing to compensate for the display. |
+| `allow_all_angles` (`tp_ALLOW_ALL_ANGLES`) | `false` | Enables the experimental front/profile/pivot measurement path. Try it only for exploratory movement; it does not make every angle equally reliable, and its coverage must be checked. |
+
+### Files
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `model_path` (`tp_MODEL_PATH`) | `models/pose_landmarker_lite.task` | Location of the checksum-verified pose model. Change it only when the verified model is stored elsewhere, such as `/Volumes/Models/pose_landmarker_lite.task`. |
+| `data_dir` (`tp_DATA_DIR`) | `data` | Folder for the local database, session exports, and related artifacts. Use `practice-data` to keep a separate experiment; it does not change camera or body measurements. |
+
+### Quality & calibration
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `confidence` (`tp_CONFIDENCE`) | `0.70` | Minimum landmark visibility and presence confidence. A higher value such as `0.80` is stricter and may increase UNKNOWN time; improve light before considering a lower value. |
+| `min_torso` (`tp_MIN_TORSO`) | `0.12` | Minimum hip-to-shoulder length as a fraction of image height. If a shorter dancer is small in a wide frame, improve framing first; `0.10` is a cautious test only when this gate is the repeated cause. |
+| `min_head` (`tp_MIN_HEAD`) | `0.04` | Minimum shoulder-to-ear segment as a fraction of image height. If the segment is too small, improve camera framing/resolution first; test `0.035` only for clear, repeatable images still blocked by this gate. |
+| `max_view_width` (`tp_MAX_VIEW_WIDTH`) | `0.45` | Maximum shoulder/hip width divided by torso length for side-view quality. If a broad-shouldered dancer is verifiably side-on but repeatedly just over the limit, test `0.48` and make sure a slight turn still fails the gate. |
+| `view_change_tolerance` (`tp_VIEW_CHANGE_TOLERANCE`) | `0.15` | Allowed difference between practice width ratio and the reference range. If a fixed setup has small natural jitter, compare a slight increase such as `0.18`; it does not correct a moved camera or changed pose direction. |
+| `calibration_duration` (`tp_CALIBRATION_DURATION`) | `12.0` s | Total reference capture window. Leave it at 12 seconds for the documented workflow; longer capture is useful only if you can remain in the same intended position. |
+| `calibration_valid_duration` (`tp_CALIBRATION_VALID_DURATION`) | `9.0` s | Minimum valid measured time within calibration. Lowering it can accept a reference with less evidence; first fix framing or visibility if you cannot reach 9 seconds. |
+| `calibration_samples` (`tp_CALIBRATION_SAMPLES`) | `60` | Minimum number of valid observations in a reference. A slower computer may need a longer capture window, but reducing this count weakens the baseline evidence. |
+| `offset_mad` (`tp_OFFSET_MAD`) | `0.03` torso lengths | Maximum allowed calibration spread for head-forward offset. If a stable stance is rejected, repeat with less movement first; do not increase this just because torso length differs. |
+| `angle_mad` (`tp_ANGLE_MAD`) | `4.0` degrees | Maximum allowed calibration spread for the angular measurements. A steady repeat is safer than accepting a moving reference by raising the limit. |
+
+### Tracking and reference thresholds
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `smoothing` (`tp_SMOOTHING`) | `0.25` s | Time constant that softens frame-to-frame measurement changes. Try `0.35` if a stable image flickers; it delays response and does not repair bad landmarks. |
+| `entry_duration` (`tp_ENTRY_DURATION`) | `1.5` s | How long an entry threshold must remain crossed before a deviation is confirmed. Try `2.0` if brief intentional movements produce events; this delays detection. |
+| `clear_duration` (`tp_CLEAR_DURATION`) | `0.75` s | How long a value must remain inside its clear threshold before a confirmed event closes. Try `1.0` to avoid rapid close/reopen behavior. |
+| `max_gap` (`tp_MAX_GAP`) | `0.5` s | Largest observation gap that can still count as continuous. If processing is slow, improve runtime/framing first; increasing this may bridge missing evidence. |
+| `head_forward.entry` (`tp_HEAD_FORWARD_ENTRY`) | `0.08` torso lengths | Positive forward change from the selected reference that starts a pending event. `0.08` means 8% of projected torso length, not 8 cm. |
+| `head_forward.clear` (`tp_HEAD_FORWARD_CLEAR`) | `0.05` torso lengths | Lower positive offset at which a confirmed head-forward event can clear. Keep below entry; `0.05` gives hysteresis. |
+| `head_inclination.entry` (`tp_HEAD_INCLINATION_ENTRY`) | `10.0` degrees | Absolute angular change from reference that starts a pending event in either direction. A larger value such as `12` is less sensitive, not a better posture score. |
+| `head_inclination.clear` (`tp_HEAD_INCLINATION_CLEAR`) | `6.0` degrees | Absolute change below which a confirmed head-inclination event can clear. Keep below entry to prevent threshold chatter. |
+| `trunk_inclination.entry` (`tp_TRUNK_INCLINATION_ENTRY`) | `8.0` degrees | Absolute hip-to-shoulder image-angle change from reference that starts a pending event. Camera roll or a changed view can look like a trunk change; level the camera first. |
+| `trunk_inclination.clear` (`tp_TRUNK_INCLINATION_CLEAR`) | `5.0` degrees | Absolute trunk-angle change below which an event can clear. Keep below entry; do not interpret it as a medical alignment boundary. |
+
+The three reference thresholds are not adjusted for a person's height, weight, or clothing size. `head_forward` is a torso-length ratio; the two angle thresholds are degrees. Only `head_forward` uses a positive-only event direction. Angular metrics use absolute change from the stored reference.
+
+### Head & shoulders
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `head_neutral_offset` (`tp_HEAD_NEUTRAL_OFFSET_DEGREES`) | `-12.0` degrees | Offset applied to the ear-to-nose image angle used by the separate head-horizontal overlay. A captured reference supplies a measured neutral when available. If an uncalibrated straight-ahead view has a repeatable bias, adjust only by that measured bias; it is not gaze calibration. |
+| `head_down_duration` (`tp_HEAD_DOWN_DURATION_SECONDS`) | `3.0` s | Time below the head-angle limit before the separate warning appears. Increase to `4.0` if short dips are unhelpful; the warning remains an image cue, not proof of gaze. |
+| `head_down_angle` (`tp_HEAD_DOWN_ANGLE_DEGREES`) | `-15.0` degrees | Ear-to-nose angle boundary for that warning. It must remain negative. Moving it toward `-10` warns sooner; toward `-20` warns later. Check your camera is level and use the reference overlay before changing it. |
+| `shoulder_tension_duration` (`tp_SHOULDER_TENSION_DURATION_SECONDS`) | `1.0` s | Time the shoulder-elevation cue must persist before its banner. Try `1.5` if normal arm movement makes it intrusive. |
+| `shoulder_raise_threshold` (`tp_SHOULDER_RAISE_THRESHOLD_PCT`) | `10.0` % | Elevation above the relaxed clearance baseline that starts the shoulder cue. If a neutral reference repeatedly shows a small positive bias, recalibrate before considering a modest rise such as `12`; this is not a body-size allowance. |
+| `shoulder_neutral_clearance` (`tp_SHOULDER_NEUTRAL_CLEARANCE`) | `1.05` ratio | Fallback relaxed ear-to-shoulder clearance used when there is no captured shoulder baseline. A reference normally supplies its own baseline. Adjust only for an uncalibrated overlay with a measured neutral, not because someone is broader or slimmer. |
+
+### Embrace & knees
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `role_assign_ms` (`tp_ROLE_ASSIGN_MS`) | `300` ms | Continuous arm-pattern time required to assign LEADER or FOLLOWER from NONE. Try `500` if labels flicker during normal arm movement. |
+| `role_hold_ms` (`tp_ROLE_HOLD_MS`) | `5000` ms | How long a detected role remains after the arm pattern disappears. Try `3000` if a stale label lingers; a longer hold does not improve role recognition. |
+| `embrace_closed_threshold` (`tp_EMBRACE_CLOSED_THRESHOLD`) | `0.72` | Arm-compactness boundary for the heuristic CLOSED/OPEN label. If clearly compact positions are consistently labelled open, inspect the overlay and test a small increase; it is not a judgement of embrace quality. |
+| `closed_embrace_min_knee_bend` (`tp_CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES`) | `8.0` degrees | Minimum measured knee flexion used by the experimental straight-knee cue when a role and closed embrace are detected. A test value of `10` makes the cue more sensitive; it does not prescribe a dance stance. |
+| `knee_straight_duration` (`tp_KNEE_STRAIGHT_DURATION_SECONDS`) | `1.0` s | How long the low-bend cue must persist before its banner. Try `1.5` to ignore brief transitions. |
+
+These are arm/leg landmark heuristics in a single-person image. They do not determine a dancer's identity, partner role, or whether an embrace is appropriate. Do not change them by body-size category; first check that the required joints are visible and the chosen side is correct.
+
+### Torso & hip offset
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `axis_curve_entry` (`tp_AXIS_CURVE_ENTRY`) | `0.06` ratio | Posterior hip offset above the calibrated ankle-to-head line that starts a pending event. `0.06` is 6% of that projected line length. It is not 6 cm or a universal pelvis position. |
+| `axis_curve_clear` (`tp_AXIS_CURVE_CLEAR`) | `0.035` ratio | Lower offset below which an active axis event can clear. Keep below entry; the gap is hysteresis. |
+| `axis_curve_duration` (`tp_AXIS_CURVE_DURATION_SECONDS`) | `1.5` s | Time above entry needed to confirm the axis event. Increase to `2.0` if short changes are intentional and distracting. |
+| `axis_curve_clear_duration` (`tp_AXIS_CURVE_CLEAR_DURATION_SECONDS`) | `0.75` s | Time below clear needed to close the event. A small increase can make the banner less flickery. |
+| `axis_neutral_offset` (`tp_AXIS_NEUTRAL_OFFSET`) | `0.0` ratio | Fallback neutral offset when there is no stored reference. A calibration normally supplies its own neutral. Keep this at zero unless you have a measured, repeatable fallback offset. |
+
+The torso-axis drawing (hip midpoint to shoulder midpoint) is a separate image-orientation guide. It is not the ankle-to-head hip-offset calculation and neither estimates centre of mass or which foot carries weight.
+
+### Music
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `beat_tracking` (`tp_BEAT_TRACKING_ENABLED`) | `true` | Enables local microphone-based beat tracking in the GUI. Set `false` if you do not want microphone input or do not have a usable audio device. |
+| `tango_bpm` (`tp_TANGO_BPM`) | `120.0` BPM | Starting tempo estimate before the live tracker adjusts. If the song is near 100 BPM, entering `100` gives the tracker a closer starting point; it is not a tempo measurement guarantee. |
+| `beat_analysis_seconds` (`tp_BEAT_ANALYSIS_SECONDS`) | `30.0` s | Duration used by the beat tracker's phrase-start analysis. A longer window delays initial lock; a shorter window may provide less evidence. The beat/phrase labels remain heuristic. |
+
+### Review & Ollama
+
+| Setting (environment name) | Default | Plain-language meaning and example |
+| --- | --- | --- |
+| `replay_audio` (`tp_REPLAY_AUDIO`) | `false` | Enables optional replay audio in the Review tab when `ffplay` and an output device are available. Leave off for silent video review. |
+| `ollama_base_url` (`tp_OLLAMA_BASE_URL`) | `http://127.0.0.1:11434` | Address of your Ollama server. Keep this when Ollama runs on this computer; use the reachable server address if it runs elsewhere. |
+| `ollama_model` (`tp_OLLAMA_MODEL`) | `llama3.2` | Model name installed on that server. Use **List installed models** and select an exact name, such as `llama3.2:latest`. |
+| `ollama_timeout` (`tp_OLLAMA_TIMEOUT`) | `120` s | Maximum request wait. Increase to `300` if a large local model is still loading; first confirm the server is reachable. |
+| `ollama_temperature` (`tp_OLLAMA_TEMPERATURE`) | `0.2` | Response variation. Keep low for more repeatable summaries; a higher value is more varied, not more accurate. |
+| `ollama_num_ctx` (`tp_OLLAMA_NUM_CTX`) | `16384` tokens | Model context capacity requested for report and instructions. Raise it if the report exceeds context, while accounting for the model's memory use. |
+| `ollama_num_predict` (`tp_OLLAMA_NUM_PREDICT`) | `2048` tokens | Maximum generated response length. Increase if output ends at the limit; output may take longer. |
+| `ollama_max_report_chars` (`tp_OLLAMA_MAX_REPORT_CHARS`) | `40000` chars | Local character limit before the report is sent. Increase only if you intend to send longer report text and the context can hold it. |
+| `ollama_instruction` (`tp_OLLAMA_INSTRUCTION`) | Focused-practice prompt | Extra focus sent with the report, for example `Explain coverage gaps and suggest one simple solo-walk drill.` Video is not sent, and analysis is not automatic. |
+
+Ollama output is an interpretation, separate from measured results. Check its statements against the report and video; it cannot infer what the camera did not observe.
+
+## One-reference comparison workflow
+
+This workflow brings the earlier reference/comparison guide into the same searchable manual.
+
+### Record a useful reference
+
+1. Fix the camera at a level, approximately waist-to-chest height and frame the entire movement area from head to at least one ankle. Keep the camera and lighting consistent.
+2. In **Settings → Camera & view**, select the anatomical side closest to the camera and the direction you face in the original unmirrored image. For example, left side toward the camera and facing image-right means `side = left`, `facing = right`.
+3. Open the coach and press **C**. Use the countdown to settle into the reference you intend to study; remain steady through the capture. Accept only if the quality/coverage result is suitable; otherwise retry after fixing the view.
+4. Reuse that reference only with the same camera placement, image size, side, facing, and profile. If any of those change, make a new reference rather than comparing unlike setups.
+
+The captured median is a personal experimental baseline, not a model of an ideal dancer. It is reasonable for two teachers or two exercises to use different references.
+
+### Read the overlay and report together
+
+- **Overlay:** use the head horizontal cue and its configured warning as an ear-to-nose image angle; the magenta torso axis and cyan vertical describe image-plane orientation; `Hip offset` is a separate ankle-to-head proxy. Role, embrace, knee, and beat cues are heuristic branches, not validated tango assessments.
+- **Report:** open `reports/latest_report.md` in the Review tab or Help/report viewer. It is a Markdown document with metric summaries, event timelines, coverage/unknown information, and links or metadata for available recordings. The timestamped `report_*.md` is the durable report; `latest_report.md` is a convenience alias.
+- **Replay:** use report timestamps to seek the matching video when a recording is available. If camera frames were dropped or the report is from an older run without frame metadata, treat timestamp seeking as approximate.
+- **Session export:** read `summary.json`, `observations.csv`, and `events.csv` together. The JSON supplies units, reference, configuration, and denominators; CSV alone can be misleading.
+
+### Compare practice over time
+
+Compare runs that use the same accepted reference and compatible camera setup. For each metric, check its valid/unknown duration before comparing event percentages. For example, “20% of valid time” with 75% coverage is not equivalent to 20% of the entire session. A zero-valid-data metric has no meaningful percentage.
+
+Review event onset, confirmation/detection, end, and closure reason separately. A short `PENDING` interval is not a confirmed event; `UNKNOWN` means there was insufficient evidence, not that the movement matched the reference. Do not combine overlapping event durations across metrics into one total.
+
+Use the sequence **observe → inspect the corresponding video → decide whether the change was intentional or relevant → discuss with a teacher if useful**. Do not optimize the number of alerts as a stand-in for movement quality.
 
 
 ## 23. Additional features in the current workspace

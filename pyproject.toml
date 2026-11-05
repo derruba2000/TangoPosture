@@ -31,6 +31,7 @@ ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "logos/TangoPosture_logo_under_1MB.png" = "tango_posture/TangoPosture_logo_under_1MB.png"
+"docs/TANGO_POSTURE_GUIDE.md" = "tango_posture/TANGO_POSTURE_MANUAL.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
