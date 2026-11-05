@@ -1,10 +1,11 @@
 import tomllib
+from pathlib import Path
 
 import pytest
 
 from tango_posture.config import (
-    SETTING_MAP,
     SETTING_GROUPS,
+    SETTING_MAP,
     Config,
     export_toml,
     load,
@@ -27,6 +28,18 @@ def test_every_setting_has_a_toml_name_and_editor_group():
     assert len(fields) == len(set(fields))
     assert set(fields) == expected == set(SETTING_MAP)
     assert SETTING_MAP["head_down_angle"][0] == "head_down_angle"
+
+
+def test_default_toml_has_every_editable_setting():
+    path = Path(__file__).resolve().parents[2] / "configs" / "default.toml"
+    data = tomllib.loads(path.read_text())
+    fields = {
+        f"{key}.{name}" if isinstance(value, dict) else key
+        for key, value in data.items()
+        for name in (value if isinstance(value, dict) else [None])
+    }
+    assert fields == set(SETTING_MAP)
+    Config.model_validate(data)
 
 
 def test_full_toml_round_trip(tmp_path):

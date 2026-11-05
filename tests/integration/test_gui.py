@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import tkinter as tk
+import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 
 from tango_posture.archive import append_segment, save_calibration_archive
 from tango_posture.calibration import save_calibration_file
-from tango_posture.config import ENV_MAP, Config
+from tango_posture.config import SETTING_MAP, Config
 from tango_posture.gui import PracticeGUI
 from tango_posture.practice import GuiDisplay
 from tango_posture.review import write_metadata
@@ -47,6 +48,8 @@ def test_splash_hides_studio_until_three_second_timer_finishes(studio, monkeypat
     root.update()
     assert root.state() == "withdrawn"
     assert gui.splash_window.winfo_ismapped()
+    assert gui.splash_window.cget("cursor") == "watch"
+    assert str(gui.splash_progress.cget("mode")) == "indeterminate"
     assert scheduled[0][0] == 3000
     splash = gui.splash_window
     gui.show_splash()
@@ -61,6 +64,8 @@ def test_splash_hides_studio_until_three_second_timer_finishes(studio, monkeypat
 def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
     root, gui = studio
     monkeypatch.setattr("tango_posture.gui.version", lambda _: "0.1.0")
+    opened = []
+    monkeypatch.setattr("tango_posture.gui.webbrowser.open", lambda url: opened.append(url))
     menu = root.nametowidget(root.cget("menu"))
     help_index = next(
         index for index in range(menu.index("end") + 1)
@@ -88,6 +93,9 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
     assert "TangoPosture" in labels
     assert "Version 0.1.0" in labels
     assert "License: Apache-2.0" in labels
+    assert gui.about_repo_link.winfo_ismapped()
+    gui.about_repo_link.event_generate("<Button-1>")
+    assert opened == ["https://github.com/derruba2000/TangoPosture"]
     gui.open_about()
     assert gui.about_window is window
     window.withdraw()
@@ -235,7 +243,7 @@ def test_coach_abort_and_auto_record_controls(studio, tmp_path, monkeypatch):
     gui.display.recording_states.put("limit")
     gui.pump()
     assert gui.live_record_button.instate(["disabled"])
-    assert {"tp_AUTO_RECORD_START_DELAY", "tp_AUTO_RECORD_STOP_DELAY", "tp_MAX_RECORDINGS"} <= set(gui.settings)
+    assert {"auto_record_start_delay", "auto_record_stop_delay", "max_recordings"} <= set(gui.settings)
     archive = tmp_path / "Earlier.tp"
     archive.write_bytes(b"already saved")
     gui.saved_practice = archive
@@ -253,13 +261,13 @@ def test_all_tabs_and_setting_edits(studio):
     for group in gui.group_pages:
         gui.select_group(group)
         root.update()
-    assert set(gui.settings) == set(ENV_MAP)
-    gui.settings["tp_CAMERA"].set("2")
-    gui.settings["tp_HEAD_DOWN_ANGLE_DEGREES"].set("-22")
-    gui.settings["tp_MIRROR"].set(True)
+    assert set(gui.settings) == set(SETTING_MAP)
+    gui.settings["camera"].set("2")
+    gui.settings["head_down_angle"].set("-22")
+    gui.settings["mirror"].set(True)
     cfg = gui.config()
     assert cfg.camera == 2 and cfg.head_down_angle == -22 and cfg.mirror
-    gui.settings["tp_AXIS_CURVE_CLEAR"].set("0.9")
+    gui.settings["axis_curve_clear"].set("0.9")
     with pytest.raises(ValueError):
         gui.config()
 
@@ -330,7 +338,7 @@ def test_preset_keeps_filenames_and_reference_but_resets_confirmation(
     gui.options["calibration"].set("reference-uuid")
     gui.options["confirm_camera"].set(True)
     gui.options["raw_path"].set("videos/my dance.mp4")
-    gui.settings["tp_TANGO_BPM"].set("128")
+    gui.settings["tango_bpm"].set("128")
     gui.save_preset()
     assert json.loads(preset.read_text())["practice"]["raw_path"] == "videos/my dance.mp4"
     gui.options["raw_path"].set("other.mp4")
@@ -341,20 +349,19 @@ def test_preset_keeps_filenames_and_reference_but_resets_confirmation(
     assert gui.config().tango_bpm == 128
 
 
-def test_environment_import_migrates_old_names_without_reading_process(
+def test_toml_import_and_export_ignore_process_environment(
     studio, tmp_path, monkeypatch
 ):
     _, gui = studio
-    env = tmp_path / "old.env"
-    env.write_text("TANGO_BPM=133\nHEAD_DOWN_ANGLE_DEGREES=-20\n")
+    settings = tmp_path / "settings.toml"
+    settings.write_text("tango_bpm=133\nhead_down_angle=-20\n")
     monkeypatch.setenv("tp_TANGO_BPM", "144")
-    monkeypatch.setattr("tango_posture.gui.filedialog.askopenfilename", lambda **_: str(env))
-    monkeypatch.setattr("tango_posture.gui.filedialog.asksaveasfilename", lambda **_: str(env))
-    gui.import_env()
+    monkeypatch.setattr("tango_posture.gui.filedialog.askopenfilename", lambda **_: str(settings))
+    monkeypatch.setattr("tango_posture.gui.filedialog.asksaveasfilename", lambda **_: str(settings))
+    gui.import_toml()
     assert gui.config().tango_bpm == 133
-    gui.save_env()
-    assert "tp_TANGO_BPM=133" in env.read_text()
-    assert "\nTANGO_BPM=" not in env.read_text()
+    gui.save_toml()
+    assert tomllib.loads(settings.read_text())["tango_bpm"] == 133
 
 
 def test_reference_picker_restores_capture_profile_and_resets_confirmation(studio, reference):
@@ -547,7 +554,7 @@ def test_analyze_button_shows_preflight_errors_in_ollama_pane(studio, tmp_path):
     report = tmp_path / "report_invalid_ollama.md"
     report.write_text("# Report\n")
     panel.load_report(report)
-    gui.settings["tp_OLLAMA_BASE_URL"].set("not-a-server-url")
+    gui.settings["ollama_base_url"].set("not-a-server-url")
     panel.analyze_button.invoke()
     assert "Ollama URL must be an http(s) server URL" in panel.analysis_status.get()
 
@@ -559,7 +566,7 @@ def test_oversized_report_error_is_visible_and_includes_limit(studio, tmp_path):
     report.write_text("x" * 1001)
     panel.load_report(report)
     gui.tabs.select(panel)
-    gui.settings["tp_OLLAMA_MAX_REPORT_CHARS"].set("1000")
+    gui.settings["ollama_max_report_chars"].set("1000")
     panel.analyze_button.invoke()
 
     deadline = time.monotonic() + 2
@@ -579,8 +586,8 @@ def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_pa
     panel = gui.review
     path = review_fixture(tmp_path)
     panel.load_report(path)
-    gui.settings["tp_OLLAMA_BASE_URL"].set(url)
-    gui.settings["tp_OLLAMA_MODEL"].set("test-model:latest")
+    gui.settings["ollama_base_url"].set(url)
+    gui.settings["ollama_model"].set("test-model:latest")
     panel.list_models()
     deadline = time.monotonic() + 4
     while panel.models_job and time.monotonic() < deadline:

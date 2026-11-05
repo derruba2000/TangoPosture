@@ -21,8 +21,8 @@ from tkinter import filedialog, messagebox, ttk
 from .archive import practice_directory, practice_path, read_manifest
 from .calibration import load_calibration_file
 from .config import (
-    SETTING_MAP,
     SETTING_GROUPS,
+    SETTING_MAP,
     Config,
     export_toml,
     set_setting,
