@@ -49,7 +49,7 @@ def test_cancel_and_generation_limit(ollama_server):
 def test_report_limit_does_not_silently_truncate_or_send(ollama_server):
     url, server = ollama_server
     client = OllamaClient(Config(ollama_base_url=url, ollama_max_report_chars=1000))
-    with pytest.raises(ValueError, match="character limit"):
+    with pytest.raises(ValueError, match="1,001 characters.*1,000"):
         client.analyze("x" * 1001, lambda _: None, threading.Event())
     assert server.requests == []
 

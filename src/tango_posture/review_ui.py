@@ -65,7 +65,17 @@ class MarkdownView(ttk.Frame):
         self.fonts["code"] = tkfont.nametofont("TkFixedFont").copy()
         self.fonts["code"].configure(size=10)
         self.text = tk.Text(
-            body, wrap="word", state="disabled", padx=12, pady=10, font=self.fonts["body"]
+            body,
+            wrap="word",
+            state="disabled",
+            padx=12,
+            pady=10,
+            font=self.fonts["body"],
+            foreground="#202124",
+            background="#ffffff",
+            insertbackground="#202124",
+            selectbackground="#cfe8ff",
+            selectforeground="#111111",
         )
         vertical = ttk.Scrollbar(body, command=self.text.yview)
         horizontal = ttk.Scrollbar(self, orient="horizontal", command=self.text.xview)
@@ -73,15 +83,23 @@ class MarkdownView(ttk.Frame):
         vertical.pack(side="right", fill="y")
         self.text.pack(fill="both", expand=True)
         horizontal.grid(row=2, column=0, sticky="ew")
-        self.text.tag_configure("h1", font=self.fonts["h1"], spacing1=10, spacing3=8)
-        self.text.tag_configure("h2", font=self.fonts["h2"], spacing1=9, spacing3=6)
-        self.text.tag_configure("h3", font=self.fonts["h3"], spacing1=8, spacing3=4)
-        self.text.tag_configure("bold", font=self.fonts["bold"])
-        self.text.tag_configure("italic", font=self.fonts["italic"])
-        self.text.tag_configure("table", font=self.fonts["table"])
-        self.text.tag_configure("code", font=self.fonts["code"], background="#f0f0f0")
+        self.text.tag_configure(
+            "h1", font=self.fonts["h1"], foreground="#17212b", spacing1=10, spacing3=8
+        )
+        self.text.tag_configure(
+            "h2", font=self.fonts["h2"], foreground="#233746", spacing1=9, spacing3=6
+        )
+        self.text.tag_configure(
+            "h3", font=self.fonts["h3"], foreground="#34495a", spacing1=8, spacing3=4
+        )
+        self.text.tag_configure("bold", font=self.fonts["bold"], foreground="#202124")
+        self.text.tag_configure("italic", font=self.fonts["italic"], foreground="#202124")
+        self.text.tag_configure("table", font=self.fonts["table"], foreground="#202124")
+        self.text.tag_configure(
+            "code", font=self.fonts["code"], foreground="#202124", background="#f0f0f0"
+        )
         self.text.tag_configure("strike", overstrike=True)
-        self.text.tag_configure("quote", foreground="#53636c", lmargin1=18, lmargin2=18)
+        self.text.tag_configure("quote", foreground="#46535e", lmargin1=18, lmargin2=18)
         self.text.tag_configure("list", lmargin1=18, lmargin2=34)
         self.text.tag_configure("found", background="#ffe89c", foreground="black")
 
@@ -287,6 +305,17 @@ class ReviewPanel(ttk.Frame):
         page = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(page, text="Ollama analysis")
         self.analysis_page = page
+        activity = ttk.Frame(page, padding=(8, 6))
+        activity.pack(fill="x", pady=(0, 6))
+        activity.columnconfigure(0, weight=1)
+        self.analysis_status_label = ttk.Label(
+            activity, textvariable=self.analysis_status, font=("Helvetica", 11, "bold")
+        )
+        self.analysis_status_label.grid(row=0, column=0, sticky="w")
+        self.analysis_progress = ttk.Progressbar(
+            activity, mode="indeterminate", length=150, maximum=100
+        )
+        self.analysis_progress.grid(row=0, column=1, sticky="e", padx=(12, 0))
         form = ttk.Frame(page)
         form.pack(fill="x")
         form.columnconfigure(1, weight=1)
@@ -323,7 +352,6 @@ class ReviewPanel(ttk.Frame):
             text="The selected report text is sent to the configured server. AI interpretation is separate from measured results.",
             wraplength=900,
         ).pack(anchor="w")
-        ttk.Label(page, textvariable=self.analysis_status, wraplength=900).pack(anchor="w", pady=5)
         saved = ttk.Frame(page)
         saved.pack(fill="x")
         ttk.Label(saved, text="Saved analyses").pack(side="left", padx=(0, 8))
@@ -446,6 +474,7 @@ class ReviewPanel(ttk.Frame):
         token = self.models_job = uuid4().hex
         self.models_button.configure(state="disabled")
         self.analysis_status.set("Reading installed models...")
+        self.analysis_progress.start(12)
         events = self.events
 
         def work():
@@ -470,6 +499,7 @@ class ReviewPanel(ttk.Frame):
         self.analysis_view.set("")
         self.analysis_meta.set(f"AI analysis / {cfg.ollama_model} / {client.url}")
         self.analysis_status.set("Waiting for Ollama; model loading can take a moment...")
+        self.analysis_progress.start(12)
         self.analyze_button.configure(state="disabled")
         self.models_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
@@ -498,9 +528,11 @@ class ReviewPanel(ttk.Frame):
         except (ValueError, OSError, RuntimeError, TypeError, KeyError) as error:
             self.analysis_status.set(str(error))
             self.analysis_meta.set("")
+            self.analysis_progress.stop()
 
     def cancel_analysis(self):
         self.cancel.set()
+        self.analysis_progress.stop()
         if self.job:
             self.job = ""
             self.analysis_status.set("Analysis cancelled. Partial text has not been saved.")
@@ -530,6 +562,7 @@ class ReviewPanel(ttk.Frame):
                 break
             if kind in ("models", "models_error") and token == self.models_job:
                 self.models_job = ""
+                self.analysis_progress.stop()
                 self.models_button.configure(state="disabled" if self.job else "normal")
                 if kind == "models":
                     self.model_combo.configure(values=value)
@@ -547,6 +580,7 @@ class ReviewPanel(ttk.Frame):
                     self.analysis_view.text.see("end")
                 elif kind in ("analysis_done", "analysis_error"):
                     self.job = ""
+                    self.analysis_progress.stop()
                     self.analyze_button.configure(state="normal")
                     self.models_button.configure(
                         state="normal" if not self.models_job else "disabled"

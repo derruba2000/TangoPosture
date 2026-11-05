@@ -45,12 +45,48 @@ def test_all_tabs_and_setting_edits(studio):
         gui.config()
 
 
+def test_markdown_text_has_explicit_contrast_colors(studio):
+    _, gui = studio
+    text = gui.review.report_view.text
+    assert text.cget("foreground") == "#202124"
+    assert text.cget("background") == "#ffffff"
+    assert text.tag_cget("code", "foreground") == "#202124"
+
+
+def test_minimize_button_iconifies_studio_and_live_preview(studio):
+    _, gui = studio
+    assert gui.minimize_button.winfo_ismapped()
+    calls = []
+    gui.root.iconify = lambda: calls.append("studio")
+
+    class Preview:
+        def winfo_exists(self):
+            return True
+
+        def iconify(self):
+            calls.append("preview")
+
+    gui.preview = Preview()
+    gui.minimize_button.invoke()
+    assert calls == ["preview", "studio"]
+
+
+def test_minimize_button_changes_real_tk_window_state(studio):
+    root, gui = studio
+    gui.minimize_button.invoke()
+    root.update()
+    assert root.state() == "iconic"
+    root.deiconify()
+    root.update()
+
+
 def test_help_menu_opens_searchable_manual_with_section_navigation(studio):
     root, gui = studio
     assert gui.help_window is None
+    assert gui.help_button.winfo_ismapped()
     menu = root.nametowidget(root.cget("menu"))
     assert "Help" in [menu.entrycget(index, "label") for index in range(menu.index("end") + 1)]
-    gui.open_help()
+    gui.help_button.invoke()
     root.update()
     assert gui.help_window is not None
     assert gui.help_view is not None and gui.help_outline is not None
@@ -260,6 +296,27 @@ def test_analyze_button_shows_preflight_errors_in_ollama_pane(studio, tmp_path):
     assert "Ollama URL must be an http(s) server URL" in panel.analysis_status.get()
 
 
+def test_oversized_report_error_is_visible_and_includes_limit(studio, tmp_path):
+    root, gui = studio
+    panel = gui.review
+    report = tmp_path / "report_over_limit.md"
+    report.write_text("x" * 1001)
+    panel.load_report(report)
+    gui.tabs.select(panel)
+    gui.settings["tp_OLLAMA_MAX_REPORT_CHARS"].set("1000")
+    panel.analyze_button.invoke()
+
+    deadline = time.monotonic() + 2
+    while panel.job and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+
+    assert not panel.job
+    assert "1,001 characters" in panel.analysis_status.get()
+    assert "limit is 1,000" in panel.analysis_status.get()
+    assert "The report was not sent" in panel.analysis_status.get()
+
+
 def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_path, ollama_server):
     root, gui = studio
     url, server = ollama_server
@@ -301,6 +358,7 @@ def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypat
     report = tmp_path / "report_stream.md"
     report.write_text("# Report\n\nObservation at 00:01.0.\n")
     panel.load_report(report)
+    gui.tabs.select(panel)
     emitted = threading.Event()
     release = threading.Event()
 
@@ -313,12 +371,16 @@ def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypat
     monkeypatch.setattr("tango_posture.review_ui.OllamaClient.analyze", analyze)
     panel.request_analysis()
     assert emitted.wait(2)
+    root.update()
+    assert panel.analysis_status_label.winfo_ismapped()
+    assert panel.analysis_status.get() == "Receiving analysis..."
     deadline = time.monotonic() + 2
     while not panel.analysis_stream and time.monotonic() < deadline:
         root.update()
         time.sleep(0.01)
     root.update()
     rendered = panel.analysis_view.text.get("1.0", "end")
+    assert panel.analysis_status.get() == "Receiving analysis..."
     assert "Visible now" in rendered
     assert "##" not in rendered and "**" not in rendered and "`" not in rendered
     assert panel.analysis_view.text.tag_ranges("h2")

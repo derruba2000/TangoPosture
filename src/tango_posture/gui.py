@@ -110,6 +110,10 @@ class PracticeGUI:
         ttk.Label(
             heading, text="Set up a reference, choose recordings, and start your practice."
         ).pack(anchor="w", pady=(4, 0))
+        self.help_button = ttk.Button(header, text="Help", command=self.open_help)
+        self.help_button.pack(side="right", padx=(12, 0))
+        self.minimize_button = ttk.Button(header, text="Minimize", command=self.minimize)
+        self.minimize_button.pack(side="right")
         self.tabs = ttk.Notebook(root)
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=16)
         self.practice_page = self._page(self.tabs, "Practice")
@@ -294,6 +298,7 @@ class PracticeGUI:
         ):
             files.add_command(label=label, command=partial(self._guard, action))
         files.add_separator()
+        files.add_command(label="Minimize app", command=self.minimize, accelerator="Cmd+M")
         files.add_command(label="Quit", command=self.close)
         menu.add_cascade(label="File", menu=files)
         settings = tk.Menu(menu, tearoff=False)
@@ -314,6 +319,12 @@ class PracticeGUI:
         help_menu.add_command(label="Search & browse Tango Posture Manual", command=self.open_help)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.configure(menu=menu)
+        self.root.bind_all("<Command-m>", lambda _: self.minimize())
+
+    def minimize(self):
+        if self.preview and self.preview.winfo_exists():
+            self.preview.iconify()
+        self.root.iconify()
 
     def open_help(self):
         if self.help_window and self.help_window.winfo_exists():

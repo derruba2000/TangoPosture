@@ -67,8 +67,12 @@ class OllamaClient:
         if not report.strip():
             raise ValueError("The report is empty")
         if len(report) > self.cfg.ollama_max_report_chars:
+            report_chars = len(report)
+            report_limit = self.cfg.ollama_max_report_chars
             raise ValueError(
-                "Report exceeds the configured Ollama character limit; increase the limit and context size in Settings"
+                f"Selected report has {report_chars:,} characters; the configured limit is "
+                f"{report_limit:,}. In Settings > Review & Ollama, increase Ollama max report "
+                "chars and Ollama num ctx if the model can support it. The report was not sent."
             )
         if cancel.is_set():
             raise InterruptedError("Analysis cancelled")
