@@ -774,7 +774,7 @@ The useful question remains specific: what changed relative to the reference, ho
 
 ## Settings explained
 
-Open **Help → Search & browse Tango Posture Manual** in the desktop app. The left outline jumps to a section; the Find box searches the whole manual. The parameter tables below use the same setting names shown in the Settings tabs. Each environment-variable name is also shown so you can search `.env` files. Use the GUI for a beginner-friendly edit, or export TOML to create a repeatable preset.
+Open **Help → Search & browse Tango Posture Manual** in the desktop app. The left outline jumps to a section; the Find box searches the whole manual. The parameter tables below use the same names shown in Settings and in `configs/default.toml`. Every parameter in that file has a Settings control. Edit values in the app, or import/export TOML for repeatable configurations. Environment variables and `.env` files are not used, so launch with `uv run tango-posture gui` without `--ignore-env`.
 
 The defaults below are the application's current `Config` defaults. `configs/default.toml` contains the core reference-relative subset; the GUI's **Export settings TOML** writes the complete configuration. These values are experimental software defaults, not tango technique standards, health guidance, or a score for a body.
 
@@ -971,7 +971,7 @@ beat_tracking = false
 tango_bpm = 120.0
 ```
 
-The current configuration loader also recognises `beat_tracking` and `tango_bpm` from `.env` or the process environment. Precedence is code defaults, then `.env`, then process environment, then TOML, then applicable CLI overrides. A TOML setting therefore overrides the same field from an environment variable.
+Set `beat_tracking` and `tango_bpm` in Settings or TOML. Configuration precedence is app defaults, explicitly selected TOML, then applicable CLI options. Coach runs use a snapshot of the current app settings; `.env` files and environment variables cannot override them.
 
 Microphone samples are processed locally. During explicit video recording, microphone audio can be embedded in the raw and overlay videos on supported macOS systems. Beat analysis can continue between recordings without retaining those idle samples.
 
@@ -998,7 +998,7 @@ The writers use a fixed output frame rate from capture metadata, falling back to
 
 The workspace adds an ear-to-nose angle relative to image horizontal, separate from the selected-side ear–shoulder inclination used by Stage 1. It chooses a usable ear, compares its vertical location with the nose, and produces an image-plane angle. The current default warning threshold is −15° sustained for three seconds, with configuration fields `head_down_angle` and `head_down_duration`.
 
-Environment mappings are `head_down_angle` and `head_down_duration`. These names identify implementation settings; they are not evidence that the measurement determines actual gaze or anatomical neck flexion.
+The Settings/TOML names are `head_down_angle` and `head_down_duration`. These names identify implementation settings; they are not evidence that the measurement determines actual gaze or anatomical neck flexion.
 
 The current overlay labels this condition “BAD HEAD ALIGNMENT” and “head pointing down.” Those labels are stronger than the measurement supports and depart from the original Stage 1 wording requirements. Interpret the underlying result only as an ear–nose image relationship. It is not a teacher judgement or proof that someone is looking at the floor.
 
@@ -1014,7 +1014,7 @@ This extra path uses different landmark checks and can operate outside the accep
    - **Smoothing**: Exponential smoothing with time constant `smoothing` (default `0.25s`).
    - **Entry threshold & persistence**: Smoothed posterior offset must exceed `axis_curve_entry` (default `0.06`, i.e. `+6.0%` of the ankle-to-head axis length) continuously for `axis_curve_duration` (default `1.5s`) to transition from `WITHIN_LIMIT` → `PENDING` → `DEVIATION`.
    - **Hysteresis clearing**: Once in `DEVIATION`, the alert does not clear merely by dropping below `0.06`. The smoothed offset must fall below a lower clearing threshold `axis_curve_clear` (default `0.035`, i.e. `+3.5%`) continuously for `axis_curve_clear_duration` (default `0.75s`) before returning to `WITHIN_LIMIT`.
-   - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML as well as `.env` / environment variables `axis_curve_entry`, `axis_curve_clear`, `axis_curve_duration`, `axis_curve_clear_duration`, and `axis_neutral_offset`.
+  - Settings and TOML use `axis_curve_entry`, `axis_curve_clear`, `axis_curve_duration`, `axis_curve_clear_duration`, and `axis_neutral_offset`. Older `[axis_curve]` (`entry`, `clear`) TOML tables remain readable.
 4. **Overlay visualization, interactive toggles, and report**: The torso drawing uses a solid magenta line from the hip midpoint to the shoulder midpoint, extended slightly at both ends, and a dashed cyan image-vertical through the hip midpoint. The displayed tilt magnitude is calculated in pixels and works with display mirroring. Both lines hide when any required shoulder/hip landmark is unreliable. Keep the camera level; the drawing shows projected torso orientation, not centre of mass or weight-bearing support. Press **`Y`** to toggle these two lines and **`V`** to toggle verbose skeleton rendering independently. The existing ankle-to-head hip-offset calculation remains separate in the status panel and `HIP OFFSET: PAST ANKLE-HEAD LINE` alert. Section 3.2b and Section 4.2c of the Markdown report still summarise its coverage, median/peak offset, and confirmed curvature intervals.
 
 Like the other workspace extensions, this is a 2D image-plane proxy of landmark alignment rather than a clinical reconstruction of lumbar lordosis or pelvic tilt.

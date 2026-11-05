@@ -75,8 +75,9 @@ uv run tango-posture
 uv run tango-posture gui
 ```
 
-Startup shows a branded splash screen for three seconds. **Help > About TangoPosture**
-shows the application version and license.
+Startup shows a branded splash screen for three seconds with a busy cursor and
+animated waiting indicator. **About** (or **Help > About TangoPosture**) shows the
+application version, license, and a clickable GitHub repository link.
 
 The **Practice** tab selects a camera or video and shows the run log; it also offers
 video analysis without a live preview. **References**
@@ -93,7 +94,7 @@ Practices are saved as `practice/<name>.tp`; an existing name appends recordings
 without replacing earlier segments. **New practice name** starts a separate archive.
 **Settings** groups configuration values into camera/view, quality/calibration,
 tracking, head/shoulders, embrace/knees, hip offset, music, and review/Ollama tabs. The Settings menu
-also imports/exports `.env` settings; the File menu imports/exports TOML and saves
+imports/exports TOML; the File menu also imports/exports TOML and saves
 complete practice presets, including filenames and reference choices.
 
 Click **Open practice coach** for a live preview with Calibrate, Accept, Record,
@@ -171,9 +172,9 @@ ollama pull llama3.2
 The default URL is `http://127.0.0.1:11434`, which means the machine running this
 application. Configure another reachable server when Ollama runs elsewhere.
 Settings and presets retain the server, model, instruction, timeout, temperature,
-context size, report character limit, and output-token limit. Environment examples:
+context size, report character limit, and output-token limit. TOML examples:
 
-```dotenv
+```toml
 ollama_base_url="http://127.0.0.1:11434"
 ollama_model="llama3.2"
 ollama_timeout=120
@@ -236,38 +237,36 @@ and report fields are unchanged.
 
 ---
 
-## `.env` Configuration Reference
+## App Settings & TOML
 
-All application environment variables use the case-sensitive **`tp_` prefix**,
-preserving the previous uppercase name: for example,
-`head_down_angle`. System variables such as `PATH` are unaffected.
-[`.env.example`](.env.example) lists every supported variable, including camera,
-file paths, calibration, and metric thresholds. The GUI shows each variable's exact
-name alongside its editable value. Precedence is defaults → `.env` → process
-environment → TOML → CLI; the GUI's current settings are passed as a TOML snapshot.
+All application parameters are editable in **Settings**, using the same names as
+[configs/default.toml](configs/default.toml). The default TOML includes every editable
+parameter. Use **Settings > Import settings TOML** or **Export settings TOML** to
+load/save them, or save a complete practice preset.
 
-To migrate an existing unprefixed `.env`, launch
-`uv run tango-posture gui --ignore-env`, choose **Settings → Import tp_ environment
-settings**, select the old file, then export the renamed settings to `.env`.
-Legacy names are accepted only by this explicit import; normal loading tells you
-which names to rename. Practice presets never automatically confirm camera placement.
+Configuration precedence is app defaults, then an explicitly selected TOML file,
+then CLI options. Coach runs use a snapshot of the app's current settings. `.env`
+files and process environment variables are ignored; `--ignore-env` has been removed.
+Start normally with `uv run tango-posture gui`, or choose a file with
+`uv run tango-posture --config configs/default.toml gui`. Practice presets never
+automatically confirm camera placement.
 
-Common environment settings:
+Common settings:
 
-| `.env` Variable | Default | Description |
+| Setting | Default | Description |
 | --- | --- | --- |
 | `head_neutral_offset` | `-12.0` | Compensates for camera tilt and ear-to-nose landmark offset when standing straight (`0.0 deg` = level) |
 | `head_down_angle` | `-15.0` | Downward head pitch threshold (below neutral `0.0 deg`) that flags downward head tilt |
 | `head_down_duration` | `3.0` | Seconds below `head_down_angle` before triggering red `BAD HEAD ALIGNMENT` alert |
-| `shoulder_neutral_clearance` | `1.71` | Relaxed vertical ear-to-shoulder clearance ratio when running uncalibrated (`0%` tension baseline) |
-| `shoulder_raise_threshold` | `16.0` | Shoulder elevation `%` above neutral that flags `LOWER SHOULDERS (+XX%)` |
-| `shoulder_tension_duration` | `1.5` | Seconds above `shoulder_raise_threshold` before triggering red `LOWER YOUR SHOULDERS` alert |
+| `shoulder_neutral_clearance` | `1.05` | Relaxed vertical ear-to-shoulder clearance ratio when running uncalibrated (`0%` tension baseline) |
+| `shoulder_raise_threshold` | `10.0` | Shoulder elevation `%` above neutral that flags `LOWER SHOULDERS (+XX%)` |
+| `shoulder_tension_duration` | `1.0` | Seconds above `shoulder_raise_threshold` before triggering red `LOWER YOUR SHOULDERS` alert |
 | `role_assign_ms` | `300` | Milliseconds of continuous detection required to transition from `NONE` to `LEADER` or `FOLLOWER` |
 | `role_hold_ms` | `5000` | Milliseconds to hold `LEADER` or `FOLLOWER` after detection before returning to `NONE` |
-| `embrace_closed_threshold` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` from `OPEN EMBRACE` |
-| `closed_embrace_min_knee_bend` | `6.0` | Minimum knee flexion angle required when in `CLOSED EMBRACE` |
-| `knee_straight_duration` | `1.5` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
-| `allow_all_angles` | `true` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |
+| `embrace_closed_threshold` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` (`<= 0.72`) from `OPEN EMBRACE` (`> 0.72`) |
+| `closed_embrace_min_knee_bend` | `8.0` | Minimum knee flexion angle (`180° - hip–knee–ankle`) required when in `CLOSED EMBRACE` |
+| `knee_straight_duration` | `1.0` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
+| `allow_all_angles` | `false` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |
 | `beat_tracking` | `true` | Enables live microphone Argentine Tango 8-beat phrase tracking and audio recording |
 | `tango_bpm` | `120.0` | Initial tempo prior (BPM) before the 30-second audio analyzer locks onto the song's tempo |
 | `beat_analysis_seconds` | `30.0` | Duration of active musical audio used to lock onto the exact start (Beat 1) of each 8-beat phrase |

@@ -1,9 +1,15 @@
 import pytest
 
 from tango_posture.archive import save_calibration_archive
-from tango_posture.cli import main
+from tango_posture.cli import main, parser
 from tango_posture.models import MANIFEST
 from tango_posture.storage import Storage
+
+
+def test_gui_no_longer_has_ignore_env_flag():
+    assert parser().parse_args(["gui"]).command == "gui"
+    with pytest.raises(SystemExit):
+        parser().parse_args(["gui", "--ignore-env"])
 
 
 def test_manifest_copy():
