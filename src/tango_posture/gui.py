@@ -562,6 +562,8 @@ class PracticeGUI:
         self.record_button.configure(
             state="normal" if options.record_raw or options.record_overlay else "disabled"
         )
+        if not options.headless:
+            self.live_record_button.configure(state=self.record_button.cget("state"))
         self.stop_button.configure(state="normal")
         self.status.set("Coach open. Use the live controls; setting edits apply to your next run.")
         display = self.display
@@ -597,9 +599,14 @@ class PracticeGUI:
         self.worker.start()
 
     def start_recording(self):
-        if self.running and self.display and not self.display.stopped.is_set():
+        if (
+            self.running and self.display and not self.display.stopped.is_set()
+            and not self.record_button.instate(["disabled"])
+        ):
             self.display.recording.set()
             self.record_button.configure(state="disabled")
+            if self.preview is not None:
+                self.live_record_button.configure(state="disabled")
             self.status.set("Recording video. Stop / save finishes and saves the recordings.")
 
     def _preview(self):
@@ -614,19 +621,22 @@ class PracticeGUI:
             (
                 ("c", "Calibrate"),
                 ("a", "Accept"),
-                ("r", "Retry"),
-                ("s", "Start"),
+                ("r", "Record"),
+                ("s", "Start scoring"),
                 ("p", "Pause / resume"),
-                ("e", "End / save"),
+                ("e", "Stop recording / save"),
                 ("b", "Beat 1"),
                 ("v", "Skeleton / confirm view"),
                 ("y", "Torso axis"),
                 ("q", "Quit / save"),
             )
         ):
-            ttk.Button(
+            button = ttk.Button(
                 controls, text=f"{label} ({key.upper()})", command=partial(self.control, key)
-            ).grid(row=i // 5, column=i % 5, padx=3, pady=3, sticky="ew")
+            )
+            button.grid(row=i // 5, column=i % 5, padx=3, pady=3, sticky="ew")
+            if key == "r":
+                self.live_record_button = button
         for i in range(5):
             controls.columnconfigure(i, weight=1)
         self.preview_label = tk.Label(
@@ -649,10 +659,15 @@ class PracticeGUI:
 
     def control(self, key):
         if self.display:
+            if key == "r":
+                self.start_recording()
+                return
             self.display.request(key)
-            if key == "q":
+            if key in ("e", "q"):
                 self.record_button.configure(state="disabled")
-                self.status.set("Finishing practice and saving outputs...")
+                if self.preview is not None:
+                    self.live_record_button.configure(state="disabled")
+                self.status.set("Saving recordings and practice outputs...")
 
     def append_log(self, text):
         self.log.configure(state="normal")

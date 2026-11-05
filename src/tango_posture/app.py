@@ -44,7 +44,7 @@ GUIDANCE = (
     "Fixed, level camera; whole body in frame; adequate light; uncluttered background.\n"
     "Stand side-on; fitted clothing helps. Keep the selected anatomical side visible.\n"
     "Facing means direction in the ORIGINAL UNMIRRORED image; setup is unmirrored.\n"
-    "C: calibrate (3s countdown + configured capture window); A: accept; R: retry; S: start;\n"
+    "C: calibrate (3s countdown + configured capture window); A: accept; R: record video; S: start scoring;\n"
     "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit.\n"
     "Measurements are relative to your reference, not medical or technique judgements."
 )
@@ -98,6 +98,7 @@ class Application:
         record_video: Path | None = None,
         record_overlay: Path | None = None,
         display: PracticeDisplay | None = None,
+        practice_name: str | None = None,
     ):
         self.cfg, self.storage, self.video, self.headless = cfg, storage, video, headless
         self.reference, self.interval, self.name, self.review = reference, interval, name, review
@@ -158,6 +159,75 @@ class Application:
         self.last_summary: dict[str, Any] | None = None
         self.report_written = False
         self.beat_tracker: BeatTracker | None = None
+        self.recording = False
+        self.recording_finished = False
+        self.raw_writer: cv2.VideoWriter | None = None
+        self.overlay_writer: cv2.VideoWriter | None = None
+        from tempfile import TemporaryDirectory
+
+        from .archive import practice_directory, practice_path
+
+        self.workspace = TemporaryDirectory(prefix="tango-recording-")
+        self.workspace_path = Path(self.workspace.name)
+        self.practice_file = practice_path(
+            practice_directory(cfg.data_dir),
+            practice_name or f"Practice_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000000:06d}",
+        )
+        self.segment_index = 0
+
+    def start_recording(self) -> None:
+        if self.recording:
+            return
+        from .archive import read_manifest
+
+        self.segment_index = (
+            len(read_manifest(self.practice_file)["segments"]) if self.practice_file.exists() else 0
+        )
+        self.record_video = self.workspace_path / f"video_{self.segment_index:02d}.mp4"
+        self.record_overlay = self.workspace_path / f"overlay_{self.segment_index:02d}.mp4"
+        self.frame_log.clear()
+        self.report_written = False
+        self.recording_finished = False
+        if self.session and self.session.finished:
+            self.session = None
+            self.last_summary = None
+            self.rows = []
+            self.state = "READY"
+        self.recording = True
+        if self.beat_tracker:
+            with self.beat_tracker.lock:
+                self.beat_tracker.recorded_chunks.clear()
+                self.beat_tracker.recording_enabled = True
+        self.notice = "Recording video; E saves, Q saves and quits"
+        print("Video recording started")
+
+    def stop_recording(self) -> None:
+        if not self.recording:
+            return
+        self.recording = False
+        self.recording_finished = True
+        if self.display is not None:
+            self.display.recording.clear()
+        if self.beat_tracker:
+            with self.beat_tracker.lock:
+                self.beat_tracker.recording_enabled = False
+        for writer, path in (
+            (self.raw_writer, self.record_video),
+            (self.overlay_writer, self.record_overlay),
+        ):
+            if writer is not None:
+                writer.release()
+                print(f"Saved video: {path}")
+        if self.raw_writer is None:
+            self.record_video = None
+        if self.overlay_writer is None:
+            self.record_overlay = None
+        self.raw_writer = self.overlay_writer = None
+        if self.beat_tracker:
+            paths = [path for path in (self.record_video, self.record_overlay) if path is not None]
+            for path in self.beat_tracker.mux_into_videos(paths):
+                print(f"Embedded microphone audio into: {path}")
+        self.notice = "Video saved; R records the next segment in this practice"
 
     def start_session(self, timestamp: float) -> None:
         if self.reference is None:
@@ -217,11 +287,12 @@ class Application:
             self.notice = f"Saved {status}; active {summary['active_duration']:.1f}s. Exports printed in terminal."
             self.state = "FINISHED"
         if self.frame_log and not self.report_written:
-            report_dir = (
-                Path("reports")
-                if self.cfg.data_dir == "data"
-                else Path(self.cfg.data_dir) / "reports"
-            )
+            from .archive import append_segment
+
+            report_dir = self.workspace_path
+            if not self.recording_finished:
+                self.record_video = None
+                self.record_overlay = None
             events = (
                 [asdict(e) for v in self.session.evaluators.values() for e in v.events]
                 if self.session
@@ -241,10 +312,14 @@ class Application:
                 recorded_video=self.record_video,
                 recorded_overlay=self.record_overlay,
             )
+            append_segment(
+                self.practice_file, report_path, self.record_video, self.record_overlay,
+                [float(row["timestamp"]) for row in self.frame_log],
+            )
             self.report_written = True
             if self.display is not None:
-                self.display.report_ready(report_path)
-            print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
+                self.display.report_ready(self.practice_file)
+            print(f"Saved practice: {self.practice_file}")
 
     def _audio_cues_enabled(self) -> bool:
         return (
@@ -296,8 +371,11 @@ class Application:
 
     def key(self, key: int, timestamp: float) -> bool:
         if key == ord("q"):
+            self.stop_recording()
             self.finish(timestamp, "stopped")
             return False
+        if key == ord("r"):
+            self.start_recording()
         if key in (ord("v"), ord("V")):
             self.setup_confirmed = True
             self.verbose_skeleton = not self.verbose_skeleton
@@ -309,7 +387,7 @@ class Application:
             self.notice = f"Vertical axis display: {state_lbl}"
         if key == ord("b") and self.beat_tracker:
             self.beat_tracker.tap(timestamp)
-        if key in (ord("c"), ord("r")) and self.state not in ("RUNNING", "PAUSED"):
+        if key == ord("c") and self.state not in ("RUNNING", "PAUSED"):
             self.samples.clear()
             self.cal_head_angles.clear()
             self.cal_shoulder_clearances.clear()
@@ -335,7 +413,8 @@ class Application:
             elif self.state == "PAUSED":
                 self.session.resume(timestamp)
                 self.state = "RUNNING"
-        if key == ord("e") and self.state in ("RUNNING", "PAUSED"):
+        if key == ord("e"):
+            self.stop_recording()
             self.finish(timestamp, "completed")
         return True
 
@@ -365,9 +444,9 @@ class Application:
 
     def run(self) -> list[Path]:
         status = "completed"
-        raw_writer: cv2.VideoWriter | None = None
-        overlay_writer: cv2.VideoWriter | None = None
-        recording = self.display is None
+        auto_record = self.headless and bool(self.record_video or self.record_overlay)
+        if auto_record:
+            self.start_recording()
         print(GUIDANCE)
         try:
             self.model_hash = verify(Path(self.cfg.model_path))
@@ -388,7 +467,7 @@ class Application:
                     analysis_seconds=self.cfg.beat_analysis_seconds,
                     audio_save_path=audio_out,
                 )
-            if self.beat_tracker and not recording:
+            if self.beat_tracker and not self.recording:
                 with self.beat_tracker.lock:
                     self.beat_tracker.recording_enabled = False
                     self.beat_tracker.recorded_chunks.clear()
@@ -420,18 +499,14 @@ class Application:
                 self.last_timestamp = timestamp
                 self.capture.last = timestamp
                 frame = self.estimate_responsively(captured.image, timestamp)
-                if not recording and self.display is not None and self.display.recording.is_set():
-                    recording = True
-                    if self.beat_tracker:
-                        with self.beat_tracker.lock:
-                            self.beat_tracker.recording_enabled = True
-                    print("Video recording started")
-                if recording and self.record_video:
-                    if raw_writer is None:
-                        raw_writer = _open_writer(
+                if self.display is not None and self.display.recording.is_set():
+                    self.start_recording()
+                if self.recording and self.record_video:
+                    if self.raw_writer is None:
+                        self.raw_writer = _open_writer(
                             self.record_video, frame.width, frame.height, self.capture.fps
                         )
-                    raw_writer.write(captured.image)
+                    self.raw_writer.write(captured.image)
                 current_profile = profile(
                     self.cfg,
                     frame.width,
@@ -933,15 +1008,15 @@ class Application:
                         verbose_skeleton=self.verbose_skeleton,
                         show_vertical_axis=self.show_vertical_axis,
                     )
-                    if recording and self.record_overlay:
-                        if overlay_writer is None:
-                            overlay_writer = _open_writer(
+                    if self.recording and self.record_overlay:
+                        if self.overlay_writer is None:
+                            self.overlay_writer = _open_writer(
                                 self.record_overlay,
                                 panel.shape[1],
                                 panel.shape[0],
                                 self.capture.fps,
                             )
-                        overlay_writer.write(panel)
+                        self.overlay_writer.write(panel)
                     if not self.headless:
                         if self.display is not None:
                             self.display.show(panel)
@@ -964,9 +1039,9 @@ class Application:
             status = "interrupted"
             raise
         finally:
-            if raw_writer is None:
+            self.stop_recording()
+            if not self.recording_finished:
                 self.record_video = None
-            if overlay_writer is None:
                 self.record_overlay = None
             try:
                 end_time = self.last_timestamp
@@ -979,19 +1054,6 @@ class Application:
                 try:
                     if self.beat_tracker:
                         self.beat_tracker.close()
-                    if raw_writer:
-                        raw_writer.release()
-                        print(f"Saved raw video: {self.record_video}")
-                    if overlay_writer:
-                        overlay_writer.release()
-                        print(f"Saved overlay video: {self.record_overlay}")
-                    if self.beat_tracker:
-                        recorded_vids = [
-                            p for p in (self.record_video, self.record_overlay) if p is not None
-                        ]
-                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
-                        for mp in muxed:
-                            print(f"Embedded microphone audio into: {mp}")
                     if self.capture:
                         self.capture.close()
                 finally:
@@ -1005,4 +1067,5 @@ class Application:
                             self.display.close()
                         elif not self.headless:
                             cv2.destroyAllWindows()
+                        self.workspace.cleanup()
         return self.outputs

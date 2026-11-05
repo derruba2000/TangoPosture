@@ -7,6 +7,8 @@ A local Python desktop coach and movement analysis tool for Argentine Tango danc
 Practice and pose analysis run locally without an account or API key after installation
 and pose-model setup. Optional report interpretation connects to your configured Ollama server.
 
+![Tango Posture Coach desktop application screenshot](logos/Screenshot.png)
+
 **Experimental movement observation, not medical assessment or a judgement of artistic tango quality.** See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md) for one guide to practice, references, reports, configuration, examples, and limitations. Open **Help → Search & browse Tango Posture Manual** in the desktop app for the same guide with search and section navigation.
 
 ---
@@ -86,8 +88,13 @@ tracking, head/shoulders, embrace/knees, hip offset, music, and review/Ollama ta
 also imports/exports `.env` settings; the File menu imports/exports TOML and saves
 complete practice presets, including filenames and reference choices.
 
-Click **Open practice coach** for a live preview with Calibrate, Accept, Retry,
-Start, Pause/resume, End/save, Beat 1, Skeleton, Torso axis, and Quit/save buttons.
+Click **Open practice coach** for a live preview with Calibrate, Accept, Record,
+Start scoring, Pause/resume, Stop recording/save, Beat 1, Skeleton, Torso axis, and Quit/save buttons.
+**C** captures or retries calibration; **R** starts video recording (also available
+as **Start recording video**). **S** starts reference-based scoring and session
+statistics, not video recording, and requires an accepted reference. **E** stops
+and saves recording and scoring while keeping the preview open; **Q** saves and
+quits. Open a new coach to record another video with new filenames.
 The existing keyboard shortcuts work in this window too. Settings changes apply to
 the next run; closing the coach releases capture and saves reports and recordings.
 

@@ -132,7 +132,7 @@ Camera device indices are explicit. The application does not silently switch to 
 
 ### Record the reference and start
 
-Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by a twelve-second capture. Review the result, then press A to accept or R to retry. Press S to begin the session.
+Press C after preparing to adopt your intended reference. There is a three-second countdown, followed by a twelve-second capture. Review the result, then press A to accept or C to retry. Press S to begin reference-based scoring and session statistics; it does not start video recording. Press R (Record) to start video recording. E stops and saves recording and scoring while leaving the preview open; Q saves and quits. Open a new coach to record another video with new filenames.
 
 During practice, P pauses or resumes. E ends and saves the session. Q quits and saves an unfinished session with an explicit stopped status. Ctrl+C and closing the window also stop the run cleanly through the application lifecycle.
 

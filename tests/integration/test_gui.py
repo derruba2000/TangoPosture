@@ -178,12 +178,21 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert gui.start_button.instate(["disabled"])
     assert not gui.display.recording.is_set()
     assert gui.record_button.instate(["!disabled"])
-    gui.record_button.invoke()
+    assert gui.live_record_button.cget("text") == "Record (R)"
+    labels = [child.cget("text") for child in gui.live_record_button.master.winfo_children()]
+    assert "Retry (R)" not in labels
+    assert "Start scoring (S)" in labels
+    gui.live_record_button.invoke()
     assert gui.display.recording.is_set()
     assert gui.record_button.instate(["disabled"])
+    assert gui.live_record_button.instate(["disabled"])
     assert Path(received[received.index("--config") + 1]).is_file()
     gui.control("p")
     assert gui.display.poll_key() == ord("p")
+    gui.control("e")
+    assert gui.display.poll_key() == ord("e")
+    gui.control("r")
+    assert gui.display.poll_key() == -1
     gui.control("q")
     while gui.running and time.monotonic() < deadline:
         root.update()

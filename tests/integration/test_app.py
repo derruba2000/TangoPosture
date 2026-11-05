@@ -7,6 +7,7 @@ import pytest
 from conftest import frame
 
 from tango_posture.app import Application
+from tango_posture.archive import PracticeArchive, read_manifest
 from tango_posture.calibration import load_calibration_file, profile
 from tango_posture.capture import Captured
 from tango_posture.models import MANIFEST, fetch, verify
@@ -149,13 +150,14 @@ def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, mon
 
     class Writer:
         def __init__(self, path):
+            self.path = path
             self.frames = written.setdefault(path.name, [])
 
         def write(self, image):
             self.frames.append(image)
 
         def release(self):
-            pass
+            self.path.write_bytes(b"fake video")
 
     monkeypatch.setattr("tango_posture.app._open_writer", lambda path, *args: Writer(path))
 
@@ -182,11 +184,115 @@ def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, mon
         app.run()
         if start_recording:
             assert {name: len(frames) for name, frames in written.items()} == {
-                "raw.mp4": 3, "overlay.mp4": 3,
+                "video_00.mp4": 3, "overlay_00.mp4": 3,
             }
         else:
             assert not written
             assert app.record_video is None and app.record_overlay is None
+    finally:
+        storage.close()
+
+
+@pytest.mark.parametrize("stop", ["e", "q"])
+def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cfg, monkeypatch, stop):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    written = {}
+    released = []
+
+    class Writer:
+        def __init__(self, path):
+            self.path = path
+            self.name = path.name
+            written[self.name] = 0
+
+        def write(self, image):
+            assert self.name not in released
+            written[self.name] += 1
+
+        def release(self):
+            released.append(self.name)
+            self.path.write_bytes(b"fake video")
+
+    monkeypatch.setattr("tango_posture.app._open_writer", lambda path, *args: Writer(path))
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown == 2:
+                assert not written
+                self.request("r")
+            if self.shown == 5:
+                self.request(stop)
+            if self.shown == 7:
+                assert len(released) == 2
+            if self.shown == 8:
+                self.request("q")
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(),
+        estimator=FakeEstimator(), display=Buttons(),
+        record_video=tmp_path / "raw.mp4", record_overlay=tmp_path / "overlay.mp4",
+    )
+    try:
+        app.run()
+        assert written == {"video_00.mp4": 3, "overlay_00.mp4": 3}
+        assert sorted(released) == ["overlay_00.mp4", "video_00.mp4"]
+        assert app.cal_start is None and app.session is None
+        assert not app.recording
+    finally:
+        storage.close()
+
+
+def test_three_recordings_share_one_practice_archive(tmp_path, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown in (2, 8, 14):
+                self.request("r")
+            if self.shown in (5, 11, 17):
+                self.request("e")
+            if self.shown == 19:
+                self.request("q")
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(),
+        estimator=FakeEstimator(), display=Buttons(), practice_name="My dance",
+    )
+    try:
+        app.run()
+        assert app.practice_file == tmp_path / "practice" / "My dance.tp"
+        assert len(read_manifest(app.practice_file)["segments"]) == 3
+        assert not app.workspace_path.exists()
+        assert not (tmp_path / "reports").exists()
+        assert not list(tmp_path.glob("*.mp4"))
+        replay = PracticeArchive(app.practice_file)
+        try:
+            for index in range(3):
+                for prefix in ("video", "overlay"):
+                    capture = cv2.VideoCapture(str(replay.folder / f"{prefix}_{index:02d}.mp4"))
+                    assert capture.isOpened()
+                    assert capture.get(cv2.CAP_PROP_FRAME_COUNT) == 3
+                    capture.release()
+                from tango_posture.review import read_report
+
+                record = read_report(replay.report(index))
+                assert record.timestamps == pytest.approx([
+                    (2 + index * 6) / 10, (3 + index * 6) / 10, (4 + index * 6) / 10,
+                ])
+        finally:
+            replay.close()
     finally:
         storage.close()
 
