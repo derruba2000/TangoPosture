@@ -195,6 +195,30 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
     assert not panel.player.playing
 
 
+def test_markdown_view_formats_report_blocks_and_inline_styles(studio):
+    _, gui = studio
+    view = gui.review.report_view
+    view.set(
+        "# Posture report\n\n"
+        "**Observation:** *shoulders relaxed* with `clearance`.\n\n"
+        "- First item\n1. Second item\n\n"
+        "> Coverage note\n\n"
+        "| Metric | Value |\n| --- | --- |\n| Head | UNKNOWN |\n"
+    )
+    rendered = view.text.get("1.0", "end")
+    assert "# Posture" not in rendered
+    assert "**" not in rendered and "`" not in rendered
+    assert "First item" in rendered and "Second item" in rendered
+    assert "Coverage note" in rendered and "UNKNOWN" in rendered
+    assert view.text.tag_ranges("h1")
+    assert view.text.tag_ranges("bold")
+    assert view.text.tag_ranges("italic")
+    assert view.text.tag_ranges("code")
+    assert view.text.tag_ranges("quote")
+    assert view.text.tag_ranges("list")
+    assert view.text.tag_ranges("table")
+
+
 def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_path, ollama_server):
     root, gui = studio
     url, server = ollama_server
@@ -228,6 +252,43 @@ def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_pa
     panel.load_report(other)
     assert panel.analysis_data is None
     assert not panel.analysis_view.text.get("1.0", "end").strip()
+
+
+def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypatch):
+    root, gui = studio
+    panel = gui.review
+    report = tmp_path / "report_stream.md"
+    report.write_text("# Report\n\nObservation at 00:01.0.\n")
+    panel.load_report(report)
+    emitted = threading.Event()
+    release = threading.Event()
+
+    def analyze(_client, _report, on_chunk, _cancel):
+        on_chunk("## Streaming\n\n**Visible** `now`")
+        emitted.set()
+        assert release.wait(2)
+        return "## Streaming\n\n**Visible** `now`", True
+
+    monkeypatch.setattr("tango_posture.review_ui.OllamaClient.analyze", analyze)
+    panel.request_analysis()
+    assert emitted.wait(2)
+    deadline = time.monotonic() + 2
+    while not panel.analysis_stream and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    root.update()
+    rendered = panel.analysis_view.text.get("1.0", "end")
+    assert "Visible now" in rendered
+    assert "##" not in rendered and "**" not in rendered and "`" not in rendered
+    assert panel.analysis_view.text.tag_ranges("h2")
+    assert panel.analysis_view.text.tag_ranges("bold")
+    assert panel.analysis_view.text.tag_ranges("code")
+    release.set()
+    deadline = time.monotonic() + 2
+    while panel.job and time.monotonic() < deadline:
+        root.update()
+        time.sleep(0.01)
+    assert not panel.job
 
 
 def test_cancelled_analysis_does_not_save_or_show_stale_results(studio, tmp_path, monkeypatch):

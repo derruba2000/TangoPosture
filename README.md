@@ -1,5 +1,7 @@
 # Tango Posture Coach
 
+<p align="center"><img src="logos/Tango_posture_logo.png" alt="TangoPosture logo" width="320"></p>
+
 A local Python desktop coach and movement analysis tool for Argentine Tango dancers. It combines real-time MediaPipe Pose tracking (`pose_landmarker_lite.task`) with live microphone audio analysis to monitor **head horizontal alignment**, **shoulder tension**, **Leader/Follower role & Closed/Open embrace**, **closed-embrace knee flexion**, **central spine axis (front, side steps, and 360° pivots)**, and **8-beat Argentine Tango musical phrases**, while saving synchronized audio+video recordings and post-run Markdown reports.
 
 Practice and pose analysis run locally without an account or API key after installation

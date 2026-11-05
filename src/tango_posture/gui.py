@@ -10,6 +10,7 @@ from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict
 from functools import partial
+from importlib.resources import files as package_files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from tkinter import filedialog, messagebox, ttk
@@ -61,6 +62,21 @@ class PracticeGUI:
         self.exit_requested = False
         self.running = False
         self.photo: tk.PhotoImage | None = None
+        logo_resource = package_files("tango_posture").joinpath(
+            "TangoPosture_logo_under_1MB.png"
+        )
+        try:
+            logo_data = logo_resource.read_bytes()
+        except FileNotFoundError:
+            logo_data = (
+                Path(__file__).resolve().parents[2]
+                / "logos"
+                / "TangoPosture_logo_under_1MB.png"
+            ).read_bytes()
+        logo = tk.PhotoImage(data=logo_data)
+        logo_scale = max(1, (logo.width() + 63) // 64)
+        self.brand_logo = logo.subsample(logo_scale, logo_scale)
+        root.iconphoto(True, self.brand_logo)
         self.status = tk.StringVar(value="Set up your practice, then open the live coach.")
         self.settings: dict[str, tk.Variable] = {}
         self.fields = {field: key for key, (field, _) in ENV_MAP.items()}
@@ -83,9 +99,12 @@ class PracticeGUI:
         self.reference_ids: dict[str, str] = {}
         header = ttk.Frame(root, padding=(20, 16))
         header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(header, text="TangoPosture", font=("Helvetica", 23, "bold")).pack(anchor="w")
+        ttk.Label(header, image=self.brand_logo).pack(side="left", padx=(0, 14))
+        heading = ttk.Frame(header)
+        heading.pack(side="left", fill="x", expand=True)
+        ttk.Label(heading, text="TangoPosture", font=("Helvetica", 23, "bold")).pack(anchor="w")
         ttk.Label(
-            header, text="Set up a reference, choose recordings, and start your practice."
+            heading, text="Set up a reference, choose recordings, and start your practice."
         ).pack(anchor="w", pady=(4, 0))
         self.tabs = ttk.Notebook(root)
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=16)
@@ -505,6 +524,7 @@ class PracticeGUI:
     def _preview(self):
         self.preview = tk.Toplevel(self.root)
         self.preview.title("TangoPosture  /  Live coach")
+        self.preview.iconphoto(True, self.brand_logo)
         self.preview.geometry("1100x850")
         self.preview.minsize(760, 560)
         controls = ttk.Frame(self.preview, padding=8)

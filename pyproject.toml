@@ -29,5 +29,8 @@ python_version = "3.11"
 check_untyped_defs = true
 ignore_missing_imports = true
 
+[tool.hatch.build.targets.wheel.force-include]
+"logos/TangoPosture_logo_under_1MB.png" = "tango_posture/TangoPosture_logo_under_1MB.png"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

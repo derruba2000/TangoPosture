@@ -4,12 +4,14 @@ import queue
 import re
 import threading
 import tkinter as tk
+import webbrowser
 from collections.abc import Callable
 from functools import partial
 from http.client import HTTPException
 from pathlib import Path
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from .config import Config
@@ -48,11 +50,19 @@ class MarkdownView(ttk.Frame):
             ("h2", 14, True),
             ("h3", 12, True),
             ("bold", 11, True),
+            ("italic", 11, False),
             ("table", 10, False),
+            ("code", 10, False),
         ):
             font = tkfont.nametofont("TkFixedFont" if name == "table" else "TkDefaultFont").copy()
-            font.configure(size=size, weight="bold" if bold else "normal")
+            font.configure(
+                size=size,
+                weight="bold" if bold else "normal",
+                slant="italic" if name == "italic" else "roman",
+            )
             self.fonts[name] = font
+        self.fonts["code"] = tkfont.nametofont("TkFixedFont").copy()
+        self.fonts["code"].configure(size=10)
         self.text = tk.Text(
             body, wrap="word", state="disabled", padx=12, pady=10, font=self.fonts["body"]
         )
@@ -66,31 +76,121 @@ class MarkdownView(ttk.Frame):
         self.text.tag_configure("h2", font=self.fonts["h2"], spacing1=9, spacing3=6)
         self.text.tag_configure("h3", font=self.fonts["h3"], spacing1=8, spacing3=4)
         self.text.tag_configure("bold", font=self.fonts["bold"])
+        self.text.tag_configure("italic", font=self.fonts["italic"])
         self.text.tag_configure("table", font=self.fonts["table"])
+        self.text.tag_configure("code", font=self.fonts["code"], background="#f0f0f0")
+        self.text.tag_configure("strike", overstrike=True)
+        self.text.tag_configure("quote", foreground="#53636c", lmargin1=18, lmargin2=18)
+        self.text.tag_configure("list", lmargin1=18, lmargin2=34)
         self.text.tag_configure("found", background="#ffe89c", foreground="black")
 
     def set(self, markdown: str):
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         for tag in self.text.tag_names():
-            if tag.startswith("time-"):
+            if tag.startswith(("time-", "link-")):
                 self.text.tag_delete(tag)
-        for line in markdown.splitlines():
-            heading = re.match(r"^(#{1,3})\s+(.*)", line)
-            tag = f"h{len(heading[1])}" if heading else "table" if line.startswith("|") else ""
-            line = heading[2] if heading else line
-            line = re.sub(r"\[([^\]]+)\]\([^\n]*?\)", r"\1", line).replace("`", "")
-            start = self.text.index("end-1c")
-            for i, piece in enumerate(re.split(r"\*\*(.*?)\*\*", line)):
-                self.text.insert("end", piece, (tag, "bold") if i % 2 else (tag,))
-            self.text.insert("end", "\n", (tag,))
-            displayed = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
-            for match in re.finditer(r"(?<![\w:+-])\d+:\d{2}(?::\d{2})?(?:\.\d+)?\b", displayed):
-                key = f"time-{start}-{match.start()}"
-                self.text.tag_add(key, f"{start}+{match.start()}c", f"{start}+{match.end()}c")
-                self.text.tag_configure(key, foreground="#176caa", underline=True)
-                self.text.tag_bind(key, "<Button-1>", partial(self._time, parse_time(match[0])))
+        lines = markdown.splitlines()
+        index = 0
+        fenced = False
+        while index < len(lines):
+            line = lines[index]
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                index += 1
+                continue
+            if fenced:
+                self._insert_line(line, "code")
+            elif line.lstrip().startswith("|"):
+                table = []
+                while index < len(lines) and lines[index].lstrip().startswith("|"):
+                    cells = self._table_cells(lines[index])
+                    if not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                        table.append(cells)
+                    index += 1
+                self._insert_table(table)
+                continue
+            else:
+                heading = re.match(r"^\s*(#{1,3})\s+(.*)", line)
+                if heading:
+                    self._insert_line(heading[2], f"h{len(heading[1])}")
+                elif re.match(r"^\s*(?:-{3,}|_{3,}|\*{3,})\s*$", line):
+                    self._insert_line("--------------------------------", "table")
+                elif quote := re.match(r"^\s*>\s?(.*)", line):
+                    self._insert_line(quote[1], "quote")
+                elif bullet := re.match(r"^(\s*)[-*+]\s+(.*)", line):
+                    self._insert_line(f"{bullet[1]}- {bullet[2]}", "list")
+                elif number := re.match(r"^(\s*\d+\.)\s+(.*)", line):
+                    self._insert_line(f"{number[1]} {number[2]}", "list")
+                else:
+                    self._insert_line(line)
+            index += 1
         self.text.configure(state="disabled")
+
+    @staticmethod
+    def _table_cells(line: str) -> list[str]:
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    def _insert_table(self, rows: list[list[str]]):
+        if not rows:
+            return
+        columns = max(map(len, rows))
+        widths = [
+            max((len(row[column]) if column < len(row) else 0) for row in rows)
+            for column in range(columns)
+        ]
+        for row_index, row in enumerate(rows):
+            cells = [
+                (row[column] if column < len(row) else "").ljust(widths[column])
+                for column in range(columns)
+            ]
+            self._insert_line(" | ".join(cells).rstrip(), "table")
+            if row_index == 0 and len(rows) > 1:
+                rule = "-+-".join("-" * width for width in widths)
+                self._insert_line(rule, "table")
+
+    def _insert_line(self, line: str, block_tag: str = ""):
+        start = self.text.index("end-1c")
+        displayed = []
+        pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)|\*\*(.+?)\*\*|__(.+?)__|`([^`]+)`|\*(.+?)\*|_(.+?)_|~~(.+?)~~")
+        cursor = 0
+
+        def insert(value: str, *tags: str):
+            active = ((block_tag,) if block_tag else ()) + tags
+            self.text.insert("end", value, active)
+            displayed.append(value)
+
+        for match in pattern.finditer(line):
+            insert(line[cursor : match.start()])
+            if match[1] is not None:
+                label, target = match[1], match[2]
+                link_tag = f"link-{uuid4().hex}"
+                self.text.tag_configure(link_tag, foreground="#176caa", underline=True)
+                scheme = urlsplit(target).scheme.lower()
+                if scheme in ("http", "https", "file"):
+                    self.text.tag_bind(link_tag, "<Button-1>", partial(self._open_link, target))
+                insert(label, link_tag)
+            elif match[3] is not None or match[4] is not None:
+                insert(match[3] or match[4], "bold")
+            elif match[5] is not None:
+                insert(match[5], "code")
+            elif match[6] is not None or match[7] is not None:
+                insert(match[6] or match[7], "italic")
+            else:
+                insert(match[8], "strike")
+            cursor = match.end()
+        insert(line[cursor:])
+        self.text.insert("end", "\n", (block_tag,) if block_tag else ())
+        plain = "".join(displayed)
+        for match in re.finditer(r"(?<![\w:+-])\d+:\d{2}(?::\d{2})?(?:\.\d+)?\b", plain):
+            key = f"time-{start}-{match.start()}"
+            self.text.tag_add(key, f"{start}+{match.start()}c", f"{start}+{match.end()}c")
+            self.text.tag_configure(key, foreground="#176caa", underline=True)
+            self.text.tag_bind(key, "<Button-1>", partial(self._time, parse_time(match[0])))
+
+    @staticmethod
+    def _open_link(target: str, _event=None):
+        webbrowser.open(target)
 
     def _time(self, seconds, _event=None):
         self.on_time(seconds)
@@ -129,6 +229,7 @@ class ReviewPanel(ttk.Frame):
         self.report_paths: dict[str, Path] = {}
         self.analyses: dict[str, dict] = {}
         self.analysis_data: dict | None = None
+        self.analysis_stream = ""
         self.selection = tk.StringVar()
         self.video_selection = tk.StringVar()
         self.saved_selection = tk.StringVar()
@@ -199,7 +300,7 @@ class ReviewPanel(ttk.Frame):
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=6)
         self.analyze_button = ttk.Button(
-            actions, text="Analyze report", command=lambda: self.guard(self.analyze)
+            actions, text="Analyze report", command=self.request_analysis
         )
         self.analyze_button.pack(side="left")
         self.cancel_button = ttk.Button(
@@ -357,6 +458,7 @@ class ReviewPanel(ttk.Frame):
         token = self.job = uuid4().hex
         cancel = self.cancel = threading.Event()
         self.analysis_data = None
+        self.analysis_stream = ""
         self.analysis_view.set("")
         self.analysis_meta.set(f"AI analysis / {cfg.ollama_model} / {client.url}")
         self.analysis_status.set("Waiting for Ollama; model loading can take a moment...")
@@ -381,6 +483,13 @@ class ReviewPanel(ttk.Frame):
                 events.put((token, "analysis_error", str(error)))
 
         threading.Thread(target=work, name="ollama-analysis", daemon=True).start()
+
+    def request_analysis(self):
+        try:
+            self.analyze()
+        except (ValueError, OSError, RuntimeError, TypeError, KeyError) as error:
+            self.analysis_status.set(str(error))
+            self.analysis_meta.set("")
 
     def cancel_analysis(self):
         self.cancel.set()
@@ -425,7 +534,9 @@ class ReviewPanel(ttk.Frame):
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")
-                    self.analysis_view.append(value)
+                    self.analysis_stream += value
+                    self.analysis_view.set(self.analysis_stream)
+                    self.analysis_view.text.see("end")
                 elif kind in ("analysis_done", "analysis_error"):
                     self.job = ""
                     self.analyze_button.configure(state="normal")
