@@ -1,9 +1,10 @@
+from concurrent.futures import ThreadPoolExecutor
 from zipfile import ZipFile
 
 import pytest
 
 from tango_posture.archive import PracticeArchive, append_segment, read_manifest
-from tango_posture.review import read_report
+from tango_posture.review import read_report, save_analysis, saved_analyses
 
 
 def test_three_segments_are_portable_and_numbered(tmp_path):
@@ -55,3 +56,40 @@ def test_failed_append_preserves_existing_practice(tmp_path):
     with pytest.raises(FileNotFoundError):
         append_segment(archive, report, tmp_path / "missing.mp4", overlay, [1.0])
     assert archive.read_bytes() == before
+
+
+def test_saved_analysis_stays_in_the_practice_archive(tmp_path):
+    archive, report, raw, overlay = (tmp_path / name for name in (
+        "Evening.tp", "report.md", "raw.mp4", "overlay.mp4",
+    ))
+    report.write_text("# First")
+    raw.write_bytes(b"raw")
+    overlay.write_bytes(b"overlay")
+    append_segment(archive, report, raw, overlay, [0.0])
+    replay = PracticeArchive(archive)
+    try:
+        record = read_report(replay.report(0))
+        record.archive_path = archive
+        save_analysis(record, "model", "http://localhost", "focus", "Analysis")
+    finally:
+        replay.close()
+    reopened = PracticeArchive(archive)
+    try:
+        record = read_report(reopened.report(0))
+        assert saved_analyses(record)[0][1]["analysis"] == "Analysis"
+    finally:
+        reopened.close()
+
+
+def test_concurrent_appends_do_not_replace_other_segments(tmp_path):
+    archive, report, raw, overlay = (tmp_path / name for name in (
+        "Evening.tp", "report.md", "raw.mp4", "overlay.mp4",
+    ))
+    report.write_text("# First")
+    raw.write_bytes(b"raw")
+    overlay.write_bytes(b"overlay")
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        futures = [workers.submit(append_segment, archive, report, raw, overlay, [0.0])
+                   for _ in range(8)]
+        assert sorted(future.result() for future in futures) == list(range(8))
+    assert len(read_manifest(archive)["segments"]) == 8

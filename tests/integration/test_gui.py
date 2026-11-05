@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tango_posture.archive import append_segment
 from tango_posture.calibration import save_calibration_file
 from tango_posture.config import ENV_MAP, Config
 from tango_posture.gui import PracticeGUI
@@ -27,6 +28,38 @@ def studio(tmp_path, monkeypatch):
     yield root, gui
     gui.close()
     assert not errors
+
+
+def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path):
+    root, gui = studio
+    archive = tmp_path / "practice" / "Evening.tp"
+    video, overlay, report = (tmp_path / name for name in ("raw.mp4", "overlay.mp4", "report.md"))
+    import cv2
+
+    for path in (video, overlay):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
+        assert writer.isOpened()
+        writer.write(np.zeros((64, 64, 3), np.uint8))
+        writer.release()
+    for index in range(3):
+        report.write_text(f"# Recording {index}")
+        append_segment(archive, report, video, overlay, [index + 0.2])
+    gui.review.load_report(archive)
+    root.update()
+    assert list(gui.review.segment_paths) == ["Recording 00", "Recording 01", "Recording 02"]
+    assert gui.review.report.markdown == "# Recording 2"
+    for index in range(3):
+        gui.review.segment_selection.set(f"Recording {index:02d}")
+        gui.review.segment_combo.event_generate("<<ComboboxSelected>>")
+        root.update()
+        assert gui.review.report.markdown == f"# Recording {index}"
+        assert gui.review.player.reader.path.name == f"overlay_{index:02d}.mp4"
+        gui.review.video_selection.set("Raw video")
+        gui.review.switch_video()
+        assert gui.review.player.reader.path.name == f"video_{index:02d}.mp4"
+    extracted = gui.review.archive.folder
+    gui.review.close()
+    assert not extracted.exists()
 
 
 def test_all_tabs_and_setting_edits(studio):
@@ -183,7 +216,7 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert "Retry (R)" not in labels
     assert "Start scoring (S)" in labels
     gui.live_record_button.invoke()
-    assert gui.display.recording.is_set()
+    assert gui.display.poll_key() == ord("r")
     assert gui.record_button.instate(["disabled"])
     assert gui.live_record_button.instate(["disabled"])
     assert Path(received[received.index("--config") + 1]).is_file()
@@ -191,8 +224,10 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert gui.display.poll_key() == ord("p")
     gui.control("e")
     assert gui.display.poll_key() == ord("e")
+    assert gui.record_button.instate(["!disabled"])
+    assert gui.live_record_button.instate(["!disabled"])
     gui.control("r")
-    assert gui.display.poll_key() == -1
+    assert gui.display.poll_key() == ord("r")
     gui.control("q")
     while gui.running and time.monotonic() < deadline:
         root.update()

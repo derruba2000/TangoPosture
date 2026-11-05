@@ -51,6 +51,7 @@ def parser() -> argparse.ArgumentParser:
         help="Explicitly accept a stable reference interval; must match configured 12s duration",
     )
     run.add_argument("--reference-name", default="My reference")
+    run.add_argument("--practice-name", help="Practice archive name; existing names append recordings")
     run.add_argument(
         "--teacher-reviewed", metavar="NOTE", help="Explicit user-recorded teacher review note"
     )
@@ -60,7 +61,7 @@ def parser() -> argparse.ArgumentParser:
         const=Path("videos/practice.mp4"),
         type=Path,
         metavar="PATH",
-        help="Opt-in: save raw unmirrored frames to videos/ (default videos/practice.mp4)",
+        help="Record raw and overlay video into a .tp practice archive; PATH is a legacy option",
     )
     run.add_argument(
         "--record-overlay",
@@ -68,7 +69,7 @@ def parser() -> argparse.ArgumentParser:
         const=Path("videos/overlay.mp4"),
         type=Path,
         metavar="PATH",
-        help="Opt-in: save annotated overlay video to videos/ (default videos/overlay.mp4)",
+        help="Record raw and overlay video into a .tp practice archive; PATH is a legacy option",
     )
     sessions = sub.add_parser("sessions").add_subparsers(dest="action", required=True)
     sessions.add_parser("list")
@@ -195,6 +196,7 @@ def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = Non
             record_video=args.record_video,
             record_overlay=args.record_overlay,
             display=display,
+            practice_name=args.practice_name,
         ).run()
         return 0
     except (ValueError, OSError, sqlite3.Error, RuntimeError, ImportError) as error:

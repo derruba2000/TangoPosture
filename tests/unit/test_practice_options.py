@@ -34,7 +34,8 @@ def test_video_interval_and_recording_arguments(tmp_path):
     assert args[
         args.index("--reference-interval") + 1 : args.index("--reference-interval") + 3
     ] == ["3.0", "15.0"]
-    assert args[args.index("--record-overlay") + 1] == options.overlay_path
+    assert args[args.index("--practice-name") + 1] == options.practice_name
+    assert "--record-overlay" not in args
     for end in ("nan", "14", "-2"):
         with pytest.raises(ValueError):
             replace(options, interval_end=end).arguments(Config(), tmp_path / "settings.toml")

@@ -14,6 +14,7 @@ from tkinter import font as tkfont
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from .archive import PracticeArchive, practice_directory
 from .config import Config
 from .ollama import OllamaClient
 from .replay import ReplayPlayer, parse_time
@@ -247,6 +248,9 @@ class ReviewPanel(ttk.Frame):
         super().__init__(parent, padding=8)
         self.config_provider, self.settings = config, settings
         self.report: ReportRecord | None = None
+        self.archive: PracticeArchive | None = None
+        self.segment_paths: dict[str, Path] = {}
+        self.segment_selection = tk.StringVar()
         self.closed = False
         self.events: queue.SimpleQueue = queue.SimpleQueue()
         self.job = ""
@@ -275,8 +279,21 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(top, text="Refresh", command=lambda: self.guard(self.refresh)).pack(
             side="left", padx=5
         )
-        ttk.Button(top, text="Open report...", command=lambda: self.guard(self.open_report)).pack(
+        ttk.Button(top, text="Open practice...", command=lambda: self.guard(self.open_report)).pack(
             side="left"
+        )
+        segments = ttk.Frame(self)
+        segments.pack(fill="x", pady=(0, 8))
+        ttk.Label(segments, text="Recording").pack(side="left", padx=(0, 8))
+        self.segment_combo = ttk.Combobox(
+            segments, textvariable=self.segment_selection, state="disabled",
+        )
+        self.segment_combo.pack(side="left", fill="x", expand=True)
+        self.segment_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _: self.guard(lambda: self.load_report(
+                self.segment_paths[self.segment_selection.get()], archived=True,
+            )),
         )
         ttk.Label(self, textvariable=self.status, wraplength=920).pack(anchor="w", pady=(0, 6))
         self.tabs = ttk.Notebook(self)
@@ -370,7 +387,11 @@ class ReviewPanel(ttk.Frame):
 
     def refresh(self):
         folder = report_directory(self.config_provider().data_dir)
-        paths = sorted(folder.glob("report_*.md"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
+        practice_folder = practice_directory(self.config_provider().data_dir)
+        paths = sorted(
+            [*practice_folder.glob("*.tp"), *folder.glob("report_*.md")],
+            key=lambda p: p.stat().st_mtime_ns, reverse=True,
+        )
         if not paths and (folder / "latest_report.md").exists():
             paths = [folder / "latest_report.md"]
         self.report_paths = {str(path.resolve()): path.resolve() for path in paths}
@@ -379,7 +400,9 @@ class ReviewPanel(ttk.Frame):
             self.load_report(paths[0])
 
     def open_report(self):
-        path = filedialog.askopenfilename(parent=self, filetypes=[("Practice report", "*.md")])
+        path = filedialog.askopenfilename(
+            parent=self, filetypes=[("Tango practice", "*.tp"), ("Legacy report", "*.md")],
+        )
         if path:
             self.load_report(Path(path))
 
@@ -393,18 +416,54 @@ class ReviewPanel(ttk.Frame):
         else:
             self.load_report(path)
 
-    def load_report(self, path: Path):
+    def load_report(self, path: Path, archived: bool = False):
+        if path.suffix.lower() == ".tp":
+            archive = PracticeArchive(path)
+            if not archive.manifest["segments"]:
+                archive.close()
+                raise ValueError("This practice has no saved recordings")
+            self.cancel_analysis()
+            self.player.unload()
+            if self.archive is not None:
+                self.archive.close()
+            self.archive = archive
+            self.segment_paths = {
+                f"Recording {segment['index']:02d}": archive.report(segment["index"])
+                for segment in archive.manifest["segments"]
+            }
+            self.segment_combo.configure(values=list(self.segment_paths), state="readonly")
+            self.segment_selection.set(list(self.segment_paths)[-1])
+            self.load_report(self.segment_paths[self.segment_selection.get()], archived=True)
+            return
         record = read_report(path)
         self.cancel_analysis()
+        self.player.unload()
+        if not archived and self.archive is not None:
+            self.archive.close()
+            self.archive = None
+            self.segment_paths = {}
+            self.segment_selection.set("")
+            self.segment_combo.configure(values=[], state="disabled")
+        if archived and self.archive is not None:
+            record.archive_path = self.archive.path
+            selected_segment = self.archive.manifest["segments"][
+                list(self.segment_paths).index(self.segment_selection.get())
+            ]
+            record.videos = {
+                label: self.archive.folder / selected_segment[key]
+                for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
+                if selected_segment[key] is not None
+            }
         self.report = record
-        self.selection.set(str(record.path))
-        self.report_paths[str(record.path)] = record.path
+        selected_path = record.archive_path or record.path
+        self.selection.set(str(selected_path))
+        self.report_paths[str(selected_path)] = selected_path
         self.report_combo.configure(values=list(self.report_paths))
         self.report_view.set(record.markdown)
         self.player.unload()
         self.video_combo.configure(values=list(record.videos))
         self.video_selection.set("")
-        self.status.set(str(record.path) + ("\n" + record.warning if record.warning else ""))
+        self.status.set(str(selected_path) + ("\n" + record.warning if record.warning else ""))
         for label in ("Overlay", "Raw video", "Source video"):
             if label in record.videos and record.videos[label].is_file():
                 self.video_selection.set(label)
@@ -606,3 +665,5 @@ class ReviewPanel(ttk.Frame):
             self.cancel.set()
             self.after_cancel(self.timer)
             self.player.close()
+            if self.archive is not None:
+                self.archive.close()

@@ -29,6 +29,7 @@ class PracticeOptions:
     interval_end: str = "12"
     reference_name: str = "My reference"
     teacher_note: str = ""
+    practice_name: str = "My practice"
     record_raw: bool = False
     raw_path: str = "videos/practice_01.mp4"
     record_overlay: bool = False
@@ -101,11 +102,12 @@ class PracticeOptions:
             raise ValueError("Choose a new, saved, or video-interval reference")
         if self.teacher_note.strip():
             args += ["--teacher-reviewed", self.teacher_note]
-        self.recording_paths()
-        if self.record_raw:
-            args += ["--record-video", self.raw_path]
-        if self.record_overlay:
-            args += ["--record-overlay", self.overlay_path]
+        from .archive import practice_path
+
+        practice_path(Path("practice"), self.practice_name)
+        args += ["--practice-name", self.practice_name]
+        if self.headless:
+            args += ["--record-video", "--record-overlay"]
         return args
 
 

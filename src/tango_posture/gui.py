@@ -4,6 +4,7 @@ import json
 import queue
 import sqlite3
 import threading
+import time
 import tkinter as tk
 import tomllib
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from tkinter import filedialog, messagebox, ttk
 
+from .archive import practice_directory, practice_path, read_manifest
 from .calibration import load_calibration_file
 from .config import (
     ENV_MAP,
@@ -90,7 +92,8 @@ class PracticeGUI:
                 tk.BooleanVar(value=value) if isinstance(value, bool) else tk.StringVar(value=value)
             )
         options = PracticeOptions(
-            interval_end=f"{cfg.calibration_duration:g}", record_raw=True, record_overlay=True
+            interval_end=f"{cfg.calibration_duration:g}", record_raw=True, record_overlay=True,
+            practice_name=f"Practice_{time.strftime('%Y%m%d_%H%M%S')}",
         )
         options.raw_path, options.overlay_path = next_recordings()
         self.options: dict[str, tk.Variable] = {
@@ -275,20 +278,13 @@ class PracticeGUI:
 
     def _recording(self, page):
         ttk.Separator(page).grid(row=2, column=0, columnspan=3, sticky="ew", pady=12)
-        for row, enabled, name, label in (
-            (3, "record_raw", "raw_path", "Record raw video"),
-            (5, "record_overlay", "overlay_path", "Record annotated overlay"),
-        ):
-            ttk.Checkbutton(page, text=label, variable=self.options[enabled]).grid(
-                row=row, column=0, columnspan=3, sticky="w", pady=8
-            )
-            self._entry(page, row + 1, "Output filename", self.options[name], "recording")
-        ttk.Button(page, text="Suggest unused filenames", command=self.suggest_names).grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=12
+        self._entry(page, 3, "Practice name", self.options["practice_name"])
+        ttk.Button(page, text="New practice name", command=self.suggest_names).grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=12
         )
         ttk.Label(
             page,
-            text="Relative recording filenames are saved under videos/. Existing recordings require confirmation before replacement. Reports and session exports use the selected data directory. Microphone audio and native macOS muxing depend on platform support.",
+            text="Practice archives (.tp) are saved in practice/ under the selected data directory. Existing practice names append new recordings.",
             wraplength=800,
         ).grid(row=8, column=0, columnspan=3, sticky="w", pady=12)
 
@@ -434,6 +430,7 @@ class PracticeGUI:
         raw, overlay = next_recordings()
         self.options["raw_path"].set(raw)
         self.options["overlay_path"].set(overlay)
+        self.options["practice_name"].set(f"Practice_{time.strftime('%Y%m%d_%H%M%S')}")
 
     def refresh_references(self):
         raw_data_dir = str(self.settings[self.fields["data_dir"]].get())
@@ -545,22 +542,16 @@ class PracticeGUI:
         cfg, options = self.config(), self.practice_options()
         options.arguments(cfg, Path("settings.toml"))  # Validate before opening a camera.
         verify(Path(cfg.model_path))
-        existing = [str(path) for path in options.recording_paths() if path.exists()]
-        if existing and not messagebox.askyesno(
-            "Replace recordings?",
-            "These files will be replaced:\n" + "\n".join(existing),
-            parent=self.root,
-        ):
-            return
+        archive = practice_path(practice_directory(cfg.data_dir), options.practice_name)
+        if archive.exists():
+            read_manifest(archive)
         self.review.player.pause()
-        if self.review.player.reader and self.review.player.reader.path in options.recording_paths():
-            self.review.player.unload()
         self.display = GuiDisplay()
         if not options.headless:
             self._preview()
         self.start_button.configure(state="disabled")
         self.record_button.configure(
-            state="normal" if options.record_raw or options.record_overlay else "disabled"
+            state="disabled" if options.headless else "normal"
         )
         if not options.headless:
             self.live_record_button.configure(state=self.record_button.cget("state"))
@@ -603,7 +594,7 @@ class PracticeGUI:
             self.running and self.display and not self.display.stopped.is_set()
             and not self.record_button.instate(["disabled"])
         ):
-            self.display.recording.set()
+            self.display.request("r")
             self.record_button.configure(state="disabled")
             if self.preview is not None:
                 self.live_record_button.configure(state="disabled")
@@ -664,9 +655,10 @@ class PracticeGUI:
                 return
             self.display.request(key)
             if key in ("e", "q"):
-                self.record_button.configure(state="disabled")
+                state = "normal" if key == "e" else "disabled"
+                self.record_button.configure(state=state)
                 if self.preview is not None:
-                    self.live_record_button.configure(state="disabled")
+                    self.live_record_button.configure(state=state)
                 self.status.set("Saving recordings and practice outputs...")
 
     def append_log(self, text):
@@ -676,6 +668,16 @@ class PracticeGUI:
         self.log.configure(state="disabled")
 
     def pump(self):
+        if self.display is not None:
+            latest_practice = None
+            while True:
+                try:
+                    latest_practice = self.display.reports.get_nowait()
+                except queue.Empty:
+                    break
+            if latest_practice:
+                self.review.guard(partial(self.review.add_report, latest_practice))
+                self.tabs.select(self.review)
         if self.display and self.preview:
             try:
                 image = self.display.frames.get_nowait()

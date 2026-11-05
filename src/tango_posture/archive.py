@@ -3,9 +3,18 @@
 import json
 import shutil
 import stat
+import threading
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, TemporaryDirectory
-from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
+
+_locks: dict[Path, threading.RLock] = {}
+_locks_guard = threading.Lock()
+
+
+def _archive_lock(path: Path):
+    with _locks_guard:
+        return _locks.setdefault(path.resolve(), threading.RLock())
 
 
 def practice_directory(data_dir: str) -> Path:
@@ -27,7 +36,7 @@ def read_manifest(path: Path) -> dict:
                 raise ValueError("Unsupported practice archive version")
             segments = data.get("segments")
             if not isinstance(segments, list):
-                raise ValueError("Invalid practice segment list")
+                raise TypeError("Invalid practice segment list")
             for index, segment in enumerate(segments):
                 if not isinstance(segment, dict) or segment.get("index") != index:
                     raise ValueError("Invalid practice segment index")
@@ -41,12 +50,18 @@ def read_manifest(path: Path) -> dict:
                     if segment.get(key) != expected or expected not in archive.namelist():
                         raise ValueError(f"Missing practice segment file: {expected}")
             return data
-    except (BadZipFile, KeyError, UnicodeError) as error:
+    except (BadZipFile, KeyError, UnicodeError, TypeError) as error:
         raise ValueError(f"Invalid practice archive: {path.name}") from error
 
 
 def append_segment(path: Path, report: Path, video: Path | None, overlay: Path | None,
                    timestamps: list[float]) -> int:
+    with _archive_lock(path):
+        return _append_segment(path, report, video, overlay, timestamps)
+
+
+def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path | None,
+                    timestamps: list[float]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest = read_manifest(path) if path.exists() else {
         "version": 1, "name": path.stem, "segments": [],
@@ -69,6 +84,7 @@ def append_segment(path: Path, report: Path, video: Path | None, overlay: Path |
             continue
         markdown = markdown.replace(source.resolve().as_uri(), segment[key])
         markdown = markdown.replace(str(source.resolve()), segment[key])
+        markdown = markdown.replace(str(source), segment[key])
     manifest["segments"].append(segment)
     with NamedTemporaryFile(dir=path.parent, suffix=".tp.tmp", delete=False) as stream:
         temporary = Path(stream.name)
@@ -92,6 +108,28 @@ def append_segment(path: Path, report: Path, video: Path | None, overlay: Path |
     finally:
         temporary.unlink(missing_ok=True)
     return index
+
+
+def store_analysis(path: Path, analysis: Path) -> None:
+    with _archive_lock(path):
+        _store_analysis(path, analysis)
+
+
+def _store_analysis(path: Path, analysis: Path) -> None:
+    read_manifest(path)
+    with NamedTemporaryFile(dir=path.parent, suffix=".tp.tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        with ZipFile(path) as previous, ZipFile(temporary, "w", compression=ZIP_DEFLATED) as output:
+            for member in previous.infolist():
+                if member.filename == analysis.name:
+                    continue
+                with previous.open(member) as source, output.open(member, "w") as target:
+                    shutil.copyfileobj(source, target)
+            output.write(analysis, analysis.name)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class PracticeArchive:

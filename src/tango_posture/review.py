@@ -68,6 +68,7 @@ class ReportRecord:
     videos: dict[str, Path]
     timestamps: list[float] = field(default_factory=list)
     warning: str = ""
+    archive_path: Path | None = None
 
     @property
     def digest(self) -> str:
@@ -170,6 +171,10 @@ def save_analysis(
         f"{report.path.stem}.analysis-{now:%Y%m%dT%H%M%S}-{uuid4().hex[:8]}.json"
     )
     _write_json(path, payload)
+    if report.archive_path is not None:
+        from .archive import store_analysis
+
+        store_analysis(report.archive_path, path)
     return path
 
 

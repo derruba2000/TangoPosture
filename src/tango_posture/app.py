@@ -1,6 +1,7 @@
 """Desktop controller. Headless and GUI use the same observation/session pipeline."""
 
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -9,6 +10,7 @@ from contextlib import suppress
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any
 
 import cv2
@@ -163,12 +165,9 @@ class Application:
         self.recording_finished = False
         self.raw_writer: cv2.VideoWriter | None = None
         self.overlay_writer: cv2.VideoWriter | None = None
-        from tempfile import TemporaryDirectory
-
         from .archive import practice_directory, practice_path
 
-        self.workspace = TemporaryDirectory(prefix="tango-recording-")
-        self.workspace_path = Path(self.workspace.name)
+        self.workspace_path = Path(mkdtemp(prefix="tango-recording-"))
         self.practice_file = practice_path(
             practice_directory(cfg.data_dir),
             practice_name or f"Practice_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000000:06d}",
@@ -194,6 +193,8 @@ class Application:
             self.rows = []
             self.state = "READY"
         self.recording = True
+        if self.display is not None:
+            self.display.recording.set()
         if self.beat_tracker:
             with self.beat_tracker.lock:
                 self.beat_tracker.recorded_chunks.clear()
@@ -445,11 +446,11 @@ class Application:
     def run(self) -> list[Path]:
         status = "completed"
         auto_record = self.headless and bool(self.record_video or self.record_overlay)
-        if auto_record:
-            self.start_recording()
         print(GUIDANCE)
         try:
             self.model_hash = verify(Path(self.cfg.model_path))
+            if auto_record:
+                self.start_recording()
             self.versions = runtime_versions(self.model_hash)
             if self.estimator is None:
                 self.estimator = MediaPipeEstimator(Path(self.cfg.model_path))
@@ -1039,11 +1040,11 @@ class Application:
             status = "interrupted"
             raise
         finally:
-            self.stop_recording()
-            if not self.recording_finished:
-                self.record_video = None
-                self.record_overlay = None
             try:
+                self.stop_recording()
+                if not self.recording_finished:
+                    self.record_video = None
+                    self.record_overlay = None
                 end_time = self.last_timestamp
                 if self.capture and not self.video:
                     end_time = max(end_time, time.monotonic() - self.capture.origin)
@@ -1067,5 +1068,8 @@ class Application:
                             self.display.close()
                         elif not self.headless:
                             cv2.destroyAllWindows()
-                        self.workspace.cleanup()
+                        if self.report_written or not self.frame_log:
+                            shutil.rmtree(self.workspace_path)
+                        else:
+                            print(f"Practice save failed; recover recording files from: {self.workspace_path}")
         return self.outputs

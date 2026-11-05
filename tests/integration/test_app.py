@@ -138,7 +138,8 @@ def test_native_display_buttons_use_the_existing_session_pipeline(tmp_path, refe
         assert app.state == "FINISHED"
         assert storage.list("sessions")[0]["status"] == "completed"
         assert capture.closed and estimator.closed and display.stopped.is_set()
-        assert (tmp_path / "reports" / "latest_report.md").is_file()
+        assert app.practice_file.is_file()
+        assert not (tmp_path / "reports").exists()
     finally:
         storage.close()
 
@@ -297,6 +298,35 @@ def test_three_recordings_share_one_practice_archive(tmp_path, cfg, monkeypatch)
         storage.close()
 
 
+def test_archive_save_failure_preserves_recordings_and_closes_capture(tmp_path, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    workspace = tmp_path / "recovery"
+    workspace.mkdir()
+    monkeypatch.setattr("tango_posture.app.mkdtemp", lambda **_: str(workspace))
+
+    def fail_save(*args):
+        raise OSError("archive disk full")
+
+    monkeypatch.setattr("tango_posture.archive.append_segment", fail_save)
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    capture, estimator = FakeCapture(count=3), FakeEstimator()
+    app = Application(
+        cfg, storage, video="fixture", headless=True, capture=capture,
+        estimator=estimator, record_video=tmp_path / "raw.mp4",
+    )
+    try:
+        with pytest.raises(OSError, match="disk full"):
+            app.run()
+        assert capture.closed and estimator.closed
+        assert (workspace / "video_00.mp4").stat().st_size > 0
+        assert (workspace / "overlay_00.mp4").stat().st_size > 0
+        assert list(workspace.glob("report_*.md"))
+    finally:
+        storage.close()
+
+
 def test_headless_interval(tmp_path, cfg, monkeypatch):
     monkeypatch.setattr("tango_posture.app.verify", lambda p: MANIFEST["sha256"])
     cfg.data_dir = str(tmp_path)
@@ -413,16 +443,21 @@ def test_opt_in_video_recording(tmp_path, reference, cfg, monkeypatch):
             record_overlay=overlay_path,
         )
         app.run()
-        assert raw_path.is_file() and raw_path.stat().st_size > 0
-        assert overlay_path.is_file() and overlay_path.stat().st_size > 0
-        latest_report = tmp_path / "reports" / "latest_report.md"
-        assert latest_report.is_file()
-        report_text = latest_report.read_text(encoding="utf-8")
-        assert "## 1. What This Report Is & Its Purpose" in report_text
-        assert "## 4. What Went Wrong & Where in Time" in report_text
-        assert "### Saved Video & Overlay Files (For Consultation & Analysis)" in report_text
-        assert str(raw_path) in report_text
-        assert str(overlay_path) in report_text
+        assert not raw_path.exists() and not overlay_path.exists()
+        assert not (tmp_path / "reports").exists()
+        replay = PracticeArchive(app.practice_file)
+        try:
+            assert (replay.folder / "video_00.mp4").stat().st_size > 0
+            assert (replay.folder / "overlay_00.mp4").stat().st_size > 0
+            report_text = replay.report(0).read_text(encoding="utf-8")
+            assert "## 1. What This Report Is & Its Purpose" in report_text
+            assert "## 4. What Went Wrong & Where in Time" in report_text
+            assert "### Saved Video & Overlay Files (For Consultation & Analysis)" in report_text
+            assert "video_00.mp4" in report_text
+            assert "overlay_00.mp4" in report_text
+            assert str(app.workspace_path) not in report_text
+        finally:
+            replay.close()
         rel_app = Application(
             cfg,
             storage,
