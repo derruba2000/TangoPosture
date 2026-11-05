@@ -301,7 +301,7 @@ def export_toml(cfg: Config) -> str:
 def load(
     path: Path | None, overrides: dict, env_path: Path = Path(".env"), *, use_env: bool = True
 ) -> Config:
-    data: dict = load_dotenv(env_path) if use_env else {}
+    data: dict = {}
     if path:
         data.update(tomllib.loads(path.read_text()))
     data.update({k: v for k, v in overrides.items() if v is not None})

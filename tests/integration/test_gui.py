@@ -76,6 +76,11 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
     root.update()
     window = gui.about_window
     assert window.winfo_ismapped()
+    assert gui.about_button.winfo_ismapped()
+    assert gui.about_button.cget("text") == "About"
+    assert window.winfo_rootx() >= 0 and window.winfo_rooty() >= 0
+    assert window.winfo_rootx() + window.winfo_width() <= window.winfo_screenwidth()
+    assert window.winfo_rooty() + window.winfo_height() <= window.winfo_screenheight()
     labels = [
         child.cget("text") for child in window.winfo_children()[0].winfo_children()
         if child.winfo_class() == "TLabel"
@@ -86,7 +91,7 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
     gui.open_about()
     assert gui.about_window is window
     window.withdraw()
-    gui.open_about()
+    gui.about_button.invoke()
     root.update()
     assert gui.about_window is window and window.winfo_ismapped()
 

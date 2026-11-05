@@ -125,6 +125,8 @@ class PracticeGUI:
         ).pack(anchor="w", pady=(4, 0))
         self.help_button = ttk.Button(header, text="Help", command=self.open_help)
         self.help_button.pack(side="right", padx=(12, 0))
+        self.about_button = ttk.Button(header, text="About", command=self.open_about)
+        self.about_button.pack(side="right", padx=(12, 0))
         self.tabs = ttk.Notebook(root)
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=16)
         self.practice_page = self._page(self.tabs, "Practice")
@@ -354,15 +356,14 @@ class PracticeGUI:
 
     def open_about(self):
         if self.about_window is not None and self.about_window.winfo_exists():
-            self.about_window.deiconify()
-            self.about_window.lift()
-            self.about_window.focus_set()
+            self.show_about_window(self.about_window)
             return
         try:
             app_version = version("tango-posture")
         except PackageNotFoundError:
             app_version = "development"
         window = self.about_window = tk.Toplevel(self.root)
+        window.withdraw()
         window.title("About TangoPosture")
         window.transient(self.root)
         window.resizable(False, False)
@@ -380,6 +381,19 @@ class PracticeGUI:
         ttk.Button(content, text="Close", command=window.withdraw).pack(pady=(18, 0))
         window.protocol("WM_DELETE_WINDOW", window.withdraw)
         window.bind("<Escape>", lambda _: window.withdraw())
+        self.show_about_window(window)
+
+    def show_about_window(self, window: tk.Toplevel):
+        window.update_idletasks()
+        width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+        left = self.root.winfo_rootx() + (self.root.winfo_width() - width) // 2
+        top = self.root.winfo_rooty() + (self.root.winfo_height() - height) // 2
+        left = max(0, min(left, window.winfo_screenwidth() - width))
+        top = max(0, min(top, window.winfo_screenheight() - height))
+        window.geometry(f"{width}x{height}+{left}+{top}")
+        window.deiconify()
+        window.lift()
+        window.focus_set()
 
     def open_help(self):
         if self.help_window and self.help_window.winfo_exists():

@@ -50,16 +50,12 @@ def test_full_environment_and_toml_round_trip(tmp_path):
     assert Config.model_validate(tomllib.loads(export_toml(cfg))) == cfg
 
 
-def test_environment_precedence_and_legacy_migration(tmp_path, monkeypatch):
+def test_environment_is_ignored_and_toml_cli_precedence_is_preserved(tmp_path, monkeypatch):
     env = tmp_path / ".env"
-    env.write_text("HEAD_DOWN_ANGLE_DEGREES=-19\n")
-    with pytest.raises(ValueError, match="tp_HEAD_DOWN_ANGLE_DEGREES"):
-        load_dotenv(env)
-    assert load_dotenv(env, include_process=False, allow_legacy=True)["head_down_angle"] == -19
-    env.write_text("tp_HEAD_DOWN_ANGLE_DEGREES=-19\n")
+    env.write_text("HEAD_DOWN_ANGLE_DEGREES=-19\ntp_HEAD_DOWN_ANGLE_DEGREES=-21\n")
     monkeypatch.setenv("HEAD_DOWN_ANGLE_DEGREES", "-99")
     monkeypatch.setenv("tp_HEAD_DOWN_ANGLE_DEGREES", "-21")
-    assert load(None, {}, env).head_down_angle == -21
+    assert load(None, {}, env).head_down_angle == -15
     assert load(None, {}, env, use_env=False).head_down_angle == -15
     settings = tmp_path / "settings.toml"
     settings.write_text("head_down_angle=-23\n")
@@ -67,11 +63,9 @@ def test_environment_precedence_and_legacy_migration(tmp_path, monkeypatch):
     assert load(settings, {"head_down_angle": -25}, env).head_down_angle == -25
 
 
-@pytest.mark.parametrize(
-    "line", ["tp_MIRROR=maybe", "tp_CAMERA=foo", "tp_TANGO_BPM=nan", "tp_AXIS_CURVE_CLEAR=0.8"]
-)
+@pytest.mark.parametrize("line", ['mirror="maybe"', 'camera="foo"', 'tango_bpm=nan', 'axis_curve_clear=0.8'])
 def test_invalid_settings_are_rejected(tmp_path, line):
-    env = tmp_path / ".env"
-    env.write_text(line)
+    settings = tmp_path / "settings.toml"
+    settings.write_text(line)
     with pytest.raises(ValueError):
-        load(None, {}, env)
+        load(settings, {})
