@@ -15,7 +15,7 @@ and pose-model setup. Optional report interpretation connects to your configured
 
 ## Key Features Added
 
-1. **All-Angle Calibration & 360° Pivot / Side-Step Support (`tp_ALLOW_ALL_ANGLES=true`)**
+1. **All-Angle Calibration & 360° Pivot / Side-Step Support (`allow_all_angles=true`)**
    - Calibrate and practice **facing the camera**, in **side-on profile**, or while executing **side steps (*pasos al costado*), ochos, and 360° pivots** without losing tracking.
    - Uses your central spine axis (midpoint of shoulders to midpoint of hips) when both sides are visible, and seamlessly falls back to the visible side during pivots.
 2. **Dedicated Calibration Camera & Reference Archives (`calibrations/`)**
@@ -23,16 +23,16 @@ and pose-model setup. Optional report interpretation connects to your configured
    - **References > Open calibration camera** opens a dedicated camera window. A valid capture saves `calibrations/<reference name>.tpc`, containing raw video, overlay video, and `reference.json`. Capturing again with the same name replaces that archive rather than adding recordings; failed captures preserve the previous valid file.
 3. **Head Horizontal Alignment & Neutral Camera Offset**
    - Draws a cyan horizontal reference line from the ear and a live ear-to-nose pitch vector (`Head horiz: +0.0 deg`).
-   - Compensates for natural ear-to-nose landmark geometry and camera tilt via `tp_HEAD_NEUTRAL_OFFSET_DEGREES=-12.0` (or auto-zeroes to your calibrated straight posture) and triggers a red **`BAD HEAD ALIGNMENT`** alert when the head drops below `tp_HEAD_DOWN_ANGLE_DEGREES` (`-15.0 deg`) for longer than `tp_HEAD_DOWN_DURATION_SECONDS` (`3.0s`).
+   - Compensates for natural ear-to-nose landmark geometry and camera tilt via `head_neutral_offset=-12.0` (or auto-zeroes to your calibrated straight posture) and triggers a red **`BAD HEAD ALIGNMENT`** alert when the head drops below `head_down_angle` (`-15.0 deg`) for longer than `head_down_duration` (`3.0s`).
 4. **Shoulder Tension Detection (`LOWER YOUR SHOULDERS`)**
    - Measures camera-distance-invariant vertical neck clearance (`shoulder.y - ear.y` normalized by rigid skull/body scale) on both shoulders.
-   - Flags **`LOWER SHOULDERS (+XX%)`** with a downward arrow on the shoulder as soon as elevation crosses `tp_SHOULDER_RAISE_THRESHOLD_PCT`, and displays a red **`LOWER YOUR SHOULDERS`** banner after `tp_SHOULDER_TENSION_DURATION_SECONDS` (`1.5s`).
+   - Flags **`LOWER SHOULDERS (+XX%)`** with a downward arrow on the shoulder as soon as elevation crosses `shoulder_raise_threshold`, and displays a red **`LOWER YOUR SHOULDERS`** banner after `shoulder_tension_duration` (`1.5s`).
 5. **Leader / Follower Role Recognition with Hysteresis**
    - Automatically identifies **`LEADER`** (left arm raised, right arm horizontal) or **`FOLLOWER`** (right arm raised, left arm horizontal).
-   - Uses configurable hysteresis (`tp_ROLE_ASSIGN_MS=300` to assign from `NONE`, `tp_ROLE_HOLD_MS=5000` to hold the role across turns/pivots before returning to `NONE`).
+   - Uses configurable hysteresis (`role_assign_ms=300` to assign from `NONE`, `role_hold_ms=5000` to hold the role across turns/pivots before returning to `NONE`).
 6. **Closed vs. Open Embrace & Closed-Embrace Knee Bend Check**
-   - Classifies active embraces as **`CLOSED EMBRACE`** or **`OPEN EMBRACE`** (`tp_EMBRACE_CLOSED_THRESHOLD=0.72`) and displays `Embrace: CLOSED EMBRACE` or `Embrace: OPEN EMBRACE` directly below the `Role:` label.
-   - When in **`CLOSED EMBRACE`**, monitors knee flexion (`180° - hip–knee–ankle angle`). If your knees are locked/straighter than `tp_CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` (`6.0 deg`), it highlights the knee joints on the overlay (`BEND KNEES`) and triggers a red **`BEND YOUR KNEES IN CLOSED EMBRACE`** alert after `tp_KNEE_STRAIGHT_DURATION_SECONDS` (`1.5s`).
+   - Classifies active embraces as **`CLOSED EMBRACE`** or **`OPEN EMBRACE`** (`embrace_closed_threshold=0.72`) and displays `Embrace: CLOSED EMBRACE` or `Embrace: OPEN EMBRACE` directly below the `Role:` label.
+   - When in **`CLOSED EMBRACE`**, monitors knee flexion (`180° - hip–knee–ankle angle`). If your knees are locked/straighter than `closed_embrace_min_knee_bend` (`6.0 deg`), it highlights the knee joints on the overlay (`BEND KNEES`) and triggers a red **`BEND YOUR KNEES IN CLOSED EMBRACE`** alert after `knee_straight_duration` (`1.5s`).
 7. **Argentine Tango 8-Beat Musical Phrase Tracker**
    - **Silence / No Music Gate**: Displays **`WAITING FOR SONG TO BEGIN...`** with all `1..8` beat boxes unlit (`beat = 0`, `phrase = 0`) when no music is playing.
    - **30-Second Phrase-Start Analysis**: As soon as a song is detected on the microphone, starts a 30-second analysis window (`UNDERSTANDING BEATS (0/30s -> 30/30s)`) using scale-invariant multi-band spectral flux and 8-beat harmonic comb autocorrelation while progressing through beats `1 -> 2 -> ... -> 8` in green.
@@ -174,11 +174,11 @@ Settings and presets retain the server, model, instruction, timeout, temperature
 context size, report character limit, and output-token limit. Environment examples:
 
 ```dotenv
-tp_OLLAMA_BASE_URL="http://127.0.0.1:11434"
-tp_OLLAMA_MODEL="llama3.2"
-tp_OLLAMA_TIMEOUT=120
-tp_OLLAMA_NUM_CTX=16384
-tp_OLLAMA_NUM_PREDICT=2048
+ollama_base_url="http://127.0.0.1:11434"
+ollama_model="llama3.2"
+ollama_timeout=120
+ollama_num_ctx=16384
+ollama_num_predict=2048
 ```
 
 Completed analyses are stored inside the practice archive alongside their report as `.analysis-*.json`, with
@@ -240,7 +240,7 @@ and report fields are unchanged.
 
 All application environment variables use the case-sensitive **`tp_` prefix**,
 preserving the previous uppercase name: for example,
-`tp_HEAD_DOWN_ANGLE_DEGREES`. System variables such as `PATH` are unaffected.
+`head_down_angle`. System variables such as `PATH` are unaffected.
 [`.env.example`](.env.example) lists every supported variable, including camera,
 file paths, calibration, and metric thresholds. The GUI shows each variable's exact
 name alongside its editable value. Precedence is defaults → `.env` → process
@@ -256,21 +256,21 @@ Common environment settings:
 
 | `.env` Variable | Default | Description |
 | --- | --- | --- |
-| `tp_HEAD_NEUTRAL_OFFSET_DEGREES` | `-12.0` | Compensates for camera tilt and ear-to-nose landmark offset when standing straight (`0.0 deg` = level) |
-| `tp_HEAD_DOWN_ANGLE_DEGREES` | `-15.0` | Downward head pitch threshold (below neutral `0.0 deg`) that flags downward head tilt |
-| `tp_HEAD_DOWN_DURATION_SECONDS` | `3.0` | Seconds below `tp_HEAD_DOWN_ANGLE_DEGREES` before triggering red `BAD HEAD ALIGNMENT` alert |
-| `tp_SHOULDER_NEUTRAL_CLEARANCE` | `1.71` | Relaxed vertical ear-to-shoulder clearance ratio when running uncalibrated (`0%` tension baseline) |
-| `tp_SHOULDER_RAISE_THRESHOLD_PCT` | `16.0` | Shoulder elevation `%` above neutral that flags `LOWER SHOULDERS (+XX%)` |
-| `tp_SHOULDER_TENSION_DURATION_SECONDS` | `1.5` | Seconds above `tp_SHOULDER_RAISE_THRESHOLD_PCT` before triggering red `LOWER YOUR SHOULDERS` alert |
-| `tp_ROLE_ASSIGN_MS` | `300` | Milliseconds of continuous detection required to transition from `NONE` to `LEADER` or `FOLLOWER` |
-| `tp_ROLE_HOLD_MS` | `5000` | Milliseconds to hold `LEADER` or `FOLLOWER` after detection before returning to `NONE` |
-| `tp_EMBRACE_CLOSED_THRESHOLD` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` (`<= 0.72`) from `OPEN EMBRACE` (`> 0.72`) |
-| `tp_CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES` | `6.0` | Minimum knee flexion angle (`180° - hip–knee–ankle`) required when in `CLOSED EMBRACE` |
-| `tp_KNEE_STRAIGHT_DURATION_SECONDS` | `1.5` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
-| `tp_ALLOW_ALL_ANGLES` | `true` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |
-| `tp_BEAT_TRACKING_ENABLED` | `true` | Enables live microphone Argentine Tango 8-beat phrase tracking and audio recording |
-| `tp_TANGO_BPM` | `120.0` | Initial tempo prior (BPM) before the 30-second audio analyzer locks onto the song's tempo |
-| `tp_BEAT_ANALYSIS_SECONDS` | `30.0` | Duration of active musical audio (`30s`) used to lock onto the exact start (Beat 1) of each 8-beat phrase |
+| `head_neutral_offset` | `-12.0` | Compensates for camera tilt and ear-to-nose landmark offset when standing straight (`0.0 deg` = level) |
+| `head_down_angle` | `-15.0` | Downward head pitch threshold (below neutral `0.0 deg`) that flags downward head tilt |
+| `head_down_duration` | `3.0` | Seconds below `head_down_angle` before triggering red `BAD HEAD ALIGNMENT` alert |
+| `shoulder_neutral_clearance` | `1.71` | Relaxed vertical ear-to-shoulder clearance ratio when running uncalibrated (`0%` tension baseline) |
+| `shoulder_raise_threshold` | `16.0` | Shoulder elevation `%` above neutral that flags `LOWER SHOULDERS (+XX%)` |
+| `shoulder_tension_duration` | `1.5` | Seconds above `shoulder_raise_threshold` before triggering red `LOWER YOUR SHOULDERS` alert |
+| `role_assign_ms` | `300` | Milliseconds of continuous detection required to transition from `NONE` to `LEADER` or `FOLLOWER` |
+| `role_hold_ms` | `5000` | Milliseconds to hold `LEADER` or `FOLLOWER` after detection before returning to `NONE` |
+| `embrace_closed_threshold` | `0.72` | Arm compactness threshold separating `CLOSED EMBRACE` from `OPEN EMBRACE` |
+| `closed_embrace_min_knee_bend` | `6.0` | Minimum knee flexion angle required when in `CLOSED EMBRACE` |
+| `knee_straight_duration` | `1.5` | Seconds with unbent knees in closed embrace before triggering `BEND YOUR KNEES IN CLOSED EMBRACE` |
+| `allow_all_angles` | `true` | Enables calibration and posture tracking facing the camera, in profile, and across 360° pivots/side steps |
+| `beat_tracking` | `true` | Enables live microphone Argentine Tango 8-beat phrase tracking and audio recording |
+| `tango_bpm` | `120.0` | Initial tempo prior (BPM) before the 30-second audio analyzer locks onto the song's tempo |
+| `beat_analysis_seconds` | `30.0` | Duration of active musical audio used to lock onto the exact start (Beat 1) of each 8-beat phrase |
 
 ---
 
