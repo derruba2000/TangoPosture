@@ -792,7 +792,7 @@ beat_tracking = false
 tango_bpm = 120.0
 ```
 
-The current configuration loader also recognises `BEAT_TRACKING_ENABLED` and `TANGO_BPM` from `.env` or the process environment. Precedence is code defaults, then `.env`, then process environment, then TOML, then applicable CLI overrides. A TOML setting therefore overrides the same field from an environment variable.
+The current configuration loader also recognises `tp_BEAT_TRACKING_ENABLED` and `tp_TANGO_BPM` from `.env` or the process environment. Precedence is code defaults, then `.env`, then process environment, then TOML, then applicable CLI overrides. A TOML setting therefore overrides the same field from an environment variable.
 
 Microphone samples are processed locally; this implementation does not save an audio recording. This is audio input, distinct from the voice coaching excluded by Stage 1.
 
@@ -816,7 +816,7 @@ The writers use a fixed output frame rate from capture metadata, falling back to
 
 The workspace adds an ear-to-nose angle relative to image horizontal, separate from the selected-side ear–shoulder inclination used by Stage 1. It chooses a usable ear, compares its vertical location with the nose, and produces an image-plane angle. The current default warning threshold is −15° sustained for three seconds, with configuration fields `head_down_angle` and `head_down_duration`.
 
-Environment mappings are `HEAD_DOWN_ANGLE_DEGREES` and `HEAD_DOWN_DURATION_SECONDS`. These names identify implementation settings; they are not evidence that the measurement determines actual gaze or anatomical neck flexion.
+Environment mappings are `tp_HEAD_DOWN_ANGLE_DEGREES` and `tp_HEAD_DOWN_DURATION_SECONDS`. These names identify implementation settings; they are not evidence that the measurement determines actual gaze or anatomical neck flexion.
 
 The current overlay labels this condition “BAD HEAD ALIGNMENT” and “head pointing down.” Those labels are stronger than the measurement supports and depart from the original Stage 1 wording requirements. Interpret the underlying result only as an ear–nose image relationship. It is not a teacher judgement or proof that someone is looking at the floor.
 
@@ -832,7 +832,7 @@ This extra path uses different landmark checks and can operate outside the accep
    - **Smoothing**: Exponential smoothing with time constant `smoothing` (default `0.25s`).
    - **Entry threshold & persistence**: Smoothed posterior offset must exceed `axis_curve_entry` (default `0.06`, i.e. `+6.0%` of the ankle-to-head axis length) continuously for `axis_curve_duration` (default `1.5s`) to transition from `WITHIN_LIMIT` → `PENDING` → `DEVIATION`.
    - **Hysteresis clearing**: Once in `DEVIATION`, the alert does not clear merely by dropping below `0.06`. The smoothed offset must fall below a lower clearing threshold `axis_curve_clear` (default `0.035`, i.e. `+3.5%`) continuously for `axis_curve_clear_duration` (default `0.75s`) before returning to `WITHIN_LIMIT`.
-   - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML as well as `.env` / environment variables `AXIS_CURVE_ENTRY`, `AXIS_CURVE_CLEAR`, `AXIS_CURVE_DURATION_SECONDS`, `AXIS_CURVE_CLEAR_DURATION_SECONDS`, and `AXIS_NEUTRAL_OFFSET`.
+   - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML as well as `.env` / environment variables `tp_AXIS_CURVE_ENTRY`, `tp_AXIS_CURVE_CLEAR`, `tp_AXIS_CURVE_DURATION_SECONDS`, `tp_AXIS_CURVE_CLEAR_DURATION_SECONDS`, and `tp_AXIS_NEUTRAL_OFFSET`.
 4. **Overlay visualization, interactive toggles, and report**: The torso drawing uses a solid magenta line from the hip midpoint to the shoulder midpoint, extended slightly at both ends, and a dashed cyan image-vertical through the hip midpoint. The displayed tilt magnitude is calculated in pixels and works with display mirroring. Both lines hide when any required shoulder/hip landmark is unreliable. Keep the camera level; the drawing shows projected torso orientation, not centre of mass or weight-bearing support. Press **`Y`** to toggle these two lines and **`V`** to toggle verbose skeleton rendering independently. The existing ankle-to-head hip-offset calculation remains separate in the status panel and `HIP OFFSET: PAST ANKLE-HEAD LINE` alert. Section 3.2b and Section 4.2c of the Markdown report still summarise its coverage, median/peak offset, and confirmed curvature intervals.
 
 Like the other workspace extensions, this is a 2D image-plane proxy of landmark alignment rather than a clinical reconstruction of lumbar lordosis or pelvic tilt.

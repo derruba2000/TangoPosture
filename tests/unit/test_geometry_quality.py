@@ -120,7 +120,7 @@ def test_view_baseline_and_far_ankle(cfg):
 
 def test_head_horizontal_alignment_and_dotenv(tmp_path):
     env_file = tmp_path / ".env"
-    env_file.write_text("HEAD_DOWN_DURATION_SECONDS=4.5\nHEAD_DOWN_ANGLE_DEGREES=-18.0\n")
+    env_file.write_text("tp_HEAD_DOWN_DURATION_SECONDS=4.5\ntp_HEAD_DOWN_ANGLE_DEGREES=-18.0\n")
     loaded = load(None, {}, env_path=env_file)
     assert loaded.head_down_duration == pytest.approx(4.5)
     assert loaded.head_down_angle == pytest.approx(-18.0)
@@ -365,7 +365,7 @@ def test_axis_curve_alignment_and_hysteresis(tmp_path):
 
     # Config env and TOML loading for axis_curve
     env_file = tmp_path / ".env"
-    env_file.write_text("AXIS_CURVE_ENTRY=0.07\nAXIS_CURVE_CLEAR=0.04\nAXIS_CURVE_DURATION_SECONDS=2.0\n")
+    env_file.write_text("tp_AXIS_CURVE_ENTRY=0.07\ntp_AXIS_CURVE_CLEAR=0.04\ntp_AXIS_CURVE_DURATION_SECONDS=2.0\n")
     cfg_loaded = load(None, {}, env_path=env_file)
     assert cfg_loaded.axis_curve_entry == pytest.approx(0.07)
     assert cfg_loaded.axis_curve_clear == pytest.approx(0.04)

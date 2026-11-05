@@ -10,6 +10,7 @@ from tango_posture.app import Application
 from tango_posture.calibration import load_calibration_file, profile
 from tango_posture.capture import Captured
 from tango_posture.models import MANIFEST, fetch, verify
+from tango_posture.practice import GuiDisplay
 from tango_posture.storage import Storage
 
 
@@ -105,6 +106,38 @@ def test_gui_controls(tmp_path, reference, cfg, monkeypatch):
         assert app.verbose_skeleton is True
         assert app.show_vertical_axis is True
         assert capture.closed and estimator.closed
+    finally:
+        storage.close()
+
+
+def test_native_display_buttons_use_the_existing_session_pipeline(tmp_path, reference, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+
+    def no_opencv_window(*args):
+        raise AssertionError("Native display must not use OpenCV windows or keyboard polling")
+
+    monkeypatch.setattr(cv2, "imshow", no_opencv_window)
+    monkeypatch.setattr(cv2, "waitKey", no_opencv_window)
+    monkeypatch.setattr(cv2, "destroyAllWindows", no_opencv_window)
+    keys = iter("sppeq")
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            super().show(image)
+            self.request(next(keys))
+
+    display = Buttons()
+    cfg.data_dir = str(tmp_path)
+    storage = Storage(tmp_path)
+    storage.save_calibration(reference)
+    capture, estimator = FakeCapture(), FakeEstimator()
+    app = Application(cfg, storage, video="fixture", reference=reference, capture=capture, estimator=estimator, display=display)
+    try:
+        app.run()
+        assert app.state == "FINISHED"
+        assert storage.list("sessions")[0]["status"] == "completed"
+        assert capture.closed and estimator.closed and display.stopped.is_set()
+        assert (tmp_path / "reports" / "latest_report.md").is_file()
     finally:
         storage.close()
 

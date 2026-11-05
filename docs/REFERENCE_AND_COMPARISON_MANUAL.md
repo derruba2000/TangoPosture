@@ -45,27 +45,27 @@ Edit [`.env`](../.env) in the project root to tune real-time visual alerts and r
 ```dotenv
 # Head horizontal alignment configuration
 # Triggers red "BAD HEAD ALIGNMENT" alert if ear-to-nose angle stays below -15.0 deg for >= 3.0s
-HEAD_DOWN_DURATION_SECONDS=3.0
-HEAD_DOWN_ANGLE_DEGREES=-15.0
+tp_HEAD_DOWN_DURATION_SECONDS=3.0
+tp_HEAD_DOWN_ANGLE_DEGREES=-15.0
 
 # Tango 8-beat musical phrase tracker configuration
-BEAT_TRACKING_ENABLED=true
-TANGO_BPM=120.0
-BEAT_ANALYSIS_SECONDS=30.0
+tp_BEAT_TRACKING_ENABLED=true
+tp_TANGO_BPM=120.0
+tp_BEAT_ANALYSIS_SECONDS=30.0
 
 # Leader / Follower role recognition hysteresis (milliseconds)
 # 300ms continuous detection to switch from NONE -> LEADER/FOLLOWER
 # 5000ms hold time before returning from LEADER/FOLLOWER -> NONE
-ROLE_ASSIGN_MS=300
-ROLE_HOLD_MS=5000
+tp_ROLE_ASSIGN_MS=300
+tp_ROLE_HOLD_MS=5000
 
 # Full-body axis curvature (ankle -> hip/bump -> back of head) threshold & hysteresis
 # Triggers "HIP OFFSET" when hip passes behind the ankle-to-back-of-head line
 # above entry (6.0% of axis length) for >= 1.5s, and only clears when below 3.5% for >= 0.75s
-AXIS_CURVE_ENTRY=0.06
-AXIS_CURVE_CLEAR=0.035
-AXIS_CURVE_DURATION_SECONDS=1.5
-AXIS_CURVE_CLEAR_DURATION_SECONDS=0.75
+tp_AXIS_CURVE_ENTRY=0.06
+tp_AXIS_CURVE_CLEAR=0.035
+tp_AXIS_CURVE_DURATION_SECONDS=1.5
+tp_AXIS_CURVE_CLEAR_DURATION_SECONDS=0.75
 ```
 
 ### 3.2 `configs/default.toml` Settings (Reference Stability & Deviation Thresholds)

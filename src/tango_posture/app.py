@@ -18,6 +18,7 @@ from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
 from .config import Config
+from .display import PracticeDisplay
 from .domain import Calibration, MetricObservation, PoseEstimator
 from .geometry import (
     AxisCurveTracker,
@@ -43,7 +44,7 @@ GUIDANCE = (
     "Fixed, level camera; whole body in frame; adequate light; uncluttered background.\n"
     "Stand side-on; fitted clothing helps. Keep the selected anatomical side visible.\n"
     "Facing means direction in the ORIGINAL UNMIRRORED image; setup is unmirrored.\n"
-    "C: calibrate (3s countdown + 12s capture); A: accept; R: retry; S: start;\n"
+    "C: calibrate (3s countdown + configured capture window); A: accept; R: retry; S: start;\n"
     "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit.\n"
     "Measurements are relative to your reference, not medical or technique judgements."
 )
@@ -96,11 +97,13 @@ class Application:
         capture: Any = None,
         record_video: Path | None = None,
         record_overlay: Path | None = None,
+        display: PracticeDisplay | None = None,
     ):
         self.cfg, self.storage, self.video, self.headless = cfg, storage, video, headless
         self.reference, self.interval, self.name, self.review = reference, interval, name, review
         self.estimator = estimator
         self.capture = capture
+        self.display = display
         self.record_video = _video_path(record_video)
         self.record_overlay = _video_path(record_overlay)
         self.session: Session | None = None
@@ -239,6 +242,8 @@ class Application:
                 recorded_overlay=self.record_overlay,
             )
             self.report_written = True
+            if self.display is not None:
+                self.display.report_ready(report_path)
             print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
 
     def _audio_cues_enabled(self) -> bool:
@@ -344,13 +349,19 @@ class Application:
                 return future.result(timeout=0.02)
             except TimeoutError:
                 # Only quit is processed during inference; other controls apply to completed frames.
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if self.poll_key(quit_only=True) == ord("q"):
                     raise KeyboardInterrupt
                 if (
-                    self.window_open
+                    self.display is None
+                    and self.window_open
                     and cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1
                 ):
                     raise KeyboardInterrupt
+
+    def poll_key(self, quit_only: bool = False) -> int:
+        if self.display is not None:
+            return self.display.poll_key(quit_only)
+        return cv2.waitKey(1) & 0xFF
 
     def run(self) -> list[Path]:
         status = "completed"
@@ -383,6 +394,9 @@ class Application:
                 self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose-inference")
             initialized = False
             while True:
+                if self.display is not None and self.display.poll_key(quit_only=True) == ord("q"):
+                    status = "stopped"
+                    break
                 tick = time.monotonic()
                 captured = self.capture.read()
                 if captured is None:
@@ -393,7 +407,7 @@ class Application:
                             raise ValueError("Video ended before the reference interval completed")
                         break
                     if not self.headless and not self.key(
-                        cv2.waitKey(1) & 0xFF, self.last_timestamp
+                        self.poll_key(), self.last_timestamp
                     ):
                         break
                     continue
@@ -918,11 +932,17 @@ class Application:
                             )
                         overlay_writer.write(panel)
                     if not self.headless:
-                        cv2.imshow("Tango Posture", panel)
+                        if self.display is not None:
+                            self.display.show(panel)
+                        else:
+                            cv2.imshow("Tango Posture", panel)
                         self.window_open = True
-                        if not self.key(cv2.waitKey(1) & 0xFF, timestamp):
+                        if not self.key(self.poll_key(), timestamp):
                             break
-                        if cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1:
+                        if (
+                            self.display is None
+                            and cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1
+                        ):
                             status = "stopped"
                             break
                 self.latencies.append((time.monotonic() - captured.captured_at) * 1000)
@@ -966,6 +986,8 @@ class Application:
                         if self.estimator:
                             self.estimator.close()
                     finally:
-                        if not self.headless:
+                        if self.display is not None:
+                            self.display.close()
+                        elif not self.headless:
                             cv2.destroyAllWindows()
         return self.outputs

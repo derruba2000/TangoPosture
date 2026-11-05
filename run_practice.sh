@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if (( $# == 0 )); then
+  exec uv run tango-posture gui
+fi
+if [[ "$1" == "--cli" ]]; then
+  shift
+fi
+
 VIDEOS_DIR="videos"
 mkdir -p "$VIDEOS_DIR"
 
@@ -33,6 +40,5 @@ exec uv run tango-posture run \
   --side left \
   --facing right \
   --record-video "$raw_video" \
-  --calibration latest --confirm-camera-unchanged \
   --record-overlay "$overlay_video" \
   "$@"

@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
 from typing import Any
+from uuid import uuid4
 
 from .config import Config
 from .domain import METRICS, UNITS, Calibration, SessionSummary
+from .review import write_metadata
 
 
 def _fmt_time(seconds: float) -> str:
@@ -115,6 +117,8 @@ def write_markdown_report(
     stamp = now_utc.strftime("%Y%m%d_%H%M%S")
     suffix = f"_{session_id[:8]}" if session_id else ""
     report_path = report_dir / f"report_{stamp}{suffix}.md"
+    if report_path.exists():
+        report_path = report_dir / f"report_{stamp}{suffix}_{uuid4().hex[:8]}.md"
     latest_path = report_dir / "latest_report.md"
 
     total_frames = len(frame_log)
@@ -596,4 +600,5 @@ def write_markdown_report(
     content = "\n".join(lines).rstrip() + "\n"
     report_path.write_text(content, encoding="utf-8")
     latest_path.write_text(content, encoding="utf-8")
+    write_metadata(report_path, source, recorded_video, recorded_overlay, [float(f["timestamp"]) for f in frame_log])
     return report_path

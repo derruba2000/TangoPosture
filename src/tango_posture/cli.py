@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .calibration import load_calibration_file
 from .config import load
+from .display import PracticeDisplay
 from .models import fetch
 from .storage import Storage
 
@@ -17,6 +18,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, help="Validated TOML configuration")
     p.add_argument("--data-dir", help="Local SQLite and exports directory")
     sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("gui", help="Open the graphical practice setup and controls").add_argument(
+        "--ignore-env",
+        action="store_true",
+        help="Open with defaults/TOML to migrate an old .env through Settings → Import",
+    )
     models = sub.add_parser("models")
     models.add_subparsers(dest="action", required=True).add_parser("fetch").add_argument(
         "--output", type=Path, help="Model destination; explicit setup-only network operation"
@@ -73,8 +79,9 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    args = parser().parse_args(arguments or ["gui"])
     storage = None
     try:
         overrides = {
@@ -89,7 +96,15 @@ def main(argv: list[str] | None = None) -> int:
                 "mirror",
             )
         }
-        cfg = load(args.config, overrides)
+        cfg = load(
+            args.config,
+            overrides,
+            use_env=display is None and not (args.command == "gui" and args.ignore_env),
+        )
+        if args.command == "gui":
+            from .gui import launch
+
+            return launch(cfg)
         if args.command == "models":
             destination = args.output or Path(cfg.model_path)
             fetch(destination)
@@ -179,9 +194,10 @@ def main(argv: list[str] | None = None) -> int:
             review,
             record_video=args.record_video,
             record_overlay=args.record_overlay,
+            display=display,
         ).run()
         return 0
-    except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
+    except (ValueError, OSError, sqlite3.Error, RuntimeError, ImportError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
     finally:

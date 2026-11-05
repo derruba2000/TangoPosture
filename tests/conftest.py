@@ -6,6 +6,8 @@ from tango_posture.domain import FrameObservation, Landmark
 from tango_posture.metrics import measure
 from tango_posture.models import MANIFEST
 
+pytest_plugins = ("conftest_ollama",)
+
 
 @pytest.fixture
 def cfg():
