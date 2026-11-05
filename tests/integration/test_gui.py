@@ -53,31 +53,19 @@ def test_markdown_text_has_explicit_contrast_colors(studio):
     assert text.tag_cget("code", "foreground") == "#202124"
 
 
-def test_minimize_button_iconifies_studio_and_live_preview(studio):
-    _, gui = studio
-    assert gui.minimize_button.winfo_ismapped()
-    calls = []
-    gui.root.iconify = lambda: calls.append("studio")
-
-    class Preview:
-        def winfo_exists(self):
-            return True
-
-        def iconify(self):
-            calls.append("preview")
-
-    gui.preview = Preview()
-    gui.minimize_button.invoke()
-    assert calls == ["preview", "studio"]
-
-
-def test_minimize_button_changes_real_tk_window_state(studio):
+def test_recording_button_replaces_custom_minimize_controls(studio):
     root, gui = studio
-    gui.minimize_button.invoke()
-    root.update()
-    assert root.state() == "iconic"
-    root.deiconify()
-    root.update()
+    assert not hasattr(gui, "minimize_button")
+    assert gui.record_button.cget("text") == "Start recording video"
+    assert gui.record_button.instate(["disabled"])
+    menu = root.nametowidget(root.cget("menu"))
+    files = root.nametowidget(menu.entrycget(0, "menu"))
+    labels = [
+        files.entrycget(index, "label")
+        for index in range(files.index("end") + 1)
+        if files.type(index) == "command"
+    ]
+    assert "Minimize app" not in labels
 
 
 def test_help_menu_opens_searchable_manual_with_section_navigation(studio):
@@ -188,6 +176,11 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
         time.sleep(0.01)
     assert gui.photo is not None
     assert gui.start_button.instate(["disabled"])
+    assert not gui.display.recording.is_set()
+    assert gui.record_button.instate(["!disabled"])
+    gui.record_button.invoke()
+    assert gui.display.recording.is_set()
+    assert gui.record_button.instate(["disabled"])
     assert Path(received[received.index("--config") + 1]).is_file()
     gui.control("p")
     assert gui.display.poll_key() == ord("p")
@@ -198,6 +191,7 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     assert stopped.is_set() and not gui.running
     assert gui.preview is None
     assert gui.start_button.instate(["!disabled"])
+    assert gui.record_button.instate(["disabled"])
     assert "Saved report" in gui.log.get("1.0", "end")
     assert gui.review.report.path == (Path.cwd() / "report_saved.md")
     assert gui.tabs.select() == str(gui.review)

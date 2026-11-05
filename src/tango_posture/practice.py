@@ -116,6 +116,7 @@ class GuiDisplay:
         self.frames: queue.Queue = queue.Queue(maxsize=1)
         self.keys: queue.SimpleQueue[int] = queue.SimpleQueue()
         self.stopped = threading.Event()
+        self.recording = threading.Event()
         self.reports: queue.SimpleQueue[Path] = queue.SimpleQueue()
 
     def show(self, image: Any) -> None:

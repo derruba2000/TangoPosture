@@ -89,7 +89,9 @@ class PracticeGUI:
             self.settings[key] = (
                 tk.BooleanVar(value=value) if isinstance(value, bool) else tk.StringVar(value=value)
             )
-        options = PracticeOptions(interval_end=f"{cfg.calibration_duration:g}")
+        options = PracticeOptions(
+            interval_end=f"{cfg.calibration_duration:g}", record_raw=True, record_overlay=True
+        )
         options.raw_path, options.overlay_path = next_recordings()
         self.options: dict[str, tk.Variable] = {
             name: tk.BooleanVar(value=value)
@@ -112,8 +114,6 @@ class PracticeGUI:
         ).pack(anchor="w", pady=(4, 0))
         self.help_button = ttk.Button(header, text="Help", command=self.open_help)
         self.help_button.pack(side="right", padx=(12, 0))
-        self.minimize_button = ttk.Button(header, text="Minimize", command=self.minimize)
-        self.minimize_button.pack(side="right")
         self.tabs = ttk.Notebook(root)
         self.tabs.grid(row=1, column=0, sticky="nsew", padx=16)
         self.practice_page = self._page(self.tabs, "Practice")
@@ -140,6 +140,11 @@ class PracticeGUI:
             footer, text="Open practice coach", command=lambda: self._guard(self.start)
         )
         self.start_button.pack(side="right", padx=(12, 0))
+        self.record_button = ttk.Button(
+            footer, text="Start recording video", state="disabled",
+            command=self.start_recording,
+        )
+        self.record_button.pack(side="right", padx=(12, 0))
         self.stop_button = ttk.Button(
             footer, text="Stop / save", state="disabled", command=lambda: self.control("q")
         )
@@ -298,7 +303,6 @@ class PracticeGUI:
         ):
             files.add_command(label=label, command=partial(self._guard, action))
         files.add_separator()
-        files.add_command(label="Minimize app", command=self.minimize, accelerator="Cmd+M")
         files.add_command(label="Quit", command=self.close)
         menu.add_cascade(label="File", menu=files)
         settings = tk.Menu(menu, tearoff=False)
@@ -319,12 +323,6 @@ class PracticeGUI:
         help_menu.add_command(label="Search & browse Tango Posture Manual", command=self.open_help)
         menu.add_cascade(label="Help", menu=help_menu)
         self.root.configure(menu=menu)
-        self.root.bind_all("<Command-m>", lambda _: self.minimize())
-
-    def minimize(self):
-        if self.preview and self.preview.winfo_exists():
-            self.preview.iconify()
-        self.root.iconify()
 
     def open_help(self):
         if self.help_window and self.help_window.winfo_exists():
@@ -561,6 +559,9 @@ class PracticeGUI:
         if not options.headless:
             self._preview()
         self.start_button.configure(state="disabled")
+        self.record_button.configure(
+            state="normal" if options.record_raw or options.record_overlay else "disabled"
+        )
         self.stop_button.configure(state="normal")
         self.status.set("Coach open. Use the live controls; setting edits apply to your next run.")
         display = self.display
@@ -594,6 +595,12 @@ class PracticeGUI:
 
         self.worker = threading.Thread(target=run, name="practice-coach")
         self.worker.start()
+
+    def start_recording(self):
+        if self.running and self.display and not self.display.stopped.is_set():
+            self.display.recording.set()
+            self.record_button.configure(state="disabled")
+            self.status.set("Recording video. Stop / save finishes and saves the recordings.")
 
     def _preview(self):
         self.preview = tk.Toplevel(self.root)
@@ -644,6 +651,7 @@ class PracticeGUI:
         if self.display:
             self.display.request(key)
             if key == "q":
+                self.record_button.configure(state="disabled")
                 self.status.set("Finishing practice and saving outputs...")
 
     def append_log(self, text):
@@ -697,6 +705,7 @@ class PracticeGUI:
                     self.preview = None
                 self.display = None
                 self.start_button.configure(state="normal")
+                self.record_button.configure(state="disabled")
                 self.stop_button.configure(state="disabled")
                 self.status.set(
                     "Practice finished. See the practice log for saved outputs."

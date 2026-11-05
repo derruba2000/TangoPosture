@@ -367,6 +367,7 @@ class Application:
         status = "completed"
         raw_writer: cv2.VideoWriter | None = None
         overlay_writer: cv2.VideoWriter | None = None
+        recording = self.display is None
         print(GUIDANCE)
         try:
             self.model_hash = verify(Path(self.cfg.model_path))
@@ -387,6 +388,10 @@ class Application:
                     analysis_seconds=self.cfg.beat_analysis_seconds,
                     audio_save_path=audio_out,
                 )
+            if self.beat_tracker and not recording:
+                with self.beat_tracker.lock:
+                    self.beat_tracker.recording_enabled = False
+                    self.beat_tracker.recorded_chunks.clear()
             if self.interval:
                 self.cal_start = self.interval[0]
                 self.state = "CALIBRATING"
@@ -415,7 +420,13 @@ class Application:
                 self.last_timestamp = timestamp
                 self.capture.last = timestamp
                 frame = self.estimate_responsively(captured.image, timestamp)
-                if self.record_video:
+                if not recording and self.display is not None and self.display.recording.is_set():
+                    recording = True
+                    if self.beat_tracker:
+                        with self.beat_tracker.lock:
+                            self.beat_tracker.recording_enabled = True
+                    print("Video recording started")
+                if recording and self.record_video:
                     if raw_writer is None:
                         raw_writer = _open_writer(
                             self.record_video, frame.width, frame.height, self.capture.fps
@@ -922,7 +933,7 @@ class Application:
                         verbose_skeleton=self.verbose_skeleton,
                         show_vertical_axis=self.show_vertical_axis,
                     )
-                    if self.record_overlay:
+                    if recording and self.record_overlay:
                         if overlay_writer is None:
                             overlay_writer = _open_writer(
                                 self.record_overlay,
@@ -953,6 +964,10 @@ class Application:
             status = "interrupted"
             raise
         finally:
+            if raw_writer is None:
+                self.record_video = None
+            if overlay_writer is None:
+                self.record_overlay = None
             try:
                 end_time = self.last_timestamp
                 if self.capture and not self.video:

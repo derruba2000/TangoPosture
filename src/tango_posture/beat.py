@@ -294,6 +294,7 @@ class BeatTracker:
         self.subband_masks = [(freqs >= lo) & (freqs < hi) for lo, hi in band_edges]
 
         self.recorded_chunks: list[np.ndarray] = []
+        self.recording_enabled = True
         self.staging_audio = np.zeros(0, dtype=np.float32)
         self.prev_mag: np.ndarray | None = None
 
@@ -378,7 +379,8 @@ class BeatTracker:
         if len(mono) == 0:
             return
         with self.lock:
-            self.recorded_chunks.append(mono)
+            if self.recording_enabled:
+                self.recorded_chunks.append(mono)
             self.staging_audio = np.concatenate([self.staging_audio, mono])
 
             n_avail = len(self.staging_audio)

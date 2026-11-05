@@ -142,6 +142,55 @@ def test_native_display_buttons_use_the_existing_session_pipeline(tmp_path, refe
         storage.close()
 
 
+@pytest.mark.parametrize("start_recording", [False, True])
+def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, monkeypatch, start_recording):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    written = {}
+
+    class Writer:
+        def __init__(self, path):
+            self.frames = written.setdefault(path.name, [])
+
+        def write(self, image):
+            self.frames.append(image)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr("tango_posture.app._open_writer", lambda path, *args: Writer(path))
+
+    class Buttons(GuiDisplay):
+        shown = 0
+
+        def show(self, image):
+            self.shown += 1
+            if self.shown == 3 and start_recording:
+                assert not written
+                self.recording.set()
+            if self.shown == 6:
+                self.request("q")
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", reference=reference, capture=FakeCapture(),
+        estimator=FakeEstimator(), display=Buttons(),
+        record_video=tmp_path / "raw.mp4", record_overlay=tmp_path / "overlay.mp4",
+    )
+    try:
+        app.run()
+        if start_recording:
+            assert {name: len(frames) for name, frames in written.items()} == {
+                "raw.mp4": 3, "overlay.mp4": 3,
+            }
+        else:
+            assert not written
+            assert app.record_video is None and app.record_overlay is None
+    finally:
+        storage.close()
+
+
 def test_headless_interval(tmp_path, cfg, monkeypatch):
     monkeypatch.setattr("tango_posture.app.verify", lambda p: MANIFEST["sha256"])
     cfg.data_dir = str(tmp_path)
