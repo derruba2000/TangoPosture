@@ -13,6 +13,7 @@ dependencies = [
     "opencv-python==5.0.0.93",
     "numpy==2.4.6",
     "pydantic==2.14.2",
+    "markdown==3.10.2",
 ]
 
 [project.scripts]
@@ -28,6 +29,10 @@ line-length = 100
 python_version = "3.11"
 check_untyped_defs = true
 ignore_missing_imports = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"logos/TangoPosture_logo_under_1MB.png" = "tango_posture/TangoPosture_logo_under_1MB.png"
+"docs/TANGO_POSTURE_GUIDE.md" = "tango_posture/TANGO_POSTURE_MANUAL.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

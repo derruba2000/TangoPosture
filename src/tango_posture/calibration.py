@@ -120,14 +120,30 @@ def load_calibration_file(
     """Load a Calibration from a JSON file path, filename in `calibrations/`, 'latest', or UUID."""
     candidates: list[Path] = []
     if identifier.lower() == "latest":
+        archives = sorted(folder.glob("*.tpc"), key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        if archives:
+            candidates.append(archives[0])
         candidates.append(folder / "latest_calibration.json")
     raw_path = Path(identifier)
     candidates.extend([raw_path, folder / raw_path.name, folder / f"{identifier}.json"])
     for cand in candidates:
         if cand.is_file():
+            if cand.suffix.lower() == ".tpc":
+                from .archive import read_calibration_archive
+
+                return read_calibration_archive(cand)
             data = json.loads(cand.read_text(encoding="utf-8"))
             return Calibration(**data)
     if folder.is_dir():
+        for archive_file in sorted(folder.glob("*.tpc"), reverse=True):
+            try:
+                from .archive import read_calibration_archive
+
+                reference = read_calibration_archive(archive_file)
+                if reference.id == identifier or reference.id.startswith(identifier):
+                    return reference
+            except (OSError, ValueError, TypeError):
+                continue
         for json_file in sorted(folder.glob("calibration_*.json"), reverse=True):
             try:
                 data = json.loads(json_file.read_text(encoding="utf-8"))
