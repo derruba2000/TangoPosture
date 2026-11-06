@@ -75,6 +75,9 @@ class ReplayPlayer(ttk.Frame):
         super().__init__(parent, padding=8)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
+        self.comparisons = []
+        self.notes = []
+        self.on_frame = None
         self.reader: VideoReader | None = None
         self.playing = False
         self.closed = False
@@ -92,10 +95,14 @@ class ReplayPlayer(ttk.Frame):
         ttk.Label(self, textvariable=self.name, wraplength=850).grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
+        self.images = ttk.Frame(self)
+        self.images.grid(row=1, column=0, sticky="nsew")
         self.image = tk.Label(
-            self, text="No video selected", background="#151a1d", foreground="white"
+            self.images, text="No video selected", background="#151a1d", foreground="white"
         )
-        self.image.grid(row=1, column=0, sticky="nsew")
+        self.images.rowconfigure(0, weight=1)
+        self.images.columnconfigure(0, weight=1, uniform="video")
+        self.image.grid(row=0, column=0, sticky="nsew")
         self.image.bind("<Configure>", lambda _: self._render())
         self.seekbar = ttk.Scale(self, from_=0, to=1, variable=self.position)
         self.seekbar.grid(row=2, column=0, sticky="ew", pady=6)
@@ -165,6 +172,22 @@ class ReplayPlayer(ttk.Frame):
             "Replay ready. Enable Sound for audio via ffplay, or use your system player."
         )
 
+    def compare(self, paths, refresh=True):
+        for reader, label in self.comparisons:
+            reader.close()
+            self.images.columnconfigure(int(label.grid_info()["column"]), weight=0, uniform="")
+            label.destroy()
+        self.comparisons = []
+        for path in paths:
+            reader = VideoReader(path)
+            label = tk.Label(self.images, background="#151a1d")
+            column = len(self.comparisons) + 1
+            self.images.columnconfigure(column, weight=1, uniform="video")
+            label.grid(row=0, column=column, sticky="nsew")
+            self.comparisons.append((reader, label))
+        if self.reader and refresh and paths:
+            self._frame(self.reader.index)
+
     def _render(self):
         if self.last_image is None or self.closed:
             return
@@ -189,6 +212,18 @@ class ReplayPlayer(ttk.Frame):
         self.position.set(seconds)
         self.clock.set(f"{time_label(seconds)} / {time_label(self.reader.duration)}")
         self._render()
+        for reader, label in self.comparisons:
+            frame = reader.frame(round(seconds * reader.fps))
+            h, w = frame.shape[:2]
+            scale = min(max(1, label.winfo_width()) / w, max(1, label.winfo_height()) / h)
+            rgb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                             (max(1, round(w * scale)), max(1, round(h * scale))))
+            h, w = rgb.shape[:2]
+            label.photo = tk.PhotoImage(master=self,
+                data=f"P6\n{w} {h}\n255\n".encode() + rgb.tobytes(), format="PPM")
+            label.configure(image=label.photo)
+        if self.on_frame:
+            self.on_frame(self.reader.index)
 
     def seek(self, seconds: float):
         if not self.reader:
@@ -316,6 +351,7 @@ class ReplayPlayer(ttk.Frame):
 
     def unload(self):
         self.pause()
+        self.compare([], refresh=False)
         if self.reader:
             self.reader.close()
             self.reader = None

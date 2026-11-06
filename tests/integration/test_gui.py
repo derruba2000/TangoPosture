@@ -680,3 +680,41 @@ def test_cancelled_analysis_does_not_save_or_show_stale_results(studio, tmp_path
     assert panel.analysis_data is None
     assert not list(tmp_path.glob("*.analysis-*.json"))
     assert not panel.job
+
+
+def test_review_compares_three_views_and_seeks_sidebar_notes(studio, tmp_path):
+    import cv2
+
+    root, gui = studio
+    raw, overlay, lines = [tmp_path / name for name in
+                           ("raw.mp4", "overlay.mp4", "overlay_lines.mp4")]
+    for path in (raw, overlay, lines):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
+        assert writer.isOpened()
+        for index in range(3):
+            writer.write(np.full((64, 64, 3), index * 40, np.uint8))
+        writer.release()
+    overlay.with_suffix(".notes.jsonl").write_text(
+        '\n'.join(json.dumps([f"Frame {index} notes"]) for index in range(3)) + '\n'
+    )
+    report = tmp_path / "report.md"
+    report.write_text("# Practice")
+    archive = tmp_path / "Compare.tp"
+    append_segment(archive, report, raw, overlay, [1, 2, 3])
+    gui.review.load_report(archive)
+    gui.review.tabs.select(gui.review.video_page)
+    root.update()
+    assert "Full lines + messages" in gui.review.report.videos
+    for name in ("Raw video", "Full lines + messages"):
+        gui.review.compare_vars[name].set(True)
+    gui.review.update_comparison()
+    gui.review.player.seek(0.2)
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [2, 2]
+    assert "Frame 2 notes" in gui.review.video_notes.get("1.0", "end")
+    gui.review.player.step(-1)
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [1, 1]
+    assert "Frame 1 notes" in gui.review.video_notes.get("1.0", "end")
+    for variable in gui.review.compare_vars.values():
+        variable.set(False)
+    gui.review.update_comparison()
+    assert not gui.review.player.comparisons

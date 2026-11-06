@@ -1,5 +1,6 @@
 """In-app reports, local video replay and asynchronous Ollama review."""
 
+import json
 import queue
 import re
 import threading
@@ -16,6 +17,7 @@ from uuid import uuid4
 
 from .archive import PracticeArchive, calibration_directory, practice_directory
 from .config import Config
+from .notes_ui import NotesSidebar
 from .ollama import OllamaClient
 from .replay import ReplayPlayer, parse_time
 from .review import ReportRecord, read_report, report_directory, save_analysis, saved_analyses
@@ -313,8 +315,18 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
             side="left", padx=6
         )
-        self.player = ReplayPlayer(videos, settings["replay_audio"])
-        self.player.pack(fill="both", expand=True)
+        self.compare_vars = {}
+        self.compare_bar = ttk.Frame(videos)
+        self.compare_bar.pack(fill="x")
+        body = ttk.Panedwindow(videos, orient="horizontal")
+        body.pack(fill="both", expand=True)
+        self.player = ReplayPlayer(body, settings["replay_audio"])
+        body.add(self.player, weight=5)
+        self.notes_sidebar = NotesSidebar(body)
+        body.add(self.notes_sidebar, weight=0)
+        self.video_notes = self.notes_sidebar.text
+        self.frame_notes = []
+        self.player.on_frame = self.show_video_notes
         self._analysis_page()
         self.timer = self.after(50, self.pump)
 
@@ -456,6 +468,27 @@ class ReviewPanel(ttk.Frame):
                 for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
                 if selected_segment[key] is not None
             }
+        overlay = record.videos.get("Overlay")
+        self.frame_notes = []
+        if overlay:
+            skeleton = overlay.with_name(overlay.stem + "_lines.mp4")
+            if skeleton.is_file():
+                record.videos["Full lines + messages"] = skeleton
+            notes_path = overlay.with_suffix(".notes.jsonl")
+            if notes_path.is_file():
+                try:
+                    self.frame_notes = [json.loads(line) for line in notes_path.read_text().splitlines()]
+                except (ValueError, OSError):
+                    self.frame_notes = []
+        for widget in self.compare_bar.winfo_children():
+            widget.destroy()
+        self.compare_vars = {}
+        ttk.Label(self.compare_bar, text="Compare alongside:").pack(side="left")
+        for label in record.videos:
+            variable = tk.BooleanVar(value=False)
+            self.compare_vars[label] = variable
+            ttk.Checkbutton(self.compare_bar, text=label, variable=variable,
+                            command=lambda: self.guard(self.update_comparison)).pack(side="left")
         self.report = record
         selected_path = record.archive_path or record.path
         self.selection.set(str(selected_path))
@@ -483,12 +516,26 @@ class ReviewPanel(ttk.Frame):
             raise ValueError("Open a report first, or use Open video")
         seconds = self.player.position.get()
         self.player.load(self.report.videos[self.video_selection.get()], seconds)
+        self.update_comparison()
+
+    def update_comparison(self):
+        if self.report:
+            self.player.compare([self.report.videos[label] for label, variable in self.compare_vars.items()
+                                 if variable.get() and label != self.video_selection.get()])
+
+    def show_video_notes(self, index):
+        notes = self.frame_notes[index] if index < len(self.frame_notes) else [
+            "No separate notes for this frame. Older recordings retain their original footer."
+        ]
+        self.notes_sidebar.set_notes(notes, subtitle=f"Frame {index + 1} · Synced with playback")
 
     def open_video(self):
         path = filedialog.askopenfilename(
             parent=self, filetypes=[("Video", "*.mp4 *.mov *.avi *.mkv"), ("All files", "*")]
         )
         if path:
+            self.player.unload()
+            self.frame_notes = []
             self.player.load(Path(path))
             self.video_selection.set("Opened video")
             self.tabs.select(self.video_page)

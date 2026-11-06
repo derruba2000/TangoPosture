@@ -167,6 +167,7 @@ class Application:
         self.recording_finished = False
         self.raw_writer: cv2.VideoWriter | None = None
         self.overlay_writer: cv2.VideoWriter | None = None
+        self.review_writers = {}
         from .archive import practice_directory, practice_path
 
         self.workspace_path = Path(mkdtemp(prefix="tango-recording-"))
@@ -189,7 +190,32 @@ class Application:
         self.wait_for_song_end = False
         self.auto_owned_recording = False
 
+    def write_review_frame(self, path, render, image, notes):
+        import json
+
+        if path not in self.review_writers:
+            skeleton = path.with_name(path.stem + "_lines.mp4")
+            rendered = render(np.zeros_like(image), verbose_skeleton=True,
+                              show_vertical_axis=True, show_footer=False)
+            writer = _open_writer(skeleton, rendered.shape[1], rendered.shape[0], self.capture.fps)
+            stream = path.with_suffix(".notes.jsonl").open("w", encoding="utf-8")
+            self.review_writers[path] = writer, stream
+        else:
+            rendered = render(np.zeros_like(image), verbose_skeleton=True,
+                              show_vertical_axis=True, show_footer=False)
+        writer, stream = self.review_writers[path]
+        writer.write(rendered)
+        stream.write(json.dumps(notes) + "\n")
+
+    def close_review_writers(self, path=None):
+        for key in list(self.review_writers):
+            if path is None or key == path:
+                writer, stream = self.review_writers.pop(key)
+                writer.release()
+                stream.close()
+
     def close_calibration_writers(self) -> None:
+        self.close_review_writers(self.calibration_overlay)
         for writer in (self.calibration_raw_writer, self.calibration_overlay_writer):
             if writer is not None:
                 writer.release()
@@ -238,6 +264,7 @@ class Application:
     def stop_recording(self) -> None:
         if not self.recording:
             return
+        self.close_review_writers()
         self.recording = False
         self.recording_finished = True
         if self.display is not None:
@@ -1090,56 +1117,62 @@ class Application:
                             "Image quality: VALID (side-on heuristic)",
                         )
                         lines.append(reason)
-                    panel = draw(
-                        captured.image,
-                        frame,
-                        self.cfg.mirror and self.setup_confirmed,
-                        lines,
-                        message,
-                        self.cfg.confidence,
-                        head_down_angle=self.cfg.head_down_angle,
-                        head_down_duration=self.cfg.head_down_duration,
-                        head_down_elapsed=head_down_elapsed,
-                        role=self.role,
-                        beat_state=beat_state,
-                        head_neutral_offset=neutral_offset,
-                        shoulder_raise_threshold=self.cfg.shoulder_raise_threshold,
-                        shoulder_tension_duration=self.cfg.shoulder_tension_duration,
-                        shoulder_tension_elapsed=shoulder_tension_elapsed,
-                        shoulder_neutral_clearance=sh_neutral,
-                        embrace_type=self.embrace_type,
-                        embrace_closed_threshold=self.cfg.embrace_closed_threshold,
-                        closed_embrace_min_knee_bend=self.cfg.closed_embrace_min_knee_bend,
-                        knee_straight_duration=self.cfg.knee_straight_duration,
-                        knee_straight_elapsed=knee_straight_elapsed,
-                        facing=self.cfg.facing,
-                        side=self.cfg.side,
-                        axis_neutral_offset=axis_neutral,
-                        axis_curve_entry=self.cfg.axis_curve_entry,
-                        axis_curve_clear=self.cfg.axis_curve_clear,
-                        axis_curve_duration=self.cfg.axis_curve_duration,
-                        axis_curve_elapsed=axis_curve_elapsed,
-                        axis_curve_smoothed=axis_curve_smoothed,
-                        axis_curve_state=axis_curve_state,
-                        verbose_skeleton=self.verbose_skeleton,
-                        show_vertical_axis=self.show_vertical_axis,
-                    )
+                    draw_options = {
+                        "head_down_angle": self.cfg.head_down_angle,
+                        "head_down_duration": self.cfg.head_down_duration,
+                        "head_down_elapsed": head_down_elapsed,
+                        "role": self.role,
+                        "beat_state": beat_state,
+                        "head_neutral_offset": neutral_offset,
+                        "shoulder_raise_threshold": self.cfg.shoulder_raise_threshold,
+                        "shoulder_tension_duration": self.cfg.shoulder_tension_duration,
+                        "shoulder_tension_elapsed": shoulder_tension_elapsed,
+                        "shoulder_neutral_clearance": sh_neutral,
+                        "embrace_type": self.embrace_type,
+                        "embrace_closed_threshold": self.cfg.embrace_closed_threshold,
+                        "closed_embrace_min_knee_bend": self.cfg.closed_embrace_min_knee_bend,
+                        "knee_straight_duration": self.cfg.knee_straight_duration,
+                        "knee_straight_elapsed": knee_straight_elapsed,
+                        "facing": self.cfg.facing,
+                        "side": self.cfg.side,
+                        "axis_neutral_offset": axis_neutral,
+                        "axis_curve_entry": self.cfg.axis_curve_entry,
+                        "axis_curve_clear": self.cfg.axis_curve_clear,
+                        "axis_curve_duration": self.cfg.axis_curve_duration,
+                        "axis_curve_elapsed": axis_curve_elapsed,
+                        "axis_curve_smoothed": axis_curve_smoothed,
+                        "axis_curve_state": axis_curve_state,
+                        "verbose_skeleton": self.verbose_skeleton,
+                        "show_vertical_axis": self.show_vertical_axis,
+                        "show_footer": self.display is None and not self.headless,
+                    }
+                    def render(image, frame=frame, lines=lines, message=message,
+                               draw_options=draw_options, **overrides):
+                        return draw(image, frame, self.cfg.mirror and self.setup_confirmed,
+                                    lines, message, self.cfg.confidence,
+                                    **(draw_options | overrides))
+                    panel = render(captured.image)
+                    notes = [message, *lines]
+                    if self.display is not None:
+                        self.display.notes = "\n\n".join(notes)
                     if calibration_frame:
                         if self.calibration_overlay_writer is None:
                             self.calibration_overlay_writer = _open_writer(
-                                self.calibration_overlay, panel.shape[1], panel.shape[0],
+                                self.calibration_overlay, panel.shape[1], round(frame.height * panel.shape[1] / frame.width),
                                 self.capture.fps,
                             )
-                        self.calibration_overlay_writer.write(panel)
+                        self.calibration_overlay_writer.write(render(captured.image, show_footer=False))
+                        self.write_review_frame(self.calibration_overlay, render, captured.image, notes)
                     if self.recording and self.record_overlay:
                         if self.overlay_writer is None:
                             self.overlay_writer = _open_writer(
                                 self.record_overlay,
                                 panel.shape[1],
-                                panel.shape[0],
+                                round(frame.height * panel.shape[1] / frame.width),
                                 self.capture.fps,
                             )
-                        self.overlay_writer.write(panel)
+                        self.overlay_writer.write(render(captured.image, show_footer=False))
+                        self.write_review_frame(self.record_overlay, render, captured.image, notes)
                     if not self.headless:
                         if self.display is not None:
                             self.display.show(panel)
@@ -1165,6 +1198,7 @@ class Application:
             try:
                 self.close_calibration_writers()
                 if self.aborted:
+                    self.close_review_writers()
                     for writer in (self.raw_writer, self.overlay_writer):
                         if writer is not None:
                             writer.release()

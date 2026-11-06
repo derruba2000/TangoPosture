@@ -70,6 +70,13 @@ def read_manifest(path: Path) -> dict:
         raise ValueError(f"Invalid practice archive: {path.name}") from error
 
 
+def write_review_companions(output, overlay, name):
+    for suffix in ("_lines.mp4", ".notes.jsonl"):
+        source = overlay.with_name(overlay.stem + suffix)
+        if source.is_file():
+            output.write(source, Path(name).stem + suffix, compress_type=ZIP_STORED)
+
+
 def append_segment(path: Path, report: Path, video: Path | None, overlay: Path | None,
                    timestamps: list[float]) -> int:
     with _archive_lock(path):
@@ -117,6 +124,7 @@ def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path 
                 output.write(video, segment["video"], compress_type=ZIP_STORED)
             if overlay:
                 output.write(overlay, segment["overlay"], compress_type=ZIP_STORED)
+                write_review_companions(output, overlay, segment["overlay"])
             output.writestr(segment["report"], markdown)
             output.writestr(segment["metadata"], json.dumps(metadata, allow_nan=False))
             output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
@@ -157,6 +165,7 @@ def save_calibration_archive(path: Path, reference: Calibration, video: Path,
             with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as output:
                 output.write(video, segment["video"], compress_type=ZIP_STORED)
                 output.write(overlay, segment["overlay"], compress_type=ZIP_STORED)
+                write_review_companions(output, overlay, segment["overlay"])
                 output.writestr("reference.json", json.dumps(asdict(reference), allow_nan=False))
                 output.writestr(segment["report"], report)
                 output.writestr(segment["metadata"], json.dumps(metadata, allow_nan=False))

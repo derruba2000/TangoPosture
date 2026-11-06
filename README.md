@@ -143,7 +143,9 @@ entry showing its reference values/JSON and raw/overlay videos. **Refresh** find
 in the selected data directory. Legacy Markdown reports remain readable. Reports have formatted
 headings, search, line wrapping, and clickable timestamps.
 
-Under **Video replay**, switch between **Raw video** and **Overlay** for the selected
+New recordings include a third **Full lines + messages** video: the complete skeleton and alignment cues on a plain background. Frame notes appear in the live coach and replay sidebar, leaving the video area free of the footer. Older recordings retain their baked-in footer.
+
+Under **Video replay**, use **Compare alongside** to show one or more views with shared playback, speed, frame stepping, and seeking. Switch between **Raw video**, **Overlay**, and **Full lines + messages** for the selected
 recording. Archive contents are extracted temporarily and removed when closed.
 Play/pause, step through frames, scrub the timeline, change
 speed, or enter a time such as `01:12.5`. Clicking a report timestamp seeks to that

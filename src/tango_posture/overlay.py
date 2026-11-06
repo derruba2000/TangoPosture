@@ -114,6 +114,7 @@ def draw(
     axis_curve_state: str = "WITHIN_LIMIT",
     verbose_skeleton: bool = True,
     show_vertical_axis: bool = True,
+    show_footer: bool = True,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
@@ -451,6 +452,8 @@ def draw(
             prog_w = int(min(1.0, max(0.0, analyzed_sec / target_sec)) * total_bar_w)
             cv2.rectangle(image, (start_x, 60), (start_x + total_bar_w, 65), (50, 50, 50), -1)
             cv2.rectangle(image, (start_x, 60), (start_x + prog_w, 65), (80, 220, 80), -1)
+    if not show_footer:
+        return image
     # Dedicated bottom panel keeps status readable while image fills 100% horizontally.
     panel = cv2.copyMakeBorder(
         image,

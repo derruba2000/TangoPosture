@@ -29,6 +29,7 @@ from .config import (
     setting_value,
 )
 from .models import verify
+from .notes_ui import NotesSidebar
 from .practice import GuiDisplay, PracticeOptions, next_recordings
 from .review_ui import MarkdownView, ReviewPanel
 from .storage import Storage
@@ -731,8 +732,18 @@ class PracticeGUI:
             parameters_menu.add_command(label="Music recording parameters...", command=self.open_music_parameters)
             menu.add_cascade(label="Parameters", menu=parameters_menu)
             self.preview.configure(menu=menu)
+        preview_body = ttk.Panedwindow(self.preview, orient="horizontal")
+        preview_body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        video_area = ttk.Frame(preview_body)
+        preview_body.add(video_area, weight=1)
+        self.live_notes_sidebar = NotesSidebar(
+            preview_body,
+            title="Calibration insights" if calibration_only else "Practice insights",
+            subtitle="Live observations · Reference setup" if calibration_only else "Live observations",
+        )
+        preview_body.add(self.live_notes_sidebar, weight=0)
         self.preview_label = tk.Label(
-            self.preview,
+            video_area,
             background="#151a1d",
             foreground="white",
             text="Opening model and capture...",
@@ -816,6 +827,7 @@ class PracticeGUI:
                 image = self.display.frames.get_nowait()
                 import cv2
 
+                self.live_notes_sidebar.set_notes(getattr(self.display, "notes", ""))
                 height, width = image.shape[:2]
                 scale = min(
                     max(1, self.preview_label.winfo_width()) / width,

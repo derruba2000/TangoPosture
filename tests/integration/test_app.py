@@ -185,7 +185,7 @@ def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, mon
         app.run()
         if start_recording:
             assert {name: len(frames) for name, frames in written.items()} == {
-                "video_00.mp4": 3, "overlay_00.mp4": 3,
+                "video_00.mp4": 3, "overlay_00.mp4": 3, "overlay_00_lines.mp4": 3,
             }
         else:
             assert not written
@@ -227,7 +227,7 @@ def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cf
             if self.shown == 5:
                 self.request(stop)
             if self.shown == 7:
-                assert len(released) == 2
+                assert len(released) == 3
             if self.shown == 8:
                 self.request("q")
 
@@ -241,8 +241,8 @@ def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cf
     )
     try:
         app.run()
-        assert written == {"video_00.mp4": 3, "overlay_00.mp4": 3}
-        assert sorted(released) == ["overlay_00.mp4", "video_00.mp4"]
+        assert written == {"video_00.mp4": 3, "overlay_00.mp4": 3, "overlay_00_lines.mp4": 3}
+        assert sorted(released) == ["overlay_00.mp4", "overlay_00_lines.mp4", "video_00.mp4"]
         assert app.cal_start is None and app.session is None
         assert not app.recording
     finally:
