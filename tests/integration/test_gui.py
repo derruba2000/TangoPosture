@@ -312,19 +312,25 @@ def test_help_menu_opens_searchable_manual_with_section_navigation(studio):
     assert gui.help_view is not None and gui.help_outline is not None
     assert "Settings explained" in [title for _, title, _ in gui.help_view.headings]
     assert gui.help_outline.get_children()
+    assert "Tango Posture Coach Manual" in gui.help_view.text.get("1.0", "end-1c")
+    assert gui.help_view.text.dlineinfo("1.0") is not None
 
     gui.help_view.query.set("confidence")
     gui.help_view.search()
-    assert gui.help_view.text.tag_ranges("found")
+    assert gui.help_view.match_count > 0
+    assert gui.help_view.text.tag_ranges("search-match")
+    assert gui.help_view.text.tag_ranges("search-current")
 
     target = next(
         node for node, position in gui.help_positions.items()
-        if gui.help_view.text.get(position, f"{position} lineend").strip() == "Settings explained"
+        if gui.help_outline.item(node, "text") == "Settings explained"
     )
     gui.help_outline.selection_set(target)
     gui.help_outline.event_generate("<<TreeviewSelect>>")
     root.update()
-    assert gui.help_view.text.index("insert") == gui.help_positions[target]
+    assert gui.help_view.current_anchor == gui.help_positions[target]
+    anchor_start, _ = gui.help_view.anchors[gui.help_positions[target]]
+    assert gui.help_view.text.dlineinfo(anchor_start) is not None
 
 
 def test_preset_keeps_filenames_and_reference_but_resets_confirmation(
@@ -740,6 +746,12 @@ def test_setting_labels_open_their_specific_manual_explanation(studio):
             selected = gui.help_outline.selection()
             expected = "Tracking and reference thresholds" if group == "Tracking" else group
             assert gui.help_outline.item(selected[0], "text") == expected
-            highlighted = gui.help_view.text.tag_ranges("found")
+            assert gui.help_view.active_setting == field
+            anchor = gui.help_view.setting_anchors[field]
+            assert gui.help_view.current_anchor == anchor
+            element = gui.help_view.browser.document.getElementById(anchor)
+            assert element.getAttribute("class") == "setting-focus"
+            highlighted = gui.help_view.text.tag_ranges("setting-focus")
             assert highlighted
-            assert gui.help_view.text.get(*highlighted).startswith(field + " ")
+            assert field in gui.help_view.text.get(*highlighted)
+            assert gui.help_view.text.dlineinfo(highlighted[0]) is not None

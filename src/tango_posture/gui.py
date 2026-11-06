@@ -31,8 +31,9 @@ from .config import (
 from .models import verify
 from .notes_ui import NotesSidebar
 from .practice import GuiDisplay, PracticeOptions, next_recordings
-from .review_ui import MarkdownView, ReviewPanel
+from .review_ui import ReviewPanel
 from .storage import Storage
+from .tutorial_ui import TutorialView
 
 
 class ScrollPage(ttk.Frame):
@@ -66,7 +67,7 @@ class PracticeGUI:
         self.about_window: tk.Toplevel | None = None
         self.splash_window: tk.Toplevel | None = None
         self.splash_timer: str | None = None
-        self.help_view: MarkdownView | None = None
+        self.help_view: TutorialView | None = None
         self.help_outline: ttk.Treeview | None = None
         self.help_positions: dict[str, str] = {}
         self.exit_requested = False
@@ -226,9 +227,11 @@ class PracticeGUI:
 
     def open_setting_help(self, field):
         self.open_help()
+        assert self.help_view and self.help_outline and self.help_window
+        help_view = self.help_view
         group = next(group for group, fields in SETTING_GROUPS.items() if field in fields)
         heading = "Tracking and reference thresholds" if group == "Tracking" else group
-        for index, (_level, title, position) in enumerate(self.help_view.headings):
+        for index, (_level, title, _position) in enumerate(help_view.headings):
             if title != heading:
                 continue
             node = f"section-{index}"
@@ -236,18 +239,7 @@ class PracticeGUI:
             self.help_outline.see(node)
             self.help_outline.focus(node)
 
-            def reveal(position=position):
-                text = self.help_view.text
-                found = text.search(field + " ", position, stopindex="end")
-                target = found or position
-                text.tag_remove("found", "1.0", "end")
-                if found:
-                    text.tag_add("found", f"{found} linestart", f"{found} lineend")
-                text.yview(target)
-                text.xview_moveto(0)
-                text.mark_set("insert", target)
-
-            self.help_window.after_idle(reveal)
+            self.help_window.after_idle(lambda: help_view.show_setting(field))
             break
 
     def _practice(self, page):
@@ -491,7 +483,7 @@ class PracticeGUI:
         outline_scroll = ttk.Scrollbar(navigation, orient="vertical", command=outline.yview)
         outline_scroll.grid(row=0, column=1, sticky="ns")
         outline.configure(yscrollcommand=outline_scroll.set)
-        reader = self.help_view = MarkdownView(panes, lambda _: None)
+        reader = self.help_view = TutorialView(panes)
         panes.add(navigation, weight=0)
         panes.add(reader, weight=1)
         reader.set(content)
@@ -510,8 +502,7 @@ class PracticeGUI:
             selected = outline.selection()
             if selected:
                 position = self.help_positions[selected[0]]
-                reader.text.see(position)
-                reader.text.mark_set("insert", position)
+                reader.navigate(position)
 
         outline.bind("<<TreeviewSelect>>", navigate)
         window.protocol("WM_DELETE_WINDOW", window.withdraw)

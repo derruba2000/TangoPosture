@@ -311,3 +311,5 @@ uv build
 ```
 
 Tests cover synthetic and all-angle geometry, confidence gates, calibration storage/reuse, head pitch offset, shoulder tension, Leader/Follower hysteresis, Closed/Open embrace classification, closed-embrace knee flexion, 30-second musical phrase-start locking, silence gating, CLI safeguards, and real-model inference. See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md), [Manual Validation](docs/manual_validation.md), and [Implementation Report](docs/implementation_report.md).
+
+The in-app tutorial renders the bundled manual as styled HTML, with formatted tables, code blocks, section navigation, and search. Clicking a setting label opens and highlights its explanation. Tutorial content is available offline.
