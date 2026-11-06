@@ -449,6 +449,9 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     labels = [child.cget("text") for child in gui.live_record_button.master.winfo_children()]
     assert "Retry (R)" not in labels
     assert "Start scoring (S)" in labels
+    assert gui.live_calibration_button.cget("text") == "Calibrate / new reference (C)"
+    gui.live_calibration_button.invoke()
+    assert gui.display.poll_key() == ord("c")
     gui.live_record_button.invoke()
     assert gui.display.poll_key() == ord("r")
     assert gui.live_record_button.instate(["disabled"])
