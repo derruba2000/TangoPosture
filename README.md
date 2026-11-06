@@ -7,6 +7,8 @@ A local Python desktop coach and movement analysis tool for Argentine Tango danc
 Practice and pose analysis run locally without an account or API key after installation
 and pose-model setup. Optional report interpretation connects to your configured Ollama server.
 
+Visit the [TangoPosture community website](https://tangoposture-community.correia-ramos.chatgpt.site/).
+
 ![Tango Posture Coach desktop application screenshot](logos/Screenshot.png)
 
 **Experimental movement observation, not medical assessment or a judgement of artistic tango quality.** See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md) for one guide to practice, references, reports, configuration, examples, and limitations. Open **Help → Search & browse Tango Posture Manual** in the desktop app for the same guide with search and section navigation.
