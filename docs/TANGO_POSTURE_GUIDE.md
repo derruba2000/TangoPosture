@@ -1,4 +1,4 @@
-# Tango Posture Coach: an extensive guide for Argentine tango practice
+# Tango Posture Coach Manual
 
 **Stage 1 · application version 0.1.0 · 1 November 2026**
 
@@ -35,6 +35,7 @@ This guide covers the dancer's workflow, the meaning of the measurements, the so
 21. [A practical review worksheet](#21-a-practical-review-worksheet)
 22. [Glossary and further reading](#22-glossary-and-further-reading)
 23. [Additional features in the current workspace](#23-additional-features-in-the-current-workspace)
+24. [Settings explained](#settings-explained)
 
 ## 1. The practice question the tool addresses
 
@@ -792,7 +793,7 @@ beat_tracking = false
 tango_bpm = 120.0
 ```
 
-The current configuration loader also recognises `BEAT_TRACKING_ENABLED` and `TANGO_BPM` from `.env` or the process environment. Precedence is code defaults, then `.env`, then process environment, then TOML, then applicable CLI overrides. A TOML setting therefore overrides the same field from an environment variable.
+Configuration values come from TOML and applicable CLI overrides. `.env` files and process environment variables are ignored.
 
 Microphone samples are processed locally; this implementation does not save an audio recording. This is audio input, distinct from the voice coaching excluded by Stage 1.
 
@@ -832,7 +833,7 @@ This extra path uses different landmark checks and can operate outside the accep
    - **Smoothing**: Exponential smoothing with time constant `smoothing` (default `0.25s`).
    - **Entry threshold & persistence**: Smoothed posterior offset must exceed `axis_curve_entry` (default `0.06`, i.e. `+6.0%` of the ankle-to-head axis length) continuously for `axis_curve_duration` (default `1.5s`) to transition from `WITHIN_LIMIT` → `PENDING` → `DEVIATION`.
    - **Hysteresis clearing**: Once in `DEVIATION`, the alert does not clear merely by dropping below `0.06`. The smoothed offset must fall below a lower clearing threshold `axis_curve_clear` (default `0.035`, i.e. `+3.5%`) continuously for `axis_curve_clear_duration` (default `0.75s`) before returning to `WITHIN_LIMIT`.
-   - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML as well as `.env` / environment variables `AXIS_CURVE_ENTRY`, `AXIS_CURVE_CLEAR`, `AXIS_CURVE_DURATION_SECONDS`, `AXIS_CURVE_CLEAR_DURATION_SECONDS`, `AXIS_NEUTRAL_OFFSET`, `SMOOTHING_SECONDS`, and `OVERLAY_SMOOTHING_SECONDS` (which smooths rendered landmark lines and segments on the overlay).
+  - Configuration supports `[axis_curve]` (`entry`, `clear`) in TOML and explicit settings/CLI values. `.env` files and process environment variables are ignored. `overlay_smoothing` smooths rendered landmark lines and segments on the overlay.
 4. **Overlay visualization, interactive toggles, and report**: The torso drawing uses a solid magenta line from the hip midpoint to the shoulder midpoint, extended slightly at both ends, and a dashed cyan image-vertical through the hip midpoint. The displayed tilt magnitude is calculated in pixels and works with display mirroring. Both lines hide when any required shoulder/hip landmark is unreliable. Keep the camera level; the drawing shows projected torso orientation, not centre of mass or weight-bearing support. Press **`Y`** to toggle these two lines and **`V`** to toggle verbose skeleton rendering independently. The existing ankle-to-head hip-offset calculation remains separate in the status panel and `HIP OFFSET: PAST ANKLE-HEAD LINE` alert. Section 3.2b and Section 4.2c of the Markdown report still summarise its coverage, median/peak offset, and confirmed curvature intervals.
 
 Like the other workspace extensions, this is a 2D image-plane proxy of landmark alignment rather than a clinical reconstruction of lumbar lordosis or pelvic tilt.
@@ -869,3 +870,125 @@ flowchart LR
 ```
 
 This separation explains why successful tests of the original three metrics do not validate the additional musical, head-direction, or role interpretations. Review the actual data source and quality rules of each displayed feature.
+
+## Settings explained
+
+Settings are editable in the desktop app and can be imported from or exported to TOML. The values in `configs/default.toml` are experimental software defaults, not tango technique standards or clinical guidance. `.env` files and process environment variables are ignored.
+
+### Camera & view
+
+| Setting | Meaning |
+| --- | --- |
+| `camera` | Camera device index. |
+| `width` | Requested camera image width in pixels. |
+| `height` | Requested camera image height in pixels. |
+| `side` | Anatomical side selected for side-view measurements. |
+| `facing` | Direction faced in the original, unmirrored image. |
+| `capture_profile` | Name identifying the camera and capture setup. |
+| `mirror` | Mirrors the displayed image only. |
+| `allow_all_angles` | Enables the experimental measurement path for additional view angles. |
+
+### Files
+
+| Setting | Meaning |
+| --- | --- |
+| `model_path` | Location of the pose-estimation model file. |
+| `data_dir` | Directory for the local database and practice artifacts. |
+
+### Quality & calibration
+
+| Setting | Meaning |
+| --- | --- |
+| `confidence` | Minimum landmark confidence used by quality checks. |
+| `min_torso` | Minimum visible torso length as a fraction of image height. |
+| `min_head` | Minimum visible shoulder-to-ear segment as a fraction of image height. |
+| `max_view_width` | Maximum body-width-to-torso ratio accepted for a side view. |
+| `view_change_tolerance` | Allowed view-width difference from the captured reference. |
+| `calibration_duration` | Total reference capture window in seconds. |
+| `calibration_valid_duration` | Minimum valid measured time required during calibration. |
+| `calibration_samples` | Minimum number of valid observations in a reference. |
+| `offset_mad` | Maximum allowed spread for calibrated head-forward offset. |
+| `angle_mad` | Maximum allowed spread for calibrated angular measurements. |
+
+### Tracking and reference thresholds
+
+| Setting | Meaning |
+| --- | --- |
+| `smoothing` | Time constant for smoothing measurements over time. |
+| `overlay_smoothing` | Smoothing time constant for rendered landmark lines and segments. |
+| `entry_duration` | Time a threshold must be crossed before confirming a deviation. |
+| `clear_duration` | Time a value must remain below its clear threshold before closing an event. |
+| `max_gap` | Maximum observation gap treated as continuous tracking. |
+| `head_forward.entry` | Forward torso-relative offset that starts a pending event. |
+| `head_forward.clear` | Lower forward offset at which an event can clear. |
+| `head_inclination.entry` | Angular change from reference that starts an event. |
+| `head_inclination.clear` | Lower angular change at which an event can clear. |
+| `trunk_inclination.entry` | Trunk-angle change from reference that starts an event. |
+| `trunk_inclination.clear` | Lower trunk-angle change at which an event can clear. |
+
+### Head & shoulders
+
+| Setting | Meaning |
+| --- | --- |
+| `head_neutral_offset` | Offset used by the separate ear-to-nose horizontal-angle cue. |
+| `head_down_duration` | Duration required before showing the head-angle warning. |
+| `head_down_angle` | Ear-to-nose image-angle boundary for that warning. |
+| `shoulder_tension_duration` | Duration required before showing the shoulder cue. |
+| `shoulder_raise_threshold` | Shoulder-elevation threshold above the relaxed baseline. |
+| `shoulder_neutral_clearance` | Fallback clearance used when no captured shoulder baseline is available. |
+
+### Embrace & knees
+
+| Setting | Meaning |
+| --- | --- |
+| `role_assign_ms` | Time an arm pattern must persist before assigning a role label. |
+| `role_hold_ms` | Time to retain a role label after the pattern disappears. |
+| `embrace_closed_threshold` | Boundary for the heuristic open/closed embrace label. |
+| `embrace_hysteresis_seconds` | Hysteresis duration used to stabilize embrace classification. |
+| `closed_embrace_min_knee_bend` | Minimum knee flexion used by the straight-knee cue in closed embrace. |
+| `knee_straight_duration` | Duration required before showing the knee cue. |
+
+### Torso & hip offset
+
+| Setting | Meaning |
+| --- | --- |
+| `axis_curve_entry` | Posterior hip offset that starts a pending axis event. |
+| `axis_curve_clear` | Lower offset at which a confirmed axis event can clear. |
+| `axis_curve_duration` | Time above the entry threshold required to confirm an axis event. |
+| `axis_curve_clear_duration` | Time below the clear threshold required to close an axis event. |
+| `axis_neutral_offset` | Fallback neutral offset when no captured reference is available. |
+
+### Slow tango
+
+| Setting | Meaning |
+| --- | --- |
+| `slow_tango_max_bpm` | Tempo ceiling for the slow-tango ankle-lift cue. |
+| `ankle_high_lift_ratio` | Ankle lift threshold relative to estimated leg length. |
+| `max_consecutive_high_ankle_steps` | Consecutive high-lift steps required to trigger the cue. |
+
+### Music
+
+| Setting | Meaning |
+| --- | --- |
+| `beat_tracking` | Enables microphone-based beat tracking in GUI practice. |
+| `tango_bpm` | Starting tempo estimate for the beat tracker. |
+| `beat_analysis_seconds` | Analysis window used to estimate phrase timing. |
+| `auto_record_start_delay` | Continuous detected music required before automatic recording starts. |
+| `auto_record_stop_delay` | Continuous detected silence required before automatic recording stops. |
+| `max_recordings` | Maximum number of recording starts in one coach run. |
+
+### Review & Ollama
+
+| Setting | Meaning |
+| --- | --- |
+| `replay_audio` | Enables optional audio during recorded-session review. |
+| `ollama_base_url` | Address of the local or reachable Ollama server. |
+| `ollama_model` | Model name installed on that Ollama server. |
+| `ollama_timeout` | Maximum wait for a local model request. |
+| `ollama_temperature` | Controls response variation. |
+| `ollama_num_ctx` | Requested model context capacity in tokens. |
+| `ollama_num_predict` | Maximum generated response length in tokens. |
+| `ollama_max_report_chars` | Maximum report text sent for local analysis. |
+| `ollama_instruction` | Additional instruction accompanying a report. |
+
+These heuristics describe software settings and visible image cues. They do not establish a universal technique standard, a dancer's role, gaze, or weight-bearing support.

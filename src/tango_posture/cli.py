@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .calibration import load_calibration_file
 from .config import load
+from .display import PracticeDisplay
 from .models import fetch
 from .storage import Storage
 
@@ -17,6 +18,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, help="Validated TOML configuration")
     p.add_argument("--data-dir", help="Local SQLite and exports directory")
     sub = p.add_subparsers(dest="command", required=True)
+    sub.add_parser("gui", help="Open the graphical practice setup and controls")
     models = sub.add_parser("models")
     models.add_subparsers(dest="action", required=True).add_parser("fetch").add_argument(
         "--output", type=Path, help="Model destination; explicit setup-only network operation"
@@ -30,7 +32,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--model-path")
     run.add_argument("--capture-profile")
     run.add_argument("--mirror", action="store_true", default=None)
-    run.add_argument("--calibration", help="Saved reference UUID")
+    run.add_argument("--calibration", help="Calibration .tpc archive, legacy JSON, latest, or UUID")
+    run.add_argument("--calibration-only", action="store_true", help="Open a dedicated calibration capture")
     run.add_argument(
         "--confirm-camera-unchanged",
         action="store_true",
@@ -45,6 +48,7 @@ def parser() -> argparse.ArgumentParser:
         help="Explicitly accept a stable reference interval; must match configured 12s duration",
     )
     run.add_argument("--reference-name", default="My reference")
+    run.add_argument("--practice-name", help="Practice archive name; existing names append recordings")
     run.add_argument(
         "--teacher-reviewed", metavar="NOTE", help="Explicit user-recorded teacher review note"
     )
@@ -54,7 +58,7 @@ def parser() -> argparse.ArgumentParser:
         const=Path("videos/practice.mp4"),
         type=Path,
         metavar="PATH",
-        help="Opt-in: save raw unmirrored frames to videos/ (default videos/practice.mp4)",
+        help="Record raw and overlay video into a .tp practice archive; PATH is a legacy option",
     )
     run.add_argument(
         "--record-overlay",
@@ -62,7 +66,7 @@ def parser() -> argparse.ArgumentParser:
         const=Path("videos/overlay.mp4"),
         type=Path,
         metavar="PATH",
-        help="Opt-in: save annotated overlay video to videos/ (default videos/overlay.mp4)",
+        help="Record raw and overlay video into a .tp practice archive; PATH is a legacy option",
     )
     sessions = sub.add_parser("sessions").add_subparsers(dest="action", required=True)
     sessions.add_parser("list")
@@ -73,8 +77,9 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    args = parser().parse_args(arguments or ["gui"])
     storage = None
     try:
         overrides = {
@@ -90,6 +95,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         }
         cfg = load(args.config, overrides)
+        if args.command == "gui":
+            from .gui import launch
+
+            return launch(cfg)
         if args.command == "models":
             destination = args.output or Path(cfg.model_path)
             fetch(destination)
@@ -179,9 +188,12 @@ def main(argv: list[str] | None = None) -> int:
             review,
             record_video=args.record_video,
             record_overlay=args.record_overlay,
+            display=display,
+            practice_name=args.practice_name,
+            calibration_only=args.calibration_only,
         ).run()
         return 0
-    except (ValueError, OSError, sqlite3.Error, RuntimeError) as error:
+    except (ValueError, OSError, sqlite3.Error, RuntimeError, ImportError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
     finally:

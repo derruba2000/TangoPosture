@@ -23,6 +23,42 @@ calibration_valid_duration = 9
 calibration_samples = 60
 offset_mad = 0.03
 angle_mad = 4
+auto_record_start_delay = 1.0
+auto_record_stop_delay = 3.0
+max_recordings = 10
+head_neutral_offset = -12.0
+head_down_duration = 3.0
+head_down_angle = -15.0
+beat_tracking = true
+tango_bpm = 120.0
+beat_analysis_seconds = 30.0
+role_assign_ms = 300.0
+role_hold_ms = 5000.0
+shoulder_tension_duration = 1.0
+shoulder_raise_threshold = 10.0
+shoulder_neutral_clearance = 1.05
+allow_all_angles = false
+embrace_closed_threshold = 0.72
+embrace_hysteresis_seconds = 1.0
+closed_embrace_min_knee_bend = 8.0
+knee_straight_duration = 1.0
+slow_tango_max_bpm = 115.0
+ankle_high_lift_ratio = 0.06
+max_consecutive_high_ankle_steps = 2
+axis_curve_entry = 0.06
+axis_curve_clear = 0.035
+axis_curve_duration = 1.5
+axis_curve_clear_duration = 0.75
+axis_neutral_offset = 0.0
+replay_audio = false
+ollama_base_url = "http://127.0.0.1:11434"
+ollama_model = "llama3.2"
+ollama_timeout = 120.0
+ollama_temperature = 0.2
+ollama_num_ctx = 16384
+ollama_num_predict = 2048
+ollama_max_report_chars = 40000
+ollama_instruction = "Explain the supported observations and suggest three focused practice exercises."
 
 [head_forward]
 entry = 0.08
@@ -36,7 +72,4 @@ clear = 6.0
 entry = 8.0
 clear = 5.0
 
-[axis_curve]
-entry = 0.06
-clear = 0.035
 
