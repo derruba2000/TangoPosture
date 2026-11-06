@@ -144,6 +144,40 @@ def test_native_display_buttons_use_the_existing_session_pipeline(tmp_path, refe
         storage.close()
 
 
+def test_gui_record_key_does_not_start_calibration(tmp_path, cfg):
+    import shutil
+
+    cfg.data_dir = str(tmp_path)
+    storage = Storage(tmp_path)
+    display = GuiDisplay()
+    app = Application(cfg, storage, display=display)
+    try:
+        assert app.key(ord("r"), 0.0)
+        assert app.recording and display.recording.is_set()
+        assert app.record_video.name == "video_00.mp4"
+        assert app.cal_start is None
+        assert app.key(ord("c"), 0.0)
+        assert app.cal_start is None
+    finally:
+        shutil.rmtree(app.workspace_path, ignore_errors=True)
+        storage.close()
+
+
+def test_only_quit_closes_live_camera(tmp_path, cfg):
+    import shutil
+
+    cfg.data_dir = str(tmp_path)
+    storage = Storage(tmp_path)
+    app = Application(cfg, storage, display=GuiDisplay())
+    try:
+        assert app.key(ord("e"), 0.0)
+        assert not app.recording
+        assert app.key(ord("q"), 0.0) is False
+    finally:
+        shutil.rmtree(app.workspace_path, ignore_errors=True)
+        storage.close()
+
+
 @pytest.mark.parametrize("start_recording", [False, True])
 def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, monkeypatch, start_recording):
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
@@ -169,7 +203,7 @@ def test_native_recording_waits_for_explicit_start(tmp_path, reference, cfg, mon
             self.shown += 1
             if self.shown == 3 and start_recording:
                 assert not written
-                self.recording.set()
+                self.request("r")
             if self.shown == 6:
                 self.request("q")
 

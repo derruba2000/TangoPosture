@@ -424,6 +424,7 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
 
     def run(args, *, display):
         received.extend(args)
+        display.notes = "CURRENT OBSERVATION\n\nR record | S score | E stop/save"
         display.show(np.zeros((240, 320, 3), np.uint8))
         # Keep the worker alive until the Tk test clicks quit; no camera is opened.
         if not display.stopped.wait(3):
@@ -442,6 +443,7 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
         root.update()
         time.sleep(0.01)
     assert gui.photo is not None
+    assert "R record" in gui.live_notes_sidebar.text.get("1.0", "end-1c")
     assert gui.start_button.instate(["disabled"])
     assert not gui.display.recording.is_set()
     assert gui.live_record_button.instate(["!disabled"])
@@ -449,9 +451,7 @@ def test_native_preview_worker_and_stop_controls(studio, monkeypatch):
     labels = [child.cget("text") for child in gui.live_record_button.master.winfo_children()]
     assert "Retry (R)" not in labels
     assert "Start scoring (S)" in labels
-    assert gui.live_calibration_button.cget("text") == "Calibrate / new reference (C)"
-    gui.live_calibration_button.invoke()
-    assert gui.display.poll_key() == ord("c")
+    assert not any("Calibrate" in label for label in labels)
     gui.live_record_button.invoke()
     assert gui.display.poll_key() == ord("r")
     assert gui.live_record_button.instate(["disabled"])

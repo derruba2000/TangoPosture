@@ -759,14 +759,6 @@ class PracticeGUI:
         for i in range(5):
             controls.columnconfigure(i, weight=1)
         if not calibration_only:
-            self.live_calibration_button = ttk.Button(
-                controls,
-                text="Calibrate / new reference (C)",
-                command=lambda: self.control("c"),
-            )
-            self.live_calibration_button.grid(
-                row=2, column=0, padx=3, pady=3, sticky="w"
-            )
             self.auto_song_recording = tk.BooleanVar(value=False)
             self.auto_record_checkbox = ttk.Checkbutton(
                 controls, text="Automatically record songs", variable=self.auto_song_recording,
@@ -806,7 +798,7 @@ class PracticeGUI:
             "<KeyPress>",
             lambda event: (
                 self.control(event.char.lower())
-                if event.char and event.char.lower() in ("cvyq" if calibration_only else "carspebvyqx")
+                if event.char and event.char.lower() in ("cvyq" if calibration_only else "arspebvyqx")
                 else None
             ),
         )
