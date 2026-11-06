@@ -1,6 +1,7 @@
 """Desktop controller. Headless and GUI use the same observation/session pipeline."""
 
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -9,15 +10,18 @@ from contextlib import suppress
 from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any
 
 import cv2
 import numpy as np
 
+from .archive import append_segment, practice_directory, practice_path
 from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
 from .config import Config
+from .display import PracticeDisplay
 from .domain import Calibration, FrameObservation, MetricObservation, PoseEstimator
 from .geometry import (
     AnkleStepTracker,
@@ -98,11 +102,28 @@ class Application:
         capture: Any = None,
         record_video: Path | None = None,
         record_overlay: Path | None = None,
+        display: PracticeDisplay | None = None,
+        practice_name: str | None = None,
+        calibration_only: bool = False,
     ):
         self.cfg, self.storage, self.video, self.headless = cfg, storage, video, headless
         self.reference, self.interval, self.name, self.review = reference, interval, name, review
         self.estimator = estimator
         self.capture = capture
+        self.display = display
+        self.practice_name = practice_name
+        self.calibration_only = calibration_only
+        self.workspace_path = Path(mkdtemp(prefix="tango-recording-")) if display is not None else None
+        self.practice_file = (
+            practice_path(
+                practice_directory(cfg.data_dir),
+                practice_name
+                or f"Practice_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000000:06d}",
+            )
+            if display is not None
+            else None
+        )
+        self.aborted = False
         self.record_video = _video_path(record_video)
         self.record_overlay = _video_path(record_overlay)
         self.session: Session | None = None
@@ -230,7 +251,9 @@ class Application:
             self.state = "FINISHED"
         if self.frame_log and not self.report_written:
             report_dir = (
-                Path("reports")
+                self.workspace_path
+                if self.workspace_path is not None
+                else Path("reports")
                 if self.cfg.data_dir == "data"
                 else Path(self.cfg.data_dir) / "reports"
             )
@@ -254,7 +277,18 @@ class Application:
                 recorded_overlay=self.record_overlay,
             )
             self.report_written = True
-            print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
+            if self.display is not None and self.practice_file is not None:
+                append_segment(
+                    self.practice_file,
+                    report_path,
+                    self.record_video,
+                    self.record_overlay,
+                    [float(row["timestamp"]) for row in self.frame_log],
+                )
+                self.display.report_ready(self.practice_file)
+                print(f"Saved practice: {self.practice_file}")
+            else:
+                print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
 
     def _audio_cues_enabled(self) -> bool:
         return (
@@ -305,6 +339,9 @@ class Application:
             self.state = "READY"
 
     def key(self, key: int, timestamp: float) -> bool:
+        if key == ord("x"):
+            self.aborted = True
+            return False
         if key == ord("q"):
             self.finish(timestamp, "stopped")
             return False
@@ -334,6 +371,8 @@ class Application:
             self._speak("Calibration starting")
         if key == ord("a") and self.candidate:
             self.accept()
+            if self.calibration_only:
+                return False
         if key == ord("s") and self.state in ("READY", "FINISHED") and not self.candidate:
             self.setup_confirmed = True
             self.start_session(timestamp)
@@ -349,6 +388,11 @@ class Application:
             self.finish(timestamp, "completed")
         return True
 
+    def poll_key(self, quit_only: bool = False) -> int:
+        if self.display is not None:
+            return self.display.poll_key(quit_only)
+        return cv2.waitKey(1) & 0xFF
+
     def estimate_responsively(self, image: Any, timestamp: float):
         assert self.estimator is not None
         if self.worker is None:
@@ -359,9 +403,11 @@ class Application:
                 return future.result(timeout=0.02)
             except TimeoutError:
                 # Only quit is processed during inference; other controls apply to completed frames.
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                if self.poll_key(quit_only=True) in (ord("q"), ord("x")):
                     raise KeyboardInterrupt
                 if (
+                    self.display is None
+                    and
                     self.window_open
                     and cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1
                 ):
@@ -408,7 +454,7 @@ class Application:
                             raise ValueError("Video ended before the reference interval completed")
                         break
                     if not self.headless and not self.key(
-                        cv2.waitKey(1) & 0xFF, self.last_timestamp
+                        self.poll_key(), self.last_timestamp
                     ):
                         break
                     continue
@@ -1002,11 +1048,17 @@ class Application:
                             )
                         overlay_writer.write(panel)
                     if not self.headless:
-                        cv2.imshow("Tango Posture", panel)
+                        if self.display is not None:
+                            self.display.show(panel)
+                        else:
+                            cv2.imshow("Tango Posture", panel)
                         self.window_open = True
-                        if not self.key(cv2.waitKey(1) & 0xFF, timestamp):
+                        if not self.key(self.poll_key(), timestamp):
                             break
-                        if cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1:
+                        if (
+                            self.display is None
+                            and cv2.getWindowProperty("Tango Posture", cv2.WND_PROP_VISIBLE) < 1
+                        ):
                             status = "stopped"
                             break
                 self.latencies.append((time.monotonic() - captured.captured_at) * 1000)
@@ -1023,7 +1075,12 @@ class Application:
                     end_time = max(end_time, time.monotonic() - self.capture.origin)
                 elif self.capture and self.video and status == "completed" and self.capture.fps > 0:
                     end_time += 1 / self.capture.fps
-                self.finish(end_time, status)
+                if self.aborted:
+                    if self.session and not self.session.finished:
+                        self.storage.discard_running_session(self.session.id)
+                        self.session.buffer.clear()
+                else:
+                    self.finish(end_time, status)
             finally:
                 try:
                     if self.beat_tracker:
@@ -1050,6 +1107,10 @@ class Application:
                         if self.estimator:
                             self.estimator.close()
                     finally:
-                        if not self.headless:
+                        if self.display is not None:
+                            self.display.close()
+                        elif not self.headless:
                             cv2.destroyAllWindows()
+                        if self.workspace_path is not None and (self.aborted or self.report_written):
+                            shutil.rmtree(self.workspace_path, ignore_errors=True)
         return self.outputs
