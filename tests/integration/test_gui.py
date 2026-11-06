@@ -718,3 +718,28 @@ def test_review_compares_three_views_and_seeks_sidebar_notes(studio, tmp_path):
         variable.set(False)
     gui.review.update_comparison()
     assert not gui.review.player.comparisons
+
+
+def test_setting_labels_open_their_specific_manual_explanation(studio):
+    root, gui = studio
+    from tango_posture.config import SETTING_GROUPS
+
+    for group, fields in SETTING_GROUPS.items():
+        page = gui.group_pages[group]
+        for field in fields:
+            row = fields.index(field)
+            labels = [widget for widget in page.grid_slaves(row=row, column=0)
+                      if widget.winfo_class() == "TLabel"]
+            assert len(labels) == 1
+            label = labels[0]
+            assert "\n" not in label.cget("text")
+            assert "_" not in label.cget("text")
+            label.event_generate("<Button-1>")
+            root.update()
+            assert gui.help_window.winfo_exists()
+            selected = gui.help_outline.selection()
+            expected = "Tracking and reference thresholds" if group == "Tracking" else group
+            assert gui.help_outline.item(selected[0], "text") == expected
+            highlighted = gui.help_view.text.tag_ranges("found")
+            assert highlighted
+            assert gui.help_view.text.get(*highlighted).startswith(field + " ")

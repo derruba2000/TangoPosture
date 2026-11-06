@@ -178,23 +178,77 @@ class PracticeGUI:
     def _setting(self, page, row, field):
         key = self.fields[field]
         variable = self.settings[key]
-        label = field.replace(".", "  /  ").replace("_", " ").capitalize()
-        text = f"{label}\n{key}"
+        label = field.replace(".", " / ").replace("_", " ").capitalize()
+        label = {
+            "camera": "Camera device", "width": "Image width (pixels)",
+            "height": "Image height (pixels)", "side": "Measurement side",
+            "facing": "Facing direction", "capture_profile": "Camera setup name",
+            "mirror": "Mirror preview", "allow_all_angles": "Allow all viewing angles",
+            "model_path": "Pose model file", "data_dir": "Data folder",
+            "confidence": "Minimum landmark confidence", "min_torso": "Minimum torso size",
+            "min_head": "Minimum head segment size", "max_view_width": "Maximum side-view width",
+            "offset_mad": "Reference offset stability limit",
+            "angle_mad": "Reference angle stability limit",
+            "smoothing": "Measurement smoothing (seconds)",
+            "max_gap": "Maximum tracking gap (seconds)",
+            "role_assign_ms": "Role detection delay (milliseconds)",
+            "role_hold_ms": "Role hold time (milliseconds)",
+            "tango_bpm": "Starting tempo (BPM)", "replay_audio": "Replay sound",
+            "ollama_base_url": "Ollama server address", "ollama_num_ctx": "Model context size (tokens)",
+            "ollama_num_predict": "Maximum response length (tokens)",
+            "ollama_max_report_chars": "Maximum report length (characters)",
+            "ollama_instruction": "Analysis focus", "ollama_temperature": "Response variation",
+        }.get(field, label)
+        link = ttk.Label(page, text=label, foreground="#176caa", cursor="hand2",
+                         wraplength=350, takefocus=True)
+        link.grid(row=row, column=0, sticky="w", pady=10, padx=(0, 20))
+        link.bind("<Button-1>", lambda _: self.open_setting_help(field))
+        link.bind("<Return>", lambda _: self.open_setting_help(field))
+        link.bind("<space>", lambda _: self.open_setting_help(field))
         if isinstance(variable, tk.BooleanVar):
-            ttk.Label(page, text=text).grid(row=row, column=0, sticky="w", pady=10, padx=(0, 20))
             ttk.Checkbutton(page, variable=variable, text="Enabled").grid(
                 row=row, column=1, sticky="w"
             )
         elif field in ("side", "facing"):
-            ttk.Label(page, text=text).grid(row=row, column=0, sticky="w", pady=10)
             ttk.Combobox(
                 page, textvariable=variable, values=("left", "right"), state="readonly"
             ).grid(row=row, column=1, sticky="ew")
         else:
+            ttk.Entry(page, textvariable=variable).grid(row=row, column=1, sticky="ew", pady=10)
             browse = (
                 "directory" if field == "data_dir" else "model" if field == "model_path" else None
             )
-            self._entry(page, row, text, variable, browse)
+            if browse:
+                ttk.Button(page, text="Browse...",
+                           command=lambda: self.browse(variable, browse)).grid(
+                    row=row, column=2, padx=(10, 0)
+                )
+
+    def open_setting_help(self, field):
+        self.open_help()
+        group = next(group for group, fields in SETTING_GROUPS.items() if field in fields)
+        heading = "Tracking and reference thresholds" if group == "Tracking" else group
+        for index, (_level, title, position) in enumerate(self.help_view.headings):
+            if title != heading:
+                continue
+            node = f"section-{index}"
+            self.help_outline.selection_set(node)
+            self.help_outline.see(node)
+            self.help_outline.focus(node)
+
+            def reveal(position=position):
+                text = self.help_view.text
+                found = text.search(field + " ", position, stopindex="end")
+                target = found or position
+                text.tag_remove("found", "1.0", "end")
+                if found:
+                    text.tag_add("found", f"{found} linestart", f"{found} lineend")
+                text.yview(target)
+                text.xview_moveto(0)
+                text.mark_set("insert", target)
+
+            self.help_window.after_idle(reveal)
+            break
 
     def _practice(self, page):
         ttk.Label(page, text="Choose your practice source", font=("Helvetica", 15, "bold")).grid(
