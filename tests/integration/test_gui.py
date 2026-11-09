@@ -1052,6 +1052,8 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     assert Path(panel.import_video_var.get()) == teacher_vid.resolve()
     assert "Analyse clip" in panel.import_status.get()
     assert panel._resolve_movement_target()[0] is not None
+    assert panel.show_pivots_var.get() is True
+    assert panel.show_steps_var.get() is True
     panel.cut_video_dialog()
     assert panel.cut_dialog is not None
     assert panel.cut_dialog.title() == "Cut video segment"

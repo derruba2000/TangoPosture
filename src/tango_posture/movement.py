@@ -61,6 +61,7 @@ MAX_HIP_FRAMES = 200_000
 DETECTOR_CONFIG: dict[str, Any] = {
     "target_sample_fps": 15.0,
     "min_landmark_confidence": 0.55,
+    "step_min_landmark_confidence": 0.45,
     "frame_margin": 0.01,
     "max_tracking_gap_s": 0.35,
     "max_interp_gap_s": 0.22,
@@ -75,9 +76,9 @@ DETECTOR_CONFIG: dict[str, Any] = {
     "pivot_trim_rate_deg_s": 12.0,
     "pivot_max_opposite_fraction": 0.22,
     "pivot_foot_anchor_radius_scale": 0.18,
-    "step_smooth_tau_s": 0.04,
+    "step_smooth_tau_s": 0.10,
     "step_move_speed_scale_s": 0.30,
-    "step_settle_speed_scale_s": 0.20,
+    "step_settle_speed_scale_s": 0.35,
     "step_settle_radius_scale": 0.045,
     "step_settle_min_duration_s": 0.10,
     "step_min_center_travel_scale": 0.075,
@@ -521,6 +522,7 @@ def analyse_movement_observations(
 
     cfg = {**DETECTOR_CONFIG, **(detector_config or {})}
     conf = float(cfg["min_landmark_confidence"])
+    step_conf = float(cfg["step_min_landmark_confidence"])
     margin = float(cfg["frame_margin"])
 
     sampled_frames = 0
@@ -632,9 +634,9 @@ def analyse_movement_observations(
             heel = pose.get(f"{side_name}_heel")
             fidx = pose.get(f"{side_name}_foot_index")
             if (
-                _usable_landmark(ank, conf, margin)
-                and _usable_landmark(heel, conf, margin)
-                and _usable_landmark(fidx, conf, margin)
+                _usable_landmark(ank, step_conf, margin)
+                and _usable_landmark(heel, step_conf, margin)
+                and _usable_landmark(fidx, step_conf, margin)
                 and ank is not None
                 and heel is not None
                 and fidx is not None

@@ -334,7 +334,7 @@ def test_step_placements_detect_short_gliding_steps():
         elif i <= 9:
             left_x = 0.45 + (0.468 - 0.45) * ((i - 3) / 6.0)
         else:
-            left_x = 0.468
+            left_x = 0.468 + (0.002 if i % 2 else -0.002)
         frames.append(
             (
                 i,
@@ -353,6 +353,40 @@ def test_step_placements_detect_short_gliding_steps():
     assert len(result["steps"]) == 1
     assert result["steps"][0]["side"] == "left"
     assert math.isclose(result["steps"][0]["x"], 0.468 * 640, rel_tol=0.03)
+
+
+def test_step_placements_accept_moderate_foot_visibility():
+    fps = 15.0
+    frames = []
+    for i in range(24):
+        if i <= 4:
+            right_x = 0.56
+        elif i <= 10:
+            right_x = 0.56 + (0.70 - 0.56) * ((i - 4) / 6.0)
+        else:
+            right_x = 0.70
+        observation = _make_pose_observation(
+            i / fps,
+            left_foot_2d=(0.42, 0.86),
+            right_foot_2d=(right_x, 0.86),
+        )
+        for landmark_name in ("right_ankle", "right_heel", "right_foot_index"):
+            landmark = observation.poses[0][landmark_name]
+            observation.poses[0][landmark_name] = Landmark(
+                x=landmark.x,
+                y=landmark.y,
+                z=landmark.z,
+                visibility=0.50,
+                presence=0.50,
+            )
+        frames.append((i, observation))
+
+    result = analyse_movement_observations(
+        frames, width=640, height=480, fps=fps, frame_count=len(frames), sample_stride=1
+    )
+
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["side"] == "right"
 
 
 def test_step_detector_rejects_swivel_airborne_and_post_occlusion():

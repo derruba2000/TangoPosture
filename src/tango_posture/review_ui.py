@@ -761,6 +761,8 @@ class ReviewPanel(ttk.Frame):
             resolved = Path(path).resolve()
             self.set_import_video_file(resolved)
             self.opened_video_path = resolved
+            self.show_pivots_var.set(True)
+            self.show_steps_var.set(True)
             if not self.import_panel_visible:
                 self.toggle_import_panel()
             self.import_status.set(
@@ -768,6 +770,8 @@ class ReviewPanel(ttk.Frame):
             )
             self.video_selection.set("Opened video")
             self._refresh_movement_state(redraw=True)
+            if self.player.reader is not None and self.player.reader.duration <= 30.0:
+                self.request_movement_analysis()
             self.tabs.select(self.video_page)
 
     def cut_video_dialog(self) -> None:
