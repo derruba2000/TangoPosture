@@ -1033,6 +1033,21 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     sidebar_text = panel.video_notes.get("1.0", "end")
     assert "No separate notes for this frame" not in sidebar_text
     assert "Torso axis" in sidebar_text and "Clip Movement Totals" in sidebar_text
+    overlay_path = tmp_path / "direct_youtube_overlay.mp4"
+    monkeypatch.setattr(
+        "tango_posture.review_ui.filedialog.asksaveasfilename",
+        lambda **_: str(overlay_path),
+    )
+    panel.save_overlay_video_dialog()
+    deadline = time.monotonic() + 5.0
+    while panel.overlay_export_job and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert overlay_path.is_file(), panel.movement_status.get()
+    assert "Saved overlay video" in panel.movement_status.get()
 
     # 2. Select local teacher video file (not downloaded from YouTube) and set sub-range [0.2, 2.0)
     teacher_vid = tmp_path / "teacher_demo.mp4"

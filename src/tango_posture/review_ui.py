@@ -59,7 +59,13 @@ from .reference_import import (
     render_coach_frame_overlay,
     validate_clip_range,
 )
-from .replay import ReplayPlayer, cut_video_segment, parse_time, time_label
+from .replay import (
+    ReplayPlayer,
+    cut_video_segment,
+    parse_time,
+    save_overlay_video,
+    time_label,
+)
 from .review import (
     ReportRecord,
     read_report,
@@ -68,6 +74,44 @@ from .review import (
     saved_analyses,
     update_report_metadata,
 )
+
+
+def _render_replay_overlay_frame(
+    image: np.ndarray,
+    frame_index: int,
+    fps: float,
+    *,
+    stream: str,
+    movement_data: dict[str, Any] | None,
+    coach_data: dict[str, Any] | None,
+    cfg: Config,
+    show_coach: bool,
+    show_pivots: bool,
+    show_steps: bool,
+    step_history_seconds: float,
+) -> np.ndarray:
+    if stream not in ("Raw video", "Source video", "Opened video"):
+        return image
+    result = image
+    if (
+        (show_pivots or show_steps)
+        and movement_data is not None
+        and image.shape[1] == movement_data.get("width")
+        and image.shape[0] == movement_data.get("height")
+    ):
+        result = render_movement_overlay(
+            image,
+            movement_data,
+            frame_index,
+            fps,
+            show_pivots=show_pivots,
+            show_steps=show_steps,
+            step_history_seconds=step_history_seconds,
+            mirror=False,
+        )
+    if show_coach and coach_data is not None:
+        result = render_coach_frame_overlay(result, coach_data, frame_index, cfg)
+    return result
 
 
 class MarkdownView(ttk.Frame):
@@ -323,6 +367,8 @@ class ReviewPanel(ttk.Frame):
         self.cut_dialog: tk.Toplevel | None = None
         self.cut_status_var: tk.StringVar | None = None
         self.cut_button: ttk.Button | None = None
+        self.overlay_export_job = ""
+        self.overlay_export_button: ttk.Button | None = None
         self.import_estimator_factory: Callable[[], Any] | None = None
         self.import_youtube_downloader: Callable[[str, Path], Path] | None = None
         self._downloaded_youtube_file: tuple[Path, str] | None = None
@@ -368,8 +414,13 @@ class ReviewPanel(ttk.Frame):
             value="Analysis runs only when you click Analyze report."
         )
         self.analysis_meta = tk.StringVar()
-        top = ttk.Frame(self)
-        top.pack(fill="x", pady=(0, 8))
+        self.tabs = ttk.Notebook(self)
+        self.tabs.pack(fill="both", expand=True)
+        self.report_page = ttk.Frame(self.tabs)
+        self.tabs.add(self.report_page, text="Practice report")
+        report_page = self.report_page
+        top = ttk.Frame(report_page, padding=(6, 6, 6, 2))
+        top.pack(fill="x")
         self.report_combo = ttk.Combobox(top, textvariable=self.selection, state="readonly")
         self.report_combo.pack(side="left", fill="x", expand=True)
         self.report_combo.bind(
@@ -382,8 +433,8 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(top, text="Open practice...", command=lambda: self.guard(self.open_report)).pack(
             side="left"
         )
-        segments = ttk.Frame(self)
-        segments.pack(fill="x", pady=(0, 8))
+        segments = ttk.Frame(report_page, padding=(6, 2))
+        segments.pack(fill="x")
         ttk.Label(segments, text="Recording").pack(side="left", padx=(0, 8))
         self.segment_combo = ttk.Combobox(
             segments, textvariable=self.segment_selection, state="disabled",
@@ -395,11 +446,11 @@ class ReviewPanel(ttk.Frame):
                 self.segment_paths[self.segment_selection.get()], archived=True,
             )),
         )
-        ttk.Label(self, textvariable=self.status, wraplength=920).pack(anchor="w", pady=(0, 6))
-        self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True)
-        self.report_view = MarkdownView(self.tabs, self.seek_report_time)
-        self.tabs.add(self.report_view, text="Practice report")
+        ttk.Label(report_page, textvariable=self.status, wraplength=920).pack(
+            anchor="w", padx=6, pady=(2, 6)
+        )
+        self.report_view = MarkdownView(report_page, self.seek_report_time)
+        self.report_view.pack(fill="both", expand=True)
         videos = ttk.Frame(self.tabs)
         self.tabs.add(videos, text="Video replay")
         self.video_page = videos
@@ -418,6 +469,12 @@ class ReviewPanel(ttk.Frame):
             text="Cut video…",
             command=lambda: self.guard(self.cut_video_dialog),
         ).pack(side="left", padx=4)
+        self.overlay_export_button = ttk.Button(
+            chooser,
+            text="Save overlay…",
+            command=lambda: self.guard(self.save_overlay_video_dialog),
+        )
+        self.overlay_export_button.pack(side="left", padx=4)
         self.import_reference_button = ttk.Button(
             chooser,
             text="Import reference video…",
@@ -445,6 +502,9 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.open_current_moment_on_youtube),
         )
         self.open_moment_youtube_button.pack(side="left", padx=4)
+        ttk.Label(videos, textvariable=self.status, wraplength=1100).pack(
+            anchor="w", padx=6, pady=(0, 2)
+        )
         self._build_import_panel(videos)
         movement_bar = ttk.Frame(videos, padding=(6, 2))
         movement_bar.pack(fill="x")
@@ -710,7 +770,7 @@ class ReviewPanel(ttk.Frame):
         self.analysis_view.set("")
         self.analysis_status.set("Analyze this report, or select one of its saved analyses.")
         self.guard(self.refresh_analyses)
-        self.tabs.select(self.report_view)
+        self.tabs.select(self.report_page)
 
     def switch_video(self):
         if not self.report:
@@ -869,6 +929,75 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(dialog, text="Close", command=dialog.destroy).grid(
             row=4, column=2, sticky="e", padx=(4, 10), pady=(4, 10)
         )
+
+    def save_overlay_video_dialog(self) -> None:
+        reader = self.player.reader
+        if reader is None:
+            raise ValueError("Open a video in Video Replay first")
+        if self.overlay_export_job:
+            raise ValueError("An overlay video export is already running")
+        export_button = self.overlay_export_button
+        if export_button is None:
+            raise RuntimeError("Overlay export control is unavailable")
+        show_coach = bool(self.show_coach_var.get() and self.coach_data is not None)
+        show_pivots = bool(self.show_pivots_var.get() and self.movement_data is not None)
+        show_steps = bool(self.show_steps_var.get() and self.movement_data is not None)
+        if not (show_coach or show_pivots or show_steps):
+            raise ValueError("Enable an available coach, pivot, or step overlay first")
+
+        source = reader.path
+        selected = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save overlay video",
+            initialdir=str(source.parent),
+            initialfile=f"{source.stem}_overlay.mp4",
+            defaultextension=".mp4",
+            filetypes=(("MP4 video", "*.mp4"),),
+        )
+        if not selected:
+            return
+        output = Path(selected).expanduser()
+        start_frame, end_frame = self.player.start_frame, self.player.end_frame
+        stream = self.video_selection.get()
+        movement_data = self.movement_data
+        coach_data = self.coach_data
+        cfg = self.config_provider()
+        step_history_seconds = self._step_history_seconds()
+        job_id = uuid4().hex
+        self.overlay_export_job = job_id
+        export_button.configure(state="disabled")
+        self.movement_status.set("Saving overlay video…")
+
+        def transform(image: Any, frame_index: int, fps: float) -> np.ndarray:
+            return _render_replay_overlay_frame(
+                image,
+                frame_index,
+                fps,
+                stream=stream,
+                movement_data=movement_data,
+                coach_data=coach_data,
+                cfg=cfg,
+                show_coach=show_coach,
+                show_pivots=show_pivots,
+                show_steps=show_steps,
+                step_history_seconds=step_history_seconds,
+            )
+
+        def work() -> None:
+            try:
+                path, audio_muxed = save_overlay_video(
+                    source,
+                    output,
+                    start_frame,
+                    end_frame,
+                    frame_transform=transform,
+                )
+            except Exception as error:  # noqa: BLE001 - report worker errors to the UI
+                self.events.put((job_id, "overlay_export_error", (str(error),)))
+            else:
+                self.events.put((job_id, "overlay_export_done", (path, audio_muxed)))
+
+        threading.Thread(target=work, name="overlay-video-export", daemon=True).start()
 
     def _clear_standalone_movement(self):
         if self.opened_video_path is not None:
@@ -1101,36 +1230,19 @@ class ReviewPanel(ttk.Frame):
     def _transform_replay_frame(
         self, image: np.ndarray, frame_index: int, fps: float
     ) -> np.ndarray:
-        show_pivots = bool(self.show_pivots_var.get())
-        show_steps = bool(self.show_steps_var.get())
-        if self.video_selection.get() not in ("Raw video", "Source video", "Opened video"):
-            return image
-        result = image
-        if (
-            (show_pivots or show_steps)
-            and self.movement_data is not None
-            and image.shape[1] == self.movement_data.get("width")
-            and image.shape[0] == self.movement_data.get("height")
-        ):
-            result = render_movement_overlay(
-                image,
-                self.movement_data,
-                frame_index,
-                fps,
-                show_pivots=show_pivots,
-                show_steps=show_steps,
-                step_history_seconds=self._step_history_seconds(),
-                mirror=False,
-            )
-        if (
-            self.show_coach_var.get()
-            and self.coach_data is not None
-            and self.video_selection.get() != "Opened video"
-        ):
-            result = render_coach_frame_overlay(
-                result, self.coach_data, frame_index, self.config_provider()
-            )
-        return result
+        return _render_replay_overlay_frame(
+            image,
+            frame_index,
+            fps,
+            stream=self.video_selection.get(),
+            movement_data=self.movement_data,
+            coach_data=self.coach_data,
+            cfg=self.config_provider(),
+            show_coach=bool(self.show_coach_var.get()),
+            show_pivots=bool(self.show_pivots_var.get()),
+            show_steps=bool(self.show_steps_var.get()),
+            step_history_seconds=self._step_history_seconds(),
+        )
 
     def on_coach_toggle(self):
         if self.player.reader is not None:
@@ -1405,6 +1517,16 @@ class ReviewPanel(ttk.Frame):
                         self.cut_status_var.set(message)
                     if self.cut_button is not None:
                         self.cut_button.configure(state="normal")
+            elif kind in ("overlay_export_done", "overlay_export_error") and token == self.overlay_export_job:
+                self.overlay_export_job = ""
+                if kind == "overlay_export_done":
+                    path, audio_muxed = value
+                    audio_note = "" if audio_muxed else " (audio not copied; FFmpeg unavailable)"
+                    self.movement_status.set(f"Saved overlay video: {path}{audio_note}")
+                else:
+                    self.movement_status.set(f"Overlay export failed: {value[0]}")
+                if self.overlay_export_button is not None:
+                    self.overlay_export_button.configure(state="normal")
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")

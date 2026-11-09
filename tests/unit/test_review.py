@@ -3,7 +3,7 @@ import json
 import pytest
 
 from tango_posture.config import Config
-from tango_posture.replay import VideoReader, cut_video_segment, parse_time
+from tango_posture.replay import VideoReader, cut_video_segment, parse_time, save_overlay_video
 from tango_posture.reports import write_markdown_report
 from tango_posture.review import read_report, save_analysis, saved_analyses, write_metadata
 
@@ -141,3 +141,33 @@ def test_cut_video_segment_rejects_source_overwrite_and_invalid_range(tmp_path):
         cut_video_segment(source, source, 0.0, 0.5)
     with pytest.raises(ValueError, match="End time must be greater"):
         cut_video_segment(source, tmp_path / "bad.mp4", 1.0, 0.5)
+
+
+def test_save_overlay_video_renders_selected_range_without_changing_source(tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+
+    source = tmp_path / "source.avi"
+    writer = cv2.VideoWriter(str(source), cv2.VideoWriter.fourcc(*"MJPG"), 10, (160, 120))
+    assert writer.isOpened()
+    for i in range(12):
+        writer.write(np.full((120, 160, 3), i * 10, np.uint8))
+    writer.release()
+    original = source.read_bytes()
+    monkeypatch.setattr("tango_posture.replay.shutil.which", lambda _: None)
+
+    def transform(frame, frame_index, _fps):
+        cv2.putText(frame, str(frame_index), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        return frame
+
+    output, audio_muxed = save_overlay_video(
+        source, tmp_path / "overlay.mp4", 2, 7, frame_transform=transform
+    )
+
+    reader = VideoReader(output)
+    assert reader.count == 6
+    rendered = reader.frame(0)
+    reader.close()
+    assert np.count_nonzero(rendered[:, :, 2] > rendered[:, :, 0]) > 0
+    assert audio_muxed is False
+    assert source.read_bytes() == original

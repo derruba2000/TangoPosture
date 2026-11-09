@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tkinter as tk
 from collections.abc import Callable
@@ -180,6 +181,119 @@ class VideoReader:
 
     def close(self):
         self.cap.release()
+
+
+def save_overlay_video(
+    source_path: Path | str,
+    output_path: Path | str,
+    start_frame: int,
+    end_frame: int,
+    *,
+    frame_transform: Callable[[Any, int, float], Any],
+) -> tuple[Path, bool]:
+    """Export transformed frames from an inclusive source-frame interval.
+
+    Returns the output path and whether source audio was muxed into the result.
+    """
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if source == output:
+        raise ValueError("Choose a different output path so the source video stays unchanged")
+    if output.exists():
+        raise FileExistsError(f"Output file already exists: {output}")
+    reader = VideoReader(source)
+    fps, frame_count = reader.fps, reader.count
+    reader.close()
+    if not (0 <= start_frame <= end_frame < frame_count):
+        raise ValueError("Selected replay range is outside the source video")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = shutil.which("ffmpeg")
+    with tempfile.TemporaryDirectory(prefix="tango-overlay-") as temp_dir:
+        rendered_path = Path(temp_dir) / "rendered.mp4"
+        capture = cv2.VideoCapture(str(source))
+        writer: cv2.VideoWriter | None = None
+        rendered_size: tuple[int, int] | None = None
+        try:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            written = 0
+            for frame_index in range(start_frame, end_frame + 1):
+                ok, image = capture.read()
+                if not ok or image is None:
+                    break
+                rendered = frame_transform(image, frame_index, fps)
+                height, width = rendered.shape[:2]
+                if rendered_size is None:
+                    rendered_size = (width, height)
+                    writer = cv2.VideoWriter(
+                        str(rendered_path),
+                        cv2.VideoWriter.fourcc(*"mp4v"),
+                        fps,
+                        rendered_size,
+                    )
+                    if not writer.isOpened():
+                        raise OSError(f"Cannot create overlay video: {rendered_path}")
+                elif rendered_size != (width, height):
+                    raise ValueError("Overlay renderer changed frame dimensions during export")
+                assert writer is not None
+                writer.write(rendered)
+                written += 1
+            if written == 0:
+                raise ValueError("Selected replay range contains no decodable frames")
+        except Exception:
+            output.unlink(missing_ok=True)
+            raise
+        finally:
+            capture.release()
+            if writer is not None:
+                writer.release()
+
+        if ffmpeg is None:
+            shutil.copyfile(rendered_path, output)
+            return output, False
+
+        start_seconds = start_frame / fps
+        duration_seconds = written / fps
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-n",
+            "-i",
+            str(rendered_path),
+            "-ss",
+            f"{start_seconds:.6f}",
+            "-t",
+            f"{duration_seconds:.6f}",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(output),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ValueError(f"Could not start ffmpeg: {error}") from error
+        if result.returncode != 0:
+            output.unlink(missing_ok=True)
+            detail = (result.stderr or "").strip().splitlines()
+            raise ValueError(detail[-1] if detail else "Could not add source audio")
+        return output, True
 
 
 class ReplayPlayer(ttk.Frame):
