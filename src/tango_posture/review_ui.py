@@ -31,6 +31,7 @@ from .config import Config
 from .movement import (
     MovementAnalysisCoordinator,
     RecordingTarget,
+    render_floor_guide,
     render_movement_overlay,
     validate_movement_analysis,
 )
@@ -88,11 +89,12 @@ def _render_replay_overlay_frame(
     show_coach: bool,
     show_pivots: bool,
     show_steps: bool,
+    floor_only: bool,
     step_history_seconds: float,
 ) -> np.ndarray:
     if stream not in ("Raw video", "Source video", "Opened video"):
         return image
-    result = image
+    result = render_floor_guide(image) if floor_only else image
     if (
         (show_pivots or show_steps)
         and movement_data is not None
@@ -352,6 +354,7 @@ class ReviewPanel(ttk.Frame):
         self.movement_state_by_key: dict[tuple[str, str, int], str] = {}
         self.show_pivots_var = tk.BooleanVar(value=False)
         self.show_steps_var = tk.BooleanVar(value=False)
+        self.floor_only_var = tk.BooleanVar(value=False)
         self.show_coach_var = tk.BooleanVar(value=False)
         self.coach_data: dict[str, Any] | None = None
         self.movement_status = tk.StringVar(value="Not analysed")
@@ -544,6 +547,13 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.on_movement_toggle),
         )
         self.show_steps_check.pack(side="left", padx=(0, 10))
+        self.floor_only_check = ttk.Checkbutton(
+            movement_bar,
+            text="Floor view (lines only)",
+            variable=self.floor_only_var,
+            command=lambda: self.guard(self.on_floor_only_toggle),
+        )
+        self.floor_only_check.pack(side="left", padx=(0, 6))
         self.movement_status_label = ttk.Label(movement_bar, textvariable=self.movement_status)
         self.movement_status_label.pack(side="left", fill="x", expand=True)
         self.compare_vars: dict[str, tk.BooleanVar] = {}
@@ -963,6 +973,7 @@ class ReviewPanel(ttk.Frame):
         coach_data = self.coach_data
         cfg = self.config_provider()
         step_history_seconds = self._step_history_seconds()
+        floor_only = bool(self.floor_only_var.get())
         job_id = uuid4().hex
         self.overlay_export_job = job_id
         export_button.configure(state="disabled")
@@ -980,6 +991,7 @@ class ReviewPanel(ttk.Frame):
                 show_coach=show_coach,
                 show_pivots=show_pivots,
                 show_steps=show_steps,
+                floor_only=floor_only,
                 step_history_seconds=step_history_seconds,
             )
 
@@ -1241,8 +1253,13 @@ class ReviewPanel(ttk.Frame):
             show_coach=bool(self.show_coach_var.get()),
             show_pivots=bool(self.show_pivots_var.get()),
             show_steps=bool(self.show_steps_var.get()),
+            floor_only=bool(self.floor_only_var.get()),
             step_history_seconds=self._step_history_seconds(),
         )
+
+    def on_floor_only_toggle(self):
+        if self.player.reader is not None:
+            self.player.refresh_frame()
 
     def on_coach_toggle(self):
         if self.player.reader is not None:

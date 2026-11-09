@@ -1415,6 +1415,34 @@ def _draw_footprint(
     cv2.addWeighted(layer, alpha, roi, 1.0 - alpha, 0.0, dst=roi)
 
 
+def render_floor_guide(image: np.ndarray) -> np.ndarray:
+    """Replace source pixels with a neutral gray stage and perspective floor grid."""
+    height, width = image.shape[:2]
+    horizon_y = round(height * 0.66)
+    canvas = np.empty_like(image)
+    canvas[:] = (63, 67, 70)
+    canvas[horizon_y:] = (119, 123, 126)
+    cv2.line(canvas, (0, horizon_y), (width - 1, horizon_y), (178, 181, 183), 2, cv2.LINE_AA)
+
+    vanishing_x = width // 2
+    vertical_step = max(1, width // 8)
+    for bottom_x in range(0, width + 1, vertical_step):
+        cv2.line(
+            canvas,
+            (vanishing_x, horizon_y),
+            (min(width - 1, bottom_x), height - 1),
+            (145, 149, 152),
+            1,
+            cv2.LINE_AA,
+        )
+
+    floor_height = height - horizon_y
+    for fraction in (0.20, 0.42, 0.68, 1.0):
+        y = min(height - 1, horizon_y + round(floor_height * fraction * fraction))
+        cv2.line(canvas, (0, y), (width - 1, y), (145, 149, 152), 1, cv2.LINE_AA)
+    return canvas
+
+
 def _draw_pivot_ring(
     canvas: np.ndarray,
     hip: dict[str, Any],
@@ -1801,6 +1829,7 @@ __all__ = [
     "hip_heading_3d_deg",
     "movement_member_name",
     "read_movement_analysis",
+    "render_floor_guide",
     "render_movement_overlay",
     "scan_video_movement",
     "step_opacity",

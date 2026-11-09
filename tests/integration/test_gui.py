@@ -1033,6 +1033,12 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     sidebar_text = panel.video_notes.get("1.0", "end")
     assert "No separate notes for this frame" not in sidebar_text
     assert "Torso axis" in sidebar_text and "Clip Movement Totals" in sidebar_text
+    assert panel.player.reader is not None and panel.player.raw_frame is not None
+    panel.floor_only_var.set(True)
+    floor_frame = panel._transform_replay_frame(
+        panel.player.raw_frame.copy(), panel.player.reader.index, panel.player.reader.fps
+    )
+    assert not np.array_equal(floor_frame, panel.player.raw_frame)
     overlay_path = tmp_path / "direct_youtube_overlay.mp4"
     monkeypatch.setattr(
         "tango_posture.review_ui.filedialog.asksaveasfilename",
@@ -1048,6 +1054,7 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     root.update()
     assert overlay_path.is_file(), panel.movement_status.get()
     assert "Saved overlay video" in panel.movement_status.get()
+    panel.floor_only_var.set(False)
 
     # 2. Select local teacher video file (not downloaded from YouTube) and set sub-range [0.2, 2.0)
     teacher_vid = tmp_path / "teacher_demo.mp4"

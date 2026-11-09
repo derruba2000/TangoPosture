@@ -15,6 +15,7 @@ from tango_posture.movement import (
     analyse_movement_observations,
     detector_fingerprint,
     hip_heading_3d_deg,
+    render_floor_guide,
     render_movement_overlay,
     scan_video_movement,
     step_opacity,
@@ -470,6 +471,17 @@ def test_step_opacity_ramp_and_fade_window():
     assert math.isclose(mid_fade, 0.44, rel_tol=1e-3)
     assert step_opacity(5.0, 5.0) == 0.0
     assert step_opacity(5.5, 5.0) == 0.0
+
+
+def test_floor_guide_replaces_source_with_gray_grid():
+    source = np.full((120, 160, 3), (0, 0, 255), dtype=np.uint8)
+
+    guide = render_floor_guide(source)
+
+    assert guide.shape == source.shape
+    assert not np.array_equal(guide, source)
+    assert guide[20, 20].tolist() == [63, 67, 70]
+    assert float(guide[112, 80].mean()) < 180.0
 
 
 def test_renderer_immutability_deterministic_seek_and_mirror_reflection():
