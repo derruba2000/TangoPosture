@@ -43,6 +43,7 @@ from .geometry import (
 )
 from .metrics import measure
 from .models import verify
+from .movement import render_floor_guide
 from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
 from .reports import write_markdown_report
@@ -1129,7 +1130,7 @@ class Application:
                         overlay_writer.write(panel)
                         if self.display is not None and self.recording:
                             lines_panel = draw(
-                                captured.image,
+                                render_floor_guide(captured.image),
                                 display_frame,
                                 self.cfg.mirror and self.setup_confirmed,
                                 [],

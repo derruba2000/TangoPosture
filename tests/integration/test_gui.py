@@ -714,18 +714,19 @@ def test_review_compares_three_views_and_seeks_sidebar_notes(studio, tmp_path):
     gui.review.tabs.select(gui.review.video_page)
     root.update()
     assert "Full lines + messages" in gui.review.report.videos
-    for name in ("Raw video", "Full lines + messages"):
-        gui.review.compare_vars[name].set(True)
-    gui.review.update_comparison()
+    gui.review.reference_paths["Reference practice"] = archive
+    gui.review.reference_combo.configure(values=("Reference practice",))
+    gui.review.compare_target_var.set("Reference practice")
+    gui.review.show_reference_var.set(True)
+    gui.review.on_reference_toggle()
     gui.review.player.seek(0.2)
-    assert [reader.index for reader, _ in gui.review.player.comparisons] == [2, 2]
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [2]
     assert "Frame 2 notes" in gui.review.video_notes.get("1.0", "end")
     gui.review.player.step(-1)
-    assert [reader.index for reader, _ in gui.review.player.comparisons] == [1, 1]
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [1]
     assert "Frame 1 notes" in gui.review.video_notes.get("1.0", "end")
-    for variable in gui.review.compare_vars.values():
-        variable.set(False)
-    gui.review.update_comparison()
+    gui.review.show_reference_var.set(False)
+    gui.review.on_reference_toggle()
     assert not gui.review.player.comparisons
 
 
@@ -877,13 +878,13 @@ def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studi
     # Seek to frame 12 (0.8s, inside pivot & step history) while on Overlay
     panel.player.seek(0.8)
     assert panel.player.reader.index == 12
-    # Enabling Show pivots while viewing baked Overlay automatically switches to Raw video at same timestamp
+    # Enabling Show pivots while viewing baked Overlay switches to Practice video at the same timestamp
     panel.show_pivots_var.set(True)
     panel.show_steps_var.set(True)
     panel.on_movement_toggle()
     root.update()
-    assert panel.video_selection.get() == "Raw video"
-    assert "Switched to Raw video" in panel.status.get()
+    assert panel.video_selection.get() == "Practice video"
+    assert "Switched to Practice video" in panel.status.get()
     assert panel.player.reader.index == 12
     assert not np.array_equal(panel.player.last_image, panel.player.raw_frame)
 
@@ -897,7 +898,12 @@ def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studi
     gui.settings["replay_step_history_seconds"].set("0.5")
     root.update()
     img_05s = panel.player.last_image.copy()
-    assert np.array_equal(img_05s, panel.player.raw_frame)
+    panel.show_steps_var.set(False)
+    panel.player.refresh_frame()
+    without_steps = panel.player.last_image.copy()
+    panel.show_steps_var.set(True)
+    panel.player.refresh_frame()
+    assert np.array_equal(img_05s, without_steps)
 
 
 def test_movement_analysis_cancel_preserves_previous_result_and_handles_overlay_only_and_standalone(
@@ -1024,11 +1030,17 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     root.update()
     assert yt_direct_res.video_path.name == "youtube_dQw4w9WgXcQ.mp4"
     assert panel.report is not None and panel.report.title == "Direct YouTube Clip"
+    assert tuple(panel.video_combo["values"]) == ("Practice video",)
     assert panel.open_youtube_button.instate(["!disabled"])
     assert panel.open_moment_youtube_button.instate(["!disabled"])
     assert panel.show_coach_var.get() is True
     assert panel.show_pivots_var.get() is True
     assert panel.show_steps_var.get() is True
+    assert panel.floor_only_check.cget("text") == "Hide video (gray floor)"
+    gui.tabs.select(panel)
+    panel.tabs.select(panel.video_page)
+    root.update()
+    assert panel.floor_only_check.winfo_ismapped()
     assert panel.coach_data is not None
     sidebar_text = panel.video_notes.get("1.0", "end")
     assert "No separate notes for this frame" not in sidebar_text
@@ -1039,6 +1051,7 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
         panel.player.raw_frame.copy(), panel.player.reader.index, panel.player.reader.fps
     )
     assert not np.array_equal(floor_frame, panel.player.raw_frame)
+    assert floor_frame[2, 2].tolist() == [63, 67, 70]
     overlay_path = tmp_path / "direct_youtube_overlay.mp4"
     monkeypatch.setattr(
         "tango_posture.review_ui.filedialog.asksaveasfilename",

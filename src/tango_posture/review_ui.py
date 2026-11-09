@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import cv2
 import numpy as np
 
 from .archive import (
@@ -91,6 +92,7 @@ def _render_replay_overlay_frame(
     show_steps: bool,
     floor_only: bool,
     step_history_seconds: float,
+    pane_label: str | None = None,
 ) -> np.ndarray:
     if stream not in ("Raw video", "Source video", "Opened video"):
         return image
@@ -98,11 +100,11 @@ def _render_replay_overlay_frame(
     if (
         (show_pivots or show_steps)
         and movement_data is not None
-        and image.shape[1] == movement_data.get("width")
-        and image.shape[0] == movement_data.get("height")
+        and result.shape[1] == movement_data.get("width")
+        and result.shape[0] == movement_data.get("height")
     ):
         result = render_movement_overlay(
-            image,
+            result,
             movement_data,
             frame_index,
             fps,
@@ -113,6 +115,11 @@ def _render_replay_overlay_frame(
         )
     if show_coach and coach_data is not None:
         result = render_coach_frame_overlay(result, coach_data, frame_index, cfg)
+    if pane_label:
+        height = result.shape[0]
+        origin = (16, height - 18)
+        cv2.putText(result, pane_label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (20, 24, 28), 4, cv2.LINE_AA)
+        cv2.putText(result, pane_label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (245, 245, 245), 1, cv2.LINE_AA)
     return result
 
 
@@ -398,6 +405,12 @@ class ReviewPanel(ttk.Frame):
         self.import_panel_visible = False
         self.last_opened_youtube_url: str = ""
         self.compare_target_var = tk.StringVar()
+        self.show_reference_var = tk.BooleanVar(value=False)
+        self.reference_paths: dict[str, Path] = {}
+        self.reference_record: ReportRecord | None = None
+        self.reference_archive: PracticeArchive | None = None
+        self.reference_movement_data: dict[str, Any] | None = None
+        self.reference_coach_data: dict[str, Any] | None = None
         self.anchor_left_var = tk.StringVar(value="0.0")
         self.anchor_right_var = tk.StringVar(value="0.0")
         self.comparison_summary_var = tk.StringVar(value="")
@@ -411,6 +424,8 @@ class ReviewPanel(ttk.Frame):
         self.analysis_stream = ""
         self.selection = tk.StringVar()
         self.video_selection = tk.StringVar()
+        self.video_paths: dict[str, Path] = {}
+        self.video_stream_keys: dict[str, str] = {}
         self.saved_selection = tk.StringVar()
         self.status = tk.StringVar(value="Choose a saved report to review your practice.")
         self.analysis_status = tk.StringVar(
@@ -462,6 +477,7 @@ class ReviewPanel(ttk.Frame):
         self.video_combo = ttk.Combobox(
             chooser, textvariable=self.video_selection, state="readonly", width=20
         )
+        ttk.Label(chooser, text="Practice video:").pack(side="left", padx=(0, 4))
         self.video_combo.pack(side="left")
         self.video_combo.bind("<<ComboboxSelected>>", lambda _: self.guard(self.switch_video))
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
@@ -478,36 +494,58 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.save_overlay_video_dialog),
         )
         self.overlay_export_button.pack(side="left", padx=4)
+        replay_actions = ttk.Frame(videos, padding=(6, 0))
         self.import_reference_button = ttk.Button(
-            chooser,
+            replay_actions,
             text="Import reference video…",
             command=lambda: self.guard(self.toggle_import_panel),
         )
-        self.import_reference_button.pack(side="left", padx=4)
+        self.import_reference_button.pack(side="left", padx=(0, 4))
         self.relink_video_button = ttk.Button(
-            chooser,
+            replay_actions,
             text="Relink video…",
             state="disabled",
             command=lambda: self.guard(self.relink_current_video_dialog),
         )
         self.relink_video_button.pack(side="left", padx=4)
         self.open_youtube_button = ttk.Button(
-            chooser,
+            replay_actions,
             text="Open on YouTube",
             state="disabled",
             command=lambda: self.guard(self.open_current_youtube),
         )
         self.open_youtube_button.pack(side="left", padx=4)
         self.open_moment_youtube_button = ttk.Button(
-            chooser,
+            replay_actions,
             text="Open this moment on YouTube",
             state="disabled",
             command=lambda: self.guard(self.open_current_moment_on_youtube),
         )
         self.open_moment_youtube_button.pack(side="left", padx=4)
+        replay_actions.pack(fill="x")
         ttk.Label(videos, textvariable=self.status, wraplength=1100).pack(
             anchor="w", padx=6, pady=(0, 2)
         )
+        self.reference_bar = ttk.Frame(videos, padding=(6, 2))
+        self.reference_bar.pack(fill="x")
+        ttk.Label(self.reference_bar, text="Reference video:").pack(side="left", padx=(0, 4))
+        self.reference_combo = ttk.Combobox(
+            self.reference_bar,
+            textvariable=self.compare_target_var,
+            state="readonly",
+            width=34,
+        )
+        self.reference_combo.pack(side="left", padx=(0, 8))
+        self.reference_combo.bind(
+            "<<ComboboxSelected>>", lambda _: self.guard(self.on_reference_selection)
+        )
+        self.show_reference_check = ttk.Checkbutton(
+            self.reference_bar,
+            text="Show reference",
+            variable=self.show_reference_var,
+            command=lambda: self.guard(self.on_reference_toggle),
+        )
+        self.show_reference_check.pack(side="left")
         self._build_import_panel(videos)
         movement_bar = ttk.Frame(videos, padding=(6, 2))
         movement_bar.pack(fill="x")
@@ -526,40 +564,38 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.cancel_movement_analysis),
         )
         self.movement_cancel_button.pack(side="left", padx=(4, 8))
+        self.movement_status_label = ttk.Label(movement_bar, textvariable=self.movement_status)
+        self.movement_status_label.pack(side="left", fill="x", expand=True)
+        overlay_controls = ttk.Frame(videos, padding=(6, 0))
+        overlay_controls.pack(fill="x", pady=(0, 3))
+        self.floor_only_check = ttk.Checkbutton(
+            overlay_controls,
+            text="Hide video (gray floor)",
+            variable=self.floor_only_var,
+            command=lambda: self.guard(self.on_floor_only_toggle),
+        )
+        self.floor_only_check.pack(side="left", padx=(0, 10))
         self.show_coach_check = ttk.Checkbutton(
-            movement_bar,
-            text="Coach overlay (axis & posture)",
+            overlay_controls,
+            text="Coach lines",
             variable=self.show_coach_var,
             command=lambda: self.guard(self.on_coach_toggle),
         )
         self.show_coach_check.pack(side="left", padx=(0, 6))
         self.show_pivots_check = ttk.Checkbutton(
-            movement_bar,
+            overlay_controls,
             text="Show pivots",
             variable=self.show_pivots_var,
             command=lambda: self.guard(self.on_movement_toggle),
         )
         self.show_pivots_check.pack(side="left", padx=(0, 6))
         self.show_steps_check = ttk.Checkbutton(
-            movement_bar,
+            overlay_controls,
             text="Show recent steps",
             variable=self.show_steps_var,
             command=lambda: self.guard(self.on_movement_toggle),
         )
         self.show_steps_check.pack(side="left", padx=(0, 10))
-        self.floor_only_check = ttk.Checkbutton(
-            movement_bar,
-            text="Floor view (lines only)",
-            variable=self.floor_only_var,
-            command=lambda: self.guard(self.on_floor_only_toggle),
-        )
-        self.floor_only_check.pack(side="left", padx=(0, 6))
-        self.movement_status_label = ttk.Label(movement_bar, textvariable=self.movement_status)
-        self.movement_status_label.pack(side="left", fill="x", expand=True)
-        self.compare_vars: dict[str, tk.BooleanVar] = {}
-        self.compare_bar = ttk.Frame(videos)
-        self.compare_bar.pack(fill="x")
-        self._build_practice_comparison_bar(videos)
         body = ttk.Panedwindow(videos, orient="horizontal")
         body.pack(fill="both", expand=True)
         self.player = ReplayPlayer(body, settings["replay_audio"])
@@ -656,6 +692,7 @@ class ReviewPanel(ttk.Frame):
             paths = [folder / "latest_report.md"]
         self.report_paths = {str(path.resolve()): path.resolve() for path in paths}
         self.report_combo.configure(values=list(self.report_paths))
+        self._refresh_reference_choices()
         if self.report is None and paths:
             self.load_report(paths[0])
 
@@ -670,11 +707,45 @@ class ReviewPanel(ttk.Frame):
         if self.job:
             self.report_paths[str(path.resolve())] = path.resolve()
             self.report_combo.configure(values=list(self.report_paths))
+            self._refresh_reference_choices()
             self.status.set(
                 "New practice report ready in the selector. The current report analysis is still running."
             )
         else:
             self.load_report(path)
+
+    def _refresh_reference_choices(self) -> None:
+        current_path = None
+        if self.report is not None:
+            current_path = self.report.archive_path or self.report.path
+            current_path = current_path.expanduser().resolve()
+
+        choices: dict[str, Path] = {}
+        for path in self.report_paths.values():
+            resolved = path.expanduser().resolve()
+            if current_path is not None and resolved == current_path:
+                continue
+            base = path.stem.replace("_", " ").strip() or path.name
+            label = base
+            suffix = 2
+            while label in choices:
+                label = f"{base} ({suffix})"
+                suffix += 1
+            choices[label] = resolved
+
+        self.reference_paths = choices
+        self.reference_combo.configure(values=list(choices))
+        if self.compare_target_var.get() not in choices:
+            self.compare_target_var.set("")
+            self.show_reference_var.set(False)
+            self.player.compare([], refresh=False)
+            self.reference_record = None
+            self.reference_movement_data = None
+            self.reference_coach_data = None
+            if self.reference_archive is not None:
+                self.reference_archive.close()
+                self.reference_archive = None
+        self.show_reference_check.configure(state="normal" if choices else "disabled")
 
     def load_report(self, path: Path, archived: bool = False):
         if path.suffix.lower() in (".tp", ".tpc"):
@@ -731,15 +802,27 @@ class ReviewPanel(ttk.Frame):
                     self.frame_notes = [json.loads(line) for line in notes_path.read_text().splitlines()]
                 except (ValueError, OSError):
                     self.frame_notes = []
-        for widget in self.compare_bar.winfo_children():
-            widget.destroy()
-        self.compare_vars = {}
-        ttk.Label(self.compare_bar, text="Compare alongside:").pack(side="left")
-        for label in record.videos:
-            variable = tk.BooleanVar(value=False)
-            self.compare_vars[label] = variable
-            ttk.Checkbutton(self.compare_bar, text=label, variable=variable,
-                            command=lambda: self.guard(self.update_comparison)).pack(side="left")
+        self.video_paths = {}
+        self.video_stream_keys = {}
+        original_key = next(
+            (
+                key
+                for key in ("Raw video", "Source video")
+                if key in record.videos and record.videos[key].is_file()
+            ),
+            None,
+        )
+        if original_key is not None:
+            self.video_paths["Practice video"] = record.videos[original_key]
+            self.video_stream_keys["Practice video"] = original_key
+        for key, label in (
+            ("Overlay", "Overlay"),
+            ("Full lines + messages", "Saved lines-only overlay"),
+        ):
+            stream_path = record.videos.get(key)
+            if stream_path is not None:
+                self.video_paths[label] = stream_path
+                self.video_stream_keys[label] = key
         self.report = record
         self.coach_data = load_report_coach_data(record) if record.is_imported_reference else None
         if record.is_imported_reference:
@@ -751,20 +834,20 @@ class ReviewPanel(ttk.Frame):
         self.selection.set(str(selected_path))
         self.report_paths[str(selected_path)] = selected_path
         self.report_combo.configure(values=list(self.report_paths))
-        self.compare_target_combo.configure(values=list(self.report_paths))
+        self._refresh_reference_choices()
         self.report_view.set(record.markdown)
         self.player.unload()
-        self.video_combo.configure(values=list(record.videos))
+        self.video_combo.configure(values=list(self.video_paths))
         self.video_selection.set("")
         self.status.set(str(selected_path) + ("\n" + record.warning if record.warning else ""))
         self._sync_import_and_youtube_controls()
         preferred_labels = (
-            ("Raw video", "Source video", "Overlay")
+            ("Practice video", "Overlay", "Saved lines-only overlay")
             if (self.show_pivots_var.get() or self.show_steps_var.get())
-            else ("Overlay", "Raw video", "Source video")
+            else ("Overlay", "Practice video", "Saved lines-only overlay")
         )
         for label in preferred_labels:
-            if label in record.videos and record.videos[label].is_file():
+            if label in self.video_paths and self.video_paths[label].is_file():
                 self.video_selection.set(label)
                 self.guard(self.switch_video)
                 break
@@ -789,8 +872,12 @@ class ReviewPanel(ttk.Frame):
             self._clear_standalone_movement()
         seconds = self.player.position.get()
         clip_range = self.report.clip_range if self.report.is_imported_reference else None
+        selected_video = self.video_selection.get()
+        video_path = self.video_paths.get(selected_video)
+        if video_path is None:
+            video_path = self.report.videos[selected_video]
         self.player.load(
-            self.report.videos[self.video_selection.get()],
+            video_path,
             seconds,
             clip_range=clip_range,
         )
@@ -799,9 +886,103 @@ class ReviewPanel(ttk.Frame):
         self._sync_import_and_youtube_controls()
 
     def update_comparison(self):
-        if self.report:
-            self.player.compare([self.report.videos[label] for label, variable in self.compare_vars.items()
-                                 if variable.get() and label != self.video_selection.get()])
+        if self.show_reference_var.get():
+            self.show_reference_video()
+        else:
+            self.player.compare([], refresh=False)
+            self.reference_record = None
+            self.reference_movement_data = None
+            self.reference_coach_data = None
+            if self.reference_archive is not None:
+                self.reference_archive.close()
+                self.reference_archive = None
+
+    def on_reference_selection(self) -> None:
+        if self.show_reference_var.get():
+            self.show_reference_video()
+
+    def on_reference_toggle(self) -> None:
+        self.update_comparison()
+
+    def show_reference_video(self) -> None:
+        if self.player.reader is None:
+            raise ValueError("Open a Practice video first")
+        target = self.reference_paths.get(self.compare_target_var.get())
+        if target is None:
+            raise ValueError("Choose a Reference video first")
+
+        new_archive: PracticeArchive | None = None
+        if target.suffix.lower() in (".tp", ".tpc"):
+            new_archive = PracticeArchive(target)
+            if not new_archive.manifest["segments"]:
+                new_archive.close()
+                raise ValueError("The selected Reference has no video")
+            segment = new_archive.manifest["segments"][-1]
+            reference = read_report(new_archive.report(int(segment["index"])))
+            reference.archive_path = target
+            reference.videos = {
+                label: new_archive.folder / segment[key]
+                for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
+                if segment[key] is not None
+            }
+        else:
+            reference = read_report(target)
+
+        reference_video = reference.recorded_video
+        if reference_video is None or not reference_video.is_file():
+            if new_archive is not None:
+                new_archive.close()
+            raise ValueError("The selected Reference video is unavailable")
+        reference_stream = next(
+            (key for key in ("Raw video", "Source video", "Overlay") if key in reference.videos),
+            "Raw video",
+        )
+        movement_data = load_report_movement_data(reference)
+        coach_data = load_report_coach_data(reference) if reference.is_imported_reference else None
+        cfg = self.config_provider()
+
+        def transform(image: np.ndarray, frame_index: int, fps: float) -> np.ndarray:
+            return _render_replay_overlay_frame(
+                image,
+                frame_index,
+                fps,
+                stream=reference_stream,
+                movement_data=movement_data,
+                coach_data=coach_data,
+                cfg=cfg,
+                show_coach=bool(self.show_coach_var.get()),
+                show_pivots=bool(self.show_pivots_var.get()),
+                show_steps=bool(self.show_steps_var.get()),
+                floor_only=bool(self.floor_only_var.get()),
+                step_history_seconds=self._step_history_seconds(),
+                pane_label="REFERENCE",
+            )
+
+        primary_anchor = (
+            self.player.clip_range[0]
+            if self.player.clip_range is not None
+            else self.player.start_frame / self.player.reader.fps
+        )
+        reference_anchor = float(reference.clip_in or 0.0)
+        self.player.compare(
+            [reference_video],
+            refresh=True,
+            specs=[
+                {
+                    "clip_range": reference.clip_range,
+                    "primary_anchor_source_seconds": primary_anchor,
+                    "anchor_source_seconds": reference_anchor,
+                    "frame_transform": transform,
+                }
+            ],
+        )
+        previous_archive = self.reference_archive
+        self.reference_archive = new_archive
+        self.reference_record = reference
+        self.reference_movement_data = movement_data
+        self.reference_coach_data = coach_data
+        if previous_archive is not None:
+            previous_archive.close()
 
     def show_video_notes(self, index):
         coach_notes = (
@@ -968,7 +1149,9 @@ class ReviewPanel(ttk.Frame):
             return
         output = Path(selected).expanduser()
         start_frame, end_frame = self.player.start_frame, self.player.end_frame
-        stream = self.video_selection.get()
+        stream = self.video_stream_keys.get(
+            self.video_selection.get(), self.video_selection.get()
+        )
         movement_data = self.movement_data
         coach_data = self.coach_data
         cfg = self.config_provider()
@@ -993,6 +1176,7 @@ class ReviewPanel(ttk.Frame):
                 show_steps=show_steps,
                 floor_only=floor_only,
                 step_history_seconds=step_history_seconds,
+                pane_label="PRACTICE",
             )
 
         def work() -> None:
@@ -1169,7 +1353,9 @@ class ReviewPanel(ttk.Frame):
         self.movement_button.configure(text=button_label, state="normal")
         self.movement_cancel_button.configure(state="disabled")
 
-        selected_stream = self.video_selection.get()
+        selected_stream = self.video_stream_keys.get(
+            self.video_selection.get(), self.video_selection.get()
+        )
         if (
             self.movement_data is not None
             and self.player.reader is not None
@@ -1212,24 +1398,17 @@ class ReviewPanel(ttk.Frame):
     def on_movement_toggle(self):
         enabled = bool(self.show_pivots_var.get() or self.show_steps_var.get())
         if enabled and self.report is not None:
-            current_stream = self.video_selection.get()
+            current_stream = self.video_stream_keys.get(
+                self.video_selection.get(), self.video_selection.get()
+            )
             if current_stream in ("Overlay", "Full lines + messages"):
-                raw_label = (
-                    "Raw video"
-                    if "Raw video" in self.report.videos and self.report.videos["Raw video"].is_file()
-                    else (
-                        "Source video"
-                        if "Source video" in self.report.videos
-                        and self.report.videos["Source video"].is_file()
-                        else None
-                    )
-                )
+                raw_label = "Practice video" if "Practice video" in self.video_paths else None
                 if raw_label is not None:
                     current_time = self.player.position.get()
                     self.video_selection.set(raw_label)
                     self.switch_video()
                     self.status.set(
-                        f"Switched to {raw_label} at {current_time:.1f}s to show the movement analysis overlay."
+                        f"Switched to Practice video at {current_time:.1f}s to show the movement analysis overlay."
                     )
                     return
                 self.movement_status.set("Raw video required")
@@ -1246,7 +1425,9 @@ class ReviewPanel(ttk.Frame):
             image,
             frame_index,
             fps,
-            stream=self.video_selection.get(),
+            stream=self.video_stream_keys.get(
+                self.video_selection.get(), self.video_selection.get()
+            ),
             movement_data=self.movement_data,
             coach_data=self.coach_data,
             cfg=self.config_provider(),
@@ -1255,6 +1436,7 @@ class ReviewPanel(ttk.Frame):
             show_steps=bool(self.show_steps_var.get()),
             floor_only=bool(self.floor_only_var.get()),
             step_history_seconds=self._step_history_seconds(),
+            pane_label="PRACTICE",
         )
 
     def on_floor_only_toggle(self):
@@ -1312,9 +1494,12 @@ class ReviewPanel(ttk.Frame):
                 raise ValueError(
                     "This report has no available video. Open its recording with Open video."
                 )
-            if self.report and self.video_selection.get() in self.report.videos:
+            selected_stream = self.video_stream_keys.get(
+                self.video_selection.get(), self.video_selection.get()
+            )
+            if self.report and selected_stream in self.report.videos:
                 seconds_in_file = self.report.recording_seconds(
-                    seconds, self.player.reader.fps, self.video_selection.get()
+                    seconds, self.player.reader.fps, selected_stream
                 )
             else:
                 seconds_in_file = seconds
@@ -1709,58 +1894,12 @@ class ReviewPanel(ttk.Frame):
             side="left", padx=8, fill="x", expand=True
         )
 
-    def _build_practice_comparison_bar(self, parent: ttk.Frame) -> None:
-        self.practice_compare_bar = ttk.Frame(parent, padding=(6, 2))
-        self.practice_compare_bar.pack(fill="x")
-        ttk.Label(self.practice_compare_bar, text="Compare with clip:").pack(
-            side="left", padx=(0, 4)
-        )
-        self.compare_target_combo = ttk.Combobox(
-            self.practice_compare_bar,
-            textvariable=self.compare_target_var,
-            state="readonly",
-            width=26,
-        )
-        self.compare_target_combo.pack(side="left", padx=2)
-        ttk.Label(self.practice_compare_bar, text="Anchor this (s):").pack(
-            side="left", padx=(6, 2)
-        )
-        ttk.Entry(self.practice_compare_bar, textvariable=self.anchor_left_var, width=6).pack(
-            side="left"
-        )
-        ttk.Button(
-            self.practice_compare_bar,
-            text="Use current",
-            command=lambda: self.guard(self.set_left_anchor_from_player),
-        ).pack(side="left", padx=2)
-        ttk.Label(self.practice_compare_bar, text="Anchor other (s):").pack(
-            side="left", padx=(6, 2)
-        )
-        ttk.Entry(self.practice_compare_bar, textvariable=self.anchor_right_var, width=6).pack(
-            side="left"
-        )
-        ttk.Button(
-            self.practice_compare_bar,
-            text="Compare clips",
-            command=lambda: self.guard(self.run_clip_comparison),
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            self.practice_compare_bar,
-            text="Clear",
-            command=lambda: self.guard(self.clear_clip_comparison),
-        ).pack(side="left", padx=2)
-        ttk.Label(
-            self.practice_compare_bar,
-            textvariable=self.comparison_summary_var,
-            wraplength=520,
-        ).pack(side="left", padx=6, fill="x", expand=True)
-
     def toggle_import_panel(self) -> None:
         if self.import_panel_visible:
             self.import_panel.pack_forget()
             self.import_panel_visible = False
         else:
-            self.import_panel.pack(fill="x", padx=6, pady=4, before=self.compare_bar)
+            self.import_panel.pack(fill="x", padx=6, pady=4, before=self.reference_bar)
             self.import_panel_visible = True
             self._sync_import_form_state()
         self.tabs.select(self.video_page)
@@ -2229,7 +2368,11 @@ class ReviewPanel(ttk.Frame):
         target_str = str(other_report_path or self.compare_target_var.get()).strip()
         if not target_str:
             raise ValueError("Choose a second clip/report to compare with")
-        resolved_target = self.report_paths.get(target_str, Path(target_str).expanduser().resolve())
+        resolved_target = (
+            self.reference_paths.get(target_str)
+            or self.report_paths.get(target_str)
+            or Path(target_str).expanduser().resolve()
+        )
         if resolved_target.suffix.lower() in (".tp", ".tpc"):
             temp_archive = PracticeArchive(resolved_target)
             try:
