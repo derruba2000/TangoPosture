@@ -1050,7 +1050,14 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     root.update()
     assert panel.import_panel_visible is True
     assert Path(panel.import_video_var.get()) == teacher_vid.resolve()
-    assert "Analyse clip" in panel.import_status.get()
+    deadline = time.monotonic() + 5.0
+    while panel.import_worker.is_running() and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert panel.coach_data is not None
     assert panel._resolve_movement_target()[0] is not None
     assert panel.show_pivots_var.get() is True
     assert panel.show_steps_var.get() is True

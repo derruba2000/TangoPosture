@@ -771,7 +771,7 @@ class ReviewPanel(ttk.Frame):
             self.video_selection.set("Opened video")
             self._refresh_movement_state(redraw=True)
             if self.player.reader is not None and self.player.reader.duration <= 30.0:
-                self.request_movement_analysis()
+                self.start_reference_import()
             self.tabs.select(self.video_page)
 
     def cut_video_dialog(self) -> None:
