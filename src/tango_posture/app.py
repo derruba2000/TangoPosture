@@ -286,7 +286,7 @@ class Application:
                 and self.practice_file is not None
                 and self.recording_finished
             ):
-                append_segment(
+                seg_idx = append_segment(
                     self.practice_file,
                     report_path,
                     self.record_video,
@@ -294,6 +294,13 @@ class Application:
                     [float(row["timestamp"]) for row in self.frame_log],
                 )
                 self.display.report_ready(self.practice_file)
+                if (
+                    not self.calibration_only
+                    and self.practice_file.suffix.lower() == ".tp"
+                    and self.record_video is not None
+                    and hasattr(self.display, "segment_saved")
+                ):
+                    self.display.segment_saved(self.practice_file, seg_idx)
                 print(f"Saved practice: {self.practice_file}")
             else:
                 print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
@@ -1186,6 +1193,16 @@ class Application:
                 if overlay_lines_writer:
                     overlay_lines_writer.release()
                     overlay_lines_writer = None
+                if self.beat_tracker:
+                    self.beat_tracker.close()
+                    if not self.aborted:
+                        recorded_vids = [
+                            p for p in (self.record_video, self.record_overlay) if p is not None
+                        ]
+                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
+                        for mp in muxed:
+                            print(f"Embedded microphone audio into: {mp}")
+                    self.beat_tracker = None
                 if self.aborted:
                     if self.session and not self.session.finished:
                         self.storage.discard_running_session(self.session.id)
@@ -1200,13 +1217,6 @@ class Application:
                 try:
                     if self.beat_tracker:
                         self.beat_tracker.close()
-                    if self.beat_tracker:
-                        recorded_vids = [
-                            p for p in (self.record_video, self.record_overlay) if p is not None
-                        ]
-                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
-                        for mp in muxed:
-                            print(f"Embedded microphone audio into: {mp}")
                     if self.capture:
                         self.capture.close()
                 finally:

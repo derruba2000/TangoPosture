@@ -195,6 +195,8 @@ class PracticeGUI:
             "role_assign_ms": "Role detection delay (milliseconds)",
             "role_hold_ms": "Role hold time (milliseconds)",
             "tango_bpm": "Starting tempo (BPM)", "replay_audio": "Replay sound",
+            "replay_auto_analyse_movement": "Auto-analyse replay movement",
+            "replay_step_history_seconds": "Step history window (seconds)",
             "ollama_base_url": "Ollama server address", "ollama_num_ctx": "Model context size (tokens)",
             "ollama_num_predict": "Maximum response length (tokens)",
             "ollama_max_report_chars": "Maximum report length (characters)",
@@ -855,6 +857,12 @@ class PracticeGUI:
                 self.live_record_button.configure(
                     state="normal" if recording_state == "ready" else "disabled"
                 )
+            while True:
+                try:
+                    seg_path, seg_index = self.display.saved_segments.get_nowait()
+                except queue.Empty:
+                    break
+                self.review.guard(partial(self.review.on_segment_saved, seg_path, seg_index))
             latest_practice = None
             while True:
                 try:
@@ -898,6 +906,12 @@ class PracticeGUI:
                 self.running = False
                 was_aborted = self.display is not None and self.display.aborted.is_set()
                 if self.display:
+                    while True:
+                        try:
+                            seg_path, seg_index = self.display.saved_segments.get_nowait()
+                        except queue.Empty:
+                            break
+                        self.review.guard(partial(self.review.on_segment_saved, seg_path, seg_index))
                     latest_report = None
                     while True:
                         try:

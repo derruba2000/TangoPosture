@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+
 class Threshold(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     entry: float = Field(gt=0)
@@ -72,6 +73,8 @@ class Config(BaseModel):
     axis_curve_clear_duration: float = Field(default=0.75, gt=0)
     axis_neutral_offset: float = Field(default=0.0)
     replay_audio: bool = False
+    replay_auto_analyse_movement: bool = True
+    replay_step_history_seconds: float = Field(default=5.0, ge=0.5, le=30.0)
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = Field(default="llama3.2", min_length=1)
     ollama_timeout: float = Field(default=120.0, gt=0, le=1800)
@@ -181,6 +184,10 @@ SETTING_GROUPS = {
         "auto_record_start_delay",
         "auto_record_stop_delay",
         "max_recordings",
+    ),
+    "Replay movement": (
+        "replay_auto_analyse_movement",
+        "replay_step_history_seconds",
     ),
     "Review & Ollama": (
         "replay_audio",

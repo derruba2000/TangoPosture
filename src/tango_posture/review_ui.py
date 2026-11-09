@@ -12,13 +12,30 @@ from http.client import HTTPException
 from pathlib import Path
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .archive import PracticeArchive, calibration_directory, practice_directory
+import numpy as np
+
+from .archive import (
+    PracticeArchive,
+    calibration_directory,
+    file_sha256,
+    movement_member_name,
+    practice_directory,
+    read_movement_analysis,
+)
 from .config import Config
+from .movement import (
+    MovementAnalysisCoordinator,
+    RecordingTarget,
+    render_movement_overlay,
+    validate_movement_analysis,
+)
 from .notes_ui import NotesSidebar
 from .ollama import OllamaClient
+from .pose.mediapipe_backend import MediaPipeEstimator
 from .replay import ReplayPlayer, parse_time
 from .review import ReportRecord, read_report, report_directory, save_analysis, saved_analyses
 
@@ -253,8 +270,20 @@ class ReviewPanel(ttk.Frame):
         self.archive: PracticeArchive | None = None
         self.segment_paths: dict[str, Path] = {}
         self.segment_selection = tk.StringVar()
+        self.current_segment_index: int | None = None
+        self.opened_video_path: Path | None = None
+        self.movement_data: dict[str, Any] | None = None
+        self.session_movement_results: dict[tuple[str, str, int], tuple[dict[str, Any], bool]] = {}
+        self.movement_progress_by_key: dict[tuple[str, str, int], int] = {}
+        self.movement_state_by_key: dict[tuple[str, str, int], str] = {}
+        self.show_pivots_var = tk.BooleanVar(value=False)
+        self.show_steps_var = tk.BooleanVar(value=False)
+        self.movement_status = tk.StringVar(value="Not analysed")
         self.closed = False
         self.events: queue.SimpleQueue = queue.SimpleQueue()
+        self.movement_coordinator = MovementAnalysisCoordinator(
+            lambda payload: self.events.put((payload[1], payload[0], payload[2:]))
+        )
         self.job = ""
         self.models_job = ""
         self.cancel = threading.Event()
@@ -315,18 +344,56 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
             side="left", padx=6
         )
-        self.compare_vars = {}
+        movement_bar = ttk.Frame(videos, padding=(6, 2))
+        movement_bar.pack(fill="x")
+        ttk.Label(movement_bar, text="Movement analysis:").pack(side="left", padx=(0, 6))
+        self.movement_button = ttk.Button(
+            movement_bar,
+            text="Analyse movement",
+            state="disabled",
+            command=lambda: self.guard(self.request_movement_analysis),
+        )
+        self.movement_button.pack(side="left")
+        self.movement_cancel_button = ttk.Button(
+            movement_bar,
+            text="Cancel",
+            state="disabled",
+            command=lambda: self.guard(self.cancel_movement_analysis),
+        )
+        self.movement_cancel_button.pack(side="left", padx=(4, 8))
+        self.show_pivots_check = ttk.Checkbutton(
+            movement_bar,
+            text="Show pivots",
+            variable=self.show_pivots_var,
+            command=lambda: self.guard(self.on_movement_toggle),
+        )
+        self.show_pivots_check.pack(side="left", padx=(0, 6))
+        self.show_steps_check = ttk.Checkbutton(
+            movement_bar,
+            text="Show recent steps",
+            variable=self.show_steps_var,
+            command=lambda: self.guard(self.on_movement_toggle),
+        )
+        self.show_steps_check.pack(side="left", padx=(0, 10))
+        self.movement_status_label = ttk.Label(movement_bar, textvariable=self.movement_status)
+        self.movement_status_label.pack(side="left", fill="x", expand=True)
+        self.compare_vars: dict[str, tk.BooleanVar] = {}
         self.compare_bar = ttk.Frame(videos)
         self.compare_bar.pack(fill="x")
         body = ttk.Panedwindow(videos, orient="horizontal")
         body.pack(fill="both", expand=True)
         self.player = ReplayPlayer(body, settings["replay_audio"])
+        self.player.frame_transform = self._transform_replay_frame
         body.add(self.player, weight=5)
         self.notes_sidebar = NotesSidebar(body)
         body.add(self.notes_sidebar, weight=0)
         self.video_notes = self.notes_sidebar.text
-        self.frame_notes = []
+        self.frame_notes: list[Any] = []
         self.player.on_frame = self.show_video_notes
+        if "replay_step_history_seconds" in self.settings:
+            self.settings["replay_step_history_seconds"].trace_add(
+                "write", lambda *_: self._on_step_history_changed()
+            )
         self._analysis_page()
         self.timer = self.after(50, self.pump)
 
@@ -452,6 +519,7 @@ class ReviewPanel(ttk.Frame):
         record = read_report(path)
         self.cancel_analysis()
         self.player.unload()
+        self._clear_standalone_movement()
         if not archived and self.archive is not None:
             self.archive.close()
             self.archive = None
@@ -463,11 +531,14 @@ class ReviewPanel(ttk.Frame):
             selected_segment = self.archive.manifest["segments"][
                 list(self.segment_paths).index(self.segment_selection.get())
             ]
+            self.current_segment_index = int(selected_segment["index"])
             record.videos = {
                 label: self.archive.folder / selected_segment[key]
                 for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
                 if selected_segment[key] is not None
             }
+        else:
+            self.current_segment_index = None
         overlay = record.videos.get("Overlay")
         self.frame_notes = []
         if overlay:
@@ -499,11 +570,18 @@ class ReviewPanel(ttk.Frame):
         self.video_combo.configure(values=list(record.videos))
         self.video_selection.set("")
         self.status.set(str(selected_path) + ("\n" + record.warning if record.warning else ""))
-        for label in ("Overlay", "Raw video", "Source video"):
+        preferred_labels = (
+            ("Raw video", "Source video", "Overlay")
+            if (self.show_pivots_var.get() or self.show_steps_var.get())
+            else ("Overlay", "Raw video", "Source video")
+        )
+        for label in preferred_labels:
             if label in record.videos and record.videos[label].is_file():
                 self.video_selection.set(label)
                 self.guard(self.switch_video)
                 break
+        else:
+            self._refresh_movement_state()
         self.analysis_data = None
         self.analysis_meta.set("")
         self.analysis_view.set("")
@@ -514,9 +592,12 @@ class ReviewPanel(ttk.Frame):
     def switch_video(self):
         if not self.report:
             raise ValueError("Open a report first, or use Open video")
+        if self.opened_video_path is not None and self.video_selection.get() != "Opened video":
+            self._clear_standalone_movement()
         seconds = self.player.position.get()
         self.player.load(self.report.videos[self.video_selection.get()], seconds)
         self.update_comparison()
+        self._refresh_movement_state(redraw=True)
 
     def update_comparison(self):
         if self.report:
@@ -536,9 +617,301 @@ class ReviewPanel(ttk.Frame):
         if path:
             self.player.unload()
             self.frame_notes = []
-            self.player.load(Path(path))
+            self._clear_standalone_movement()
+            resolved = Path(path).resolve()
+            self.opened_video_path = resolved
+            self.player.load(resolved)
             self.video_selection.set("Opened video")
+            self._refresh_movement_state(redraw=True)
             self.tabs.select(self.video_page)
+
+    def _clear_standalone_movement(self):
+        if self.opened_video_path is not None:
+            old_key = RecordingTarget("standalone", self.opened_video_path, 0).key
+            self.movement_coordinator.cancel(old_key)
+        self.opened_video_path = None
+        self.session_movement_results = {
+            k: v for k, v in self.session_movement_results.items() if k[0] != "standalone"
+        }
+        self.movement_progress_by_key = {
+            k: v for k, v in self.movement_progress_by_key.items() if k[0] != "standalone"
+        }
+        self.movement_state_by_key = {
+            k: v for k, v in self.movement_state_by_key.items() if k[0] != "standalone"
+        }
+
+    def _step_history_seconds(self) -> float:
+        if "replay_step_history_seconds" in self.settings:
+            try:
+                val = float(str(self.settings["replay_step_history_seconds"].get()))
+                if 0.5 <= val <= 30.0:
+                    return val
+            except (ValueError, TypeError, tk.TclError):
+                pass
+        try:
+            return float(self.config_provider().replay_step_history_seconds)
+        except (ValueError, TypeError, tk.TclError):
+            return 5.0
+
+    def _on_step_history_changed(self):
+        if not self.closed and self.player.reader is not None:
+            self.player.refresh_frame()
+
+    def _expected_model_hash(self) -> str | None:
+        if self.movement_coordinator.estimator_factory is not MediaPipeEstimator:
+            return getattr(self.movement_coordinator.estimator_factory, "model_hash", None)
+        model_str = (
+            str(self.settings["model_path"].get())
+            if "model_path" in self.settings
+            else str(self.config_provider().model_path)
+        )
+        model_path = Path(model_str)
+        if model_path.is_file():
+            try:
+                return file_sha256(model_path)
+            except OSError:
+                return None
+        return None
+
+    def _resolve_movement_target(self) -> tuple[RecordingTarget | None, Path | None, str]:
+        if self.opened_video_path is not None and self.video_selection.get() == "Opened video":
+            if self.opened_video_path.is_file():
+                return (
+                    RecordingTarget("standalone", self.opened_video_path, 0),
+                    self.opened_video_path,
+                    "",
+                )
+            return None, None, "Unavailable: video file not found"
+
+        if self.archive is not None and self.current_segment_index is not None:
+            if self.archive.manifest.get("kind") == "calibration":
+                return None, None, "Unavailable (calibration reference)"
+            raw_path = self.report.videos.get("Raw video") if self.report else None
+            if raw_path is None or not raw_path.is_file():
+                return None, None, "Raw video required"
+            return (
+                RecordingTarget("archive", self.archive.path.resolve(), self.current_segment_index),
+                raw_path,
+                "",
+            )
+
+        if self.report is not None:
+            raw_path = self.report.videos.get("Raw video") or self.report.videos.get("Source video")
+            if raw_path is not None and raw_path.is_file():
+                return (
+                    RecordingTarget("standalone", raw_path.resolve(), 0),
+                    raw_path.resolve(),
+                    "",
+                )
+            if "Overlay" in self.report.videos:
+                return None, None, "Raw video required"
+            return None, None, "Unavailable (no raw video)"
+
+        return None, None, "Not analysed"
+
+    def _refresh_movement_state(self, *, redraw: bool = False):
+        target, raw_path, _ = self._resolve_movement_target()
+        self.movement_data = None
+        if target is not None and raw_path is not None and raw_path.is_file():
+            key = target.key
+            exp_seg = target.segment_index if target.kind == "archive" else -1
+            try:
+                raw_sha = file_sha256(raw_path)
+            except OSError:
+                raw_sha = None
+            exp_model = self._expected_model_hash()
+
+            candidate: dict[str, Any] | None = None
+            if key in self.session_movement_results:
+                candidate = self.session_movement_results[key][0]
+            elif target.kind == "archive":
+                if self.archive is not None and self.archive.path.resolve() == target.path:
+                    member_file = self.archive.folder / movement_member_name(target.segment_index)
+                    if member_file.is_file():
+                        try:
+                            candidate = json.loads(member_file.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            candidate = None
+                if candidate is None:
+                    try:
+                        candidate = read_movement_analysis(target.path, target.segment_index)
+                    except (OSError, ValueError):
+                        candidate = None
+
+            if candidate is not None and raw_sha is not None:
+                try:
+                    self.movement_data = validate_movement_analysis(
+                        candidate,
+                        expected_segment_index=exp_seg,
+                        expected_source_sha256=raw_sha,
+                        expected_model_hash=exp_model,
+                    )
+                except (ValueError, TypeError, KeyError):
+                    self.movement_data = None
+
+        self._sync_movement_ui()
+        if redraw and self.player.reader is not None:
+            self.player.refresh_frame()
+
+    def _sync_movement_ui(self):
+        target, _, reason = self._resolve_movement_target()
+        if target is None:
+            self.movement_button.configure(text="Analyse movement", state="disabled")
+            self.movement_cancel_button.configure(state="disabled")
+            self.movement_status.set(reason)
+            return
+
+        key = target.key
+        has_valid = self.movement_data is not None
+        button_label = "Re-run movement analysis" if has_valid else "Analyse movement"
+
+        if self.movement_coordinator.is_active(key) or key in self.movement_progress_by_key:
+            pct = self.movement_progress_by_key.get(key, 0)
+            self.movement_button.configure(text=button_label, state="disabled")
+            self.movement_cancel_button.configure(state="normal")
+            self.movement_status.set(f"Analysing {pct}%")
+            return
+
+        if self.movement_coordinator.is_queued(key):
+            self.movement_button.configure(text=button_label, state="disabled")
+            self.movement_cancel_button.configure(state="normal")
+            self.movement_status.set("Queued")
+            return
+
+        self.movement_button.configure(text=button_label, state="normal")
+        self.movement_cancel_button.configure(state="disabled")
+
+        selected_stream = self.video_selection.get()
+        if (
+            self.movement_data is not None
+            and self.player.reader is not None
+            and selected_stream in ("Raw video", "Source video", "Opened video")
+            and (
+                self.player.reader.width != self.movement_data.get("width")
+                or self.player.reader.height != self.movement_data.get("height")
+            )
+        ):
+            self.movement_status.set("Unavailable: video dimensions do not match analysis")
+            return
+
+        if key in self.movement_state_by_key:
+            state_msg = self.movement_state_by_key[key]
+            if has_valid and state_msg == "Cancelled":
+                self.movement_status.set("Cancelled (previous result kept)")
+            elif has_valid and state_msg.startswith("Unavailable"):
+                self.movement_status.set(f"{state_msg} (previous result kept)")
+            else:
+                self.movement_status.set(state_msg)
+            return
+
+        if has_valid and self.movement_data is not None:
+            has_events = bool(
+                self.movement_data.get("pivots") or self.movement_data.get("steps")
+            )
+            base = "Ready" if has_events else "No reliable events"
+            if key in self.session_movement_results and self.session_movement_results[key][1]:
+                base += " (session only; archive is read-only)"
+            elif target.kind == "standalone":
+                base += " (session only)"
+            self.movement_status.set(base)
+        else:
+            self.movement_status.set("Not analysed")
+
+    def on_movement_toggle(self):
+        enabled = bool(self.show_pivots_var.get() or self.show_steps_var.get())
+        if enabled and self.report is not None:
+            current_stream = self.video_selection.get()
+            if current_stream in ("Overlay", "Full lines + messages"):
+                raw_label = (
+                    "Raw video"
+                    if "Raw video" in self.report.videos and self.report.videos["Raw video"].is_file()
+                    else (
+                        "Source video"
+                        if "Source video" in self.report.videos
+                        and self.report.videos["Source video"].is_file()
+                        else None
+                    )
+                )
+                if raw_label is not None:
+                    current_time = self.player.position.get()
+                    self.video_selection.set(raw_label)
+                    self.switch_video()
+                    self.status.set(
+                        f"Switched to {raw_label} at {current_time:.1f}s to show the movement analysis overlay."
+                    )
+                    return
+                self.movement_status.set("Raw video required")
+                self.status.set("Raw video required to show the movement analysis overlay.")
+                return
+        self._sync_movement_ui()
+        if self.player.reader is not None:
+            self.player.refresh_frame()
+
+    def _transform_replay_frame(
+        self, image: np.ndarray, frame_index: int, fps: float
+    ) -> np.ndarray:
+        show_pivots = bool(self.show_pivots_var.get())
+        show_steps = bool(self.show_steps_var.get())
+        if (not show_pivots and not show_steps) or self.movement_data is None:
+            return image
+        if self.video_selection.get() not in ("Raw video", "Source video", "Opened video"):
+            return image
+        if (
+            image.shape[1] != self.movement_data.get("width")
+            or image.shape[0] != self.movement_data.get("height")
+        ):
+            return image
+        return render_movement_overlay(
+            image,
+            self.movement_data,
+            frame_index,
+            fps,
+            show_pivots=show_pivots,
+            show_steps=show_steps,
+            step_history_seconds=self._step_history_seconds(),
+            mirror=False,
+        )
+
+    def request_movement_analysis(self):
+        target, _, reason = self._resolve_movement_target()
+        if target is None:
+            self.movement_status.set(reason)
+            return
+        model_str = (
+            str(self.settings["model_path"].get())
+            if "model_path" in self.settings
+            else str(self.config_provider().model_path)
+        )
+        self.movement_state_by_key.pop(target.key, None)
+        self.movement_coordinator.enqueue(target, Path(model_str))
+        self._sync_movement_ui()
+
+    def cancel_movement_analysis(self):
+        target, _, _ = self._resolve_movement_target()
+        if target is not None:
+            self.movement_coordinator.cancel(target.key)
+            self._sync_movement_ui()
+
+    def on_segment_saved(self, archive_path: Path, segment_index: int):
+        resolved = archive_path.resolve()
+        if resolved.suffix.lower() != ".tp" or not resolved.is_file():
+            return
+        auto_enabled = (
+            bool(self.settings["replay_auto_analyse_movement"].get())
+            if "replay_auto_analyse_movement" in self.settings
+            else bool(self.config_provider().replay_auto_analyse_movement)
+        )
+        if not auto_enabled:
+            return
+        model_str = (
+            str(self.settings["model_path"].get())
+            if "model_path" in self.settings
+            else str(self.config_provider().model_path)
+        )
+        target = RecordingTarget("archive", resolved, int(segment_index))
+        self.movement_state_by_key.pop(target.key, None)
+        self.movement_coordinator.enqueue(target, Path(model_str))
+        self._sync_movement_ui()
 
     def seek_report_time(self, seconds):
         def seek():
@@ -680,6 +1053,49 @@ class ReviewPanel(ttk.Frame):
                         )
                 elif not self.job:
                     self.analysis_status.set(value)
+            elif kind == "movement_queued":
+                (key,) = value
+                self.movement_state_by_key.pop(key, None)
+                self._sync_movement_ui()
+            elif kind == "movement_progress":
+                key, pct = value
+                self.movement_progress_by_key[key] = int(pct)
+                self._sync_movement_ui()
+            elif kind == "movement_done":
+                key, result, readonly_warning = value
+                self.movement_progress_by_key.pop(key, None)
+                self.movement_state_by_key.pop(key, None)
+                if readonly_warning or key[0] == "standalone":
+                    self.session_movement_results[key] = (result, bool(readonly_warning))
+                else:
+                    self.session_movement_results.pop(key, None)
+                if (
+                    key[0] == "archive"
+                    and not readonly_warning
+                    and self.archive is not None
+                    and self.archive.path.resolve() == Path(key[1])
+                ):
+                    try:
+                        (self.archive.folder / movement_member_name(int(key[2]))).write_text(
+                            json.dumps(result, indent=2) + "\n", encoding="utf-8"
+                        )
+                    except OSError:
+                        pass
+                current_target, _, _ = self._resolve_movement_target()
+                if current_target is not None and current_target.key == key:
+                    self._refresh_movement_state(redraw=True)
+                else:
+                    self._sync_movement_ui()
+            elif kind == "movement_cancelled":
+                (key,) = value
+                self.movement_progress_by_key.pop(key, None)
+                self.movement_state_by_key[key] = "Cancelled"
+                self._sync_movement_ui()
+            elif kind == "movement_error":
+                key, error_msg = value
+                self.movement_progress_by_key.pop(key, None)
+                self.movement_state_by_key[key] = f"Unavailable: {error_msg}"
+                self._sync_movement_ui()
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")
@@ -713,6 +1129,7 @@ class ReviewPanel(ttk.Frame):
             self.closed = True
             self.cancel.set()
             self.after_cancel(self.timer)
+            self.movement_coordinator.close()
             self.player.close()
             if self.archive is not None:
                 self.archive.close()

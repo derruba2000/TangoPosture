@@ -7,8 +7,12 @@ import pytest
 from tango_posture.archive import (
     PracticeArchive,
     append_segment,
+    extract_segment_video,
+    file_sha256,
     read_manifest,
+    read_movement_analysis,
     save_calibration_archive,
+    store_movement_analysis,
 )
 from tango_posture.calibration import load_calibration_file, save_calibration_file
 from tango_posture.review import read_report, save_analysis, saved_analyses
@@ -145,3 +149,36 @@ def test_latest_and_uuid_reference_loading_prefer_new_archives(tmp_path, referen
     save_calibration_archive(archive, current, raw, overlay, [0.0])
     assert load_calibration_file("latest", tmp_path) == current
     assert load_calibration_file(current.id, tmp_path) == current
+
+
+def test_movement_analysis_roundtrip_and_hash_verification(tmp_path):
+    archive = tmp_path / "Practice.tp"
+    report = tmp_path / "report.md"
+    raw0, raw1 = tmp_path / "raw0.mp4", tmp_path / "raw1.mp4"
+    overlay = tmp_path / "overlay.mp4"
+    report.write_text("# Segment")
+    raw0.write_bytes(b"raw-segment-0")
+    raw1.write_bytes(b"raw-segment-1")
+    overlay.write_bytes(b"overlay-bytes")
+
+    assert append_segment(archive, report, raw0, overlay, [0.0, 0.1]) == 0
+    assert append_segment(archive, report, raw1, overlay, [1.0, 1.1]) == 1
+
+    extracted0 = tmp_path / "extracted0.mp4"
+    sha0 = extract_segment_video(archive, 0, extracted0)
+    assert extracted0.read_bytes() == b"raw-segment-0"
+    assert sha0 == file_sha256(raw0)
+    sha1 = file_sha256(raw1)
+
+    store_movement_analysis(archive, 0, sha0, {"segment_index": 0, "pivots": [{"id": 0}]})
+    store_movement_analysis(archive, 1, sha1, {"segment_index": 1, "pivots": [{"id": 1}]})
+
+    assert read_movement_analysis(archive, 0) == {"segment_index": 0, "pivots": [{"id": 0}]}
+    assert read_movement_analysis(archive, 1) == {"segment_index": 1, "pivots": [{"id": 1}]}
+
+    # Replacing segment 0 movement analysis with mismatched source hash is rejected and keeps old data
+    with pytest.raises(ValueError, match="changed before movement analysis could be committed"):
+        store_movement_analysis(archive, 0, "wrong-sha", {"segment_index": 0, "pivots": []})
+    assert read_movement_analysis(archive, 0) == {"segment_index": 0, "pivots": [{"id": 0}]}
+    assert read_movement_analysis(archive, 1) == {"segment_index": 1, "pivots": [{"id": 1}]}
+    assert len(read_manifest(archive)["segments"]) == 2

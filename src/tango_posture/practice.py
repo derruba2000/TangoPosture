@@ -123,6 +123,8 @@ class GuiDisplay:
         self.auto_recording = threading.Event()
         self.recording_states: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.reports: queue.SimpleQueue[Path] = queue.SimpleQueue()
+        self.saved_segments: queue.SimpleQueue[tuple[Path, int]] = queue.SimpleQueue()
+        self.notes: list[str] | str = []
 
     def show(self, image: Any) -> None:
         try:
@@ -157,3 +159,6 @@ class GuiDisplay:
 
     def report_ready(self, path: Path) -> None:
         self.reports.put(path.resolve())
+
+    def segment_saved(self, path: Path, index: int) -> None:
+        self.saved_segments.put((path.resolve(), int(index)))

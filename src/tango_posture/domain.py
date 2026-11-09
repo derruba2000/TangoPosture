@@ -15,6 +15,7 @@ class Landmark:
     y: float
     visibility: float | None = None
     presence: float | None = None
+    z: float | None = None
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class FrameObservation:
     width: int
     height: int
     poses: list[dict[str, Landmark]]
+    world_poses: list[dict[str, Landmark]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -35,7 +35,9 @@ class MediaPipeEstimator:
             ms,
         )
         poses = []
-        for landmarks in result.pose_landmarks:
+        world_poses = []
+        world_list = getattr(result, "pose_world_landmarks", None) or []
+        for pose_idx, landmarks in enumerate(result.pose_landmarks):
             poses.append(
                 {
                     name: Landmark(
@@ -43,11 +45,28 @@ class MediaPipeEstimator:
                         landmarks[i].y,
                         landmarks[i].visibility,
                         landmarks[i].presence,
+                        getattr(landmarks[i], "z", None),
                     )
                     for name, i in NAMES.items()
                 }
             )
-        return FrameObservation(timestamp, image.shape[1], image.shape[0], poses)
+            if pose_idx < len(world_list) and world_list[pose_idx]:
+                w_landmarks = world_list[pose_idx]
+                world_poses.append(
+                    {
+                        name: Landmark(
+                            w_landmarks[i].x,
+                            w_landmarks[i].y,
+                            getattr(w_landmarks[i], "visibility", landmarks[i].visibility),
+                            getattr(w_landmarks[i], "presence", landmarks[i].presence),
+                            getattr(w_landmarks[i], "z", 0.0),
+                        )
+                        for name, i in NAMES.items()
+                    }
+                )
+            else:
+                world_poses.append({})
+        return FrameObservation(timestamp, image.shape[1], image.shape[0], poses, world_poses)
 
     def close(self) -> None:
         self.detector.close()

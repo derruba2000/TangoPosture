@@ -758,3 +758,225 @@ def test_setting_labels_open_their_specific_manual_explanation(studio):
             assert highlighted
             assert field in gui.help_view.text.get(*highlighted)
             assert gui.help_view.text.dlineinfo(highlighted[0]) is not None
+
+
+def _make_synthetic_movement_estimator(direction_sign: float = 1.0):
+    from tango_posture.domain import FrameObservation, Landmark
+
+    class SyntheticEstimator:
+        model_hash = "synthetic-gui-test"
+
+        def __init__(self, _model_path):
+            self.idx = 0
+
+        def estimate(self, frame_bgr, timestamp: float) -> FrameObservation:
+            import math
+
+            h, w = frame_bgr.shape[:2]
+            i = self.idx
+            self.idx += 1
+            yaw = direction_sign * (5.0 * (i - 3) if 3 <= i <= 15 else (0.0 if i < 3 else 60.0))
+            rad = math.radians(yaw)
+            # Step left foot from x=0.36 to x=0.52 between frames 4..9 and settle 10..24
+            if i <= 3:
+                lx = 0.36
+            elif i <= 9:
+                lx = 0.36 + (0.52 - 0.36) * ((i - 3) / 6.0)
+            else:
+                lx = 0.52
+
+            def lm(x, y, z=0.0):
+                return Landmark(x=x, y=y, z=z, visibility=0.95, presence=0.95)
+
+            pose = {
+                "nose": lm(0.5, 0.18),
+                "left_shoulder": lm(0.43, 0.28),
+                "right_shoulder": lm(0.57, 0.28),
+                "left_hip": lm(0.44, 0.50),
+                "right_hip": lm(0.56, 0.50),
+                "left_ankle": lm(lx, 0.84),
+                "right_ankle": lm(0.56, 0.84),
+                "left_heel": lm(lx, 0.85),
+                "right_heel": lm(0.56, 0.85),
+                "left_foot_index": lm(lx, 0.89),
+                "right_foot_index": lm(0.56, 0.89),
+            }
+            world = {
+                "left_hip": lm(-0.07 * math.cos(rad), 0.0, -0.07 * math.sin(rad)),
+                "right_hip": lm(0.07 * math.cos(rad), 0.0, 0.07 * math.sin(rad)),
+            }
+            return FrameObservation(timestamp=timestamp, width=w, height=h, poses=[pose], world_poses=[world])
+
+        def close(self):
+            pass
+
+    return SyntheticEstimator
+
+
+def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studio, tmp_path):
+    import cv2
+
+    from tango_posture.archive import read_movement_analysis
+
+    root, gui = studio
+    panel = gui.review
+    panel.movement_coordinator.estimator_factory = _make_synthetic_movement_estimator(1.0)
+
+    archive = tmp_path / "practice" / "DoubleTake.tp"
+    raw0, raw1, overlay, report = (
+        tmp_path / name for name in ("raw0.mp4", "raw1.mp4", "overlay.mp4", "report.md")
+    )
+    for path, fill_val in ((raw0, 30), (raw1, 45), (overlay, 120)):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+        assert writer.isOpened()
+        for _ in range(25):
+            writer.write(np.full((120, 160, 3), fill_val, np.uint8))
+        writer.release()
+
+    report.write_text("# Segment 0")
+    idx0 = append_segment(archive, report, raw0, overlay, [i / 15.0 for i in range(25)])
+    report.write_text("# Segment 1")
+    idx1 = append_segment(archive, report, raw1, overlay, [i / 15.0 for i in range(25)])
+    assert (idx0, idx1) == (0, 1)
+
+    # Simulate two segments saved in a single coach run; both saved_segments events must be processed
+    gui.display = GuiDisplay()
+    gui.display.segment_saved(archive, 0)
+    gui.display.segment_saved(archive, 1)
+    gui.display.report_ready(archive)
+    # Calibration archive should be ignored by movement analysis
+    cal_archive = tmp_path / "cal.tpc"
+    cal_archive.write_bytes(b"cal")
+    gui.display.segment_saved(cal_archive, 0)
+    gui.pump()
+
+    deadline = time.monotonic() + 5.0
+    while (
+        read_movement_analysis(archive, 0) is None
+        or read_movement_analysis(archive, 1) is None
+        or panel.movement_coordinator.is_busy(("archive", str(archive.resolve()), 0))
+        or panel.movement_coordinator.is_busy(("archive", str(archive.resolve()), 1))
+    ) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+
+    panel.pump()
+    root.update()
+    assert read_movement_analysis(archive, 0) is not None
+    assert read_movement_analysis(archive, 1) is not None
+
+    # Reopen the archive from scratch and verify both segments restore their movement analysis
+    panel.load_report(archive)
+    root.update()
+    assert panel.segment_selection.get() == "Recording 01"
+    assert panel.video_selection.get() == "Overlay"
+    assert panel.movement_status.get() == "Ready"
+    assert panel.movement_button.cget("text") == "Re-run movement analysis"
+
+    # Seek to frame 12 (0.8s, inside pivot & step history) while on Overlay
+    panel.player.seek(0.8)
+    assert panel.player.reader.index == 12
+    # Enabling Show pivots while viewing baked Overlay automatically switches to Raw video at same timestamp
+    panel.show_pivots_var.set(True)
+    panel.show_steps_var.set(True)
+    panel.on_movement_toggle()
+    root.update()
+    assert panel.video_selection.get() == "Raw video"
+    assert "Switched to Raw video" in panel.status.get()
+    assert panel.player.reader.index == 12
+    assert not np.array_equal(panel.player.last_image, panel.player.raw_frame)
+
+    # Seek to 1.4s (frame 21, ~0.8s after step at frame 9): with default 5.0s window step is visible;
+    # changing replay_step_history_seconds to 0.5s immediately fades out the step without re-analysis
+    panel.show_pivots_var.set(False)
+    panel.on_movement_toggle()
+    panel.player.seek(1.4)
+    img_5s = panel.player.last_image.copy()
+    assert not np.array_equal(img_5s, panel.player.raw_frame)
+    gui.settings["replay_step_history_seconds"].set("0.5")
+    root.update()
+    img_05s = panel.player.last_image.copy()
+    assert np.array_equal(img_05s, panel.player.raw_frame)
+
+
+def test_movement_analysis_cancel_preserves_previous_result_and_handles_overlay_only_and_standalone(
+    studio, tmp_path, monkeypatch
+):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    panel.movement_coordinator.estimator_factory = _make_synthetic_movement_estimator(1.0)
+
+    # 1. Archive with only Overlay (no Raw video) reports "Raw video required"
+    overlay_only_archive = tmp_path / "OverlayOnly.tp"
+    overlay, report = tmp_path / "overlay.mp4", tmp_path / "report.md"
+    writer = cv2.VideoWriter(str(overlay), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for _ in range(10):
+        writer.write(np.zeros((120, 160, 3), np.uint8))
+    writer.release()
+    report.write_text("# Overlay only")
+    append_segment(overlay_only_archive, report, None, overlay, [0.1 * i for i in range(10)])
+    panel.load_report(overlay_only_archive)
+    root.update()
+    assert panel.movement_status.get() == "Raw video required"
+    assert panel.movement_button.instate(["disabled"])
+
+    # 2. Standalone clip via Open video supports session-only manual analysis and clears on source change
+    standalone = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(standalone), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for _ in range(25):
+        writer.write(np.full((120, 160, 3), 20, np.uint8))
+    writer.release()
+    monkeypatch.setattr("tango_posture.review_ui.filedialog.askopenfilename", lambda **_: str(standalone))
+    panel.open_video()
+    root.update()
+    assert panel.movement_status.get() == "Not analysed"
+    assert panel.movement_button.instate(["!disabled"])
+    panel.request_movement_analysis()
+    deadline = time.monotonic() + 4.0
+    while panel.movement_coordinator.is_busy(("standalone", str(standalone.resolve()), 0)) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert panel.movement_status.get() == "Ready (session only)"
+    assert panel.movement_data is not None
+
+    # Re-run and cancel while slow estimator is running -> previous valid result is preserved
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowEstimator:
+        model_hash = "synthetic-gui-test"
+
+        def __init__(self, _model_path):
+            pass
+
+        def estimate(self, frame_bgr, timestamp: float):
+            started.set()
+            release.wait(2.0)
+            from tango_posture.domain import FrameObservation
+
+            return FrameObservation(timestamp=timestamp, width=160, height=120, poses=[], world_poses=[])
+
+        def close(self):
+            pass
+
+    panel.movement_coordinator.estimator_factory = SlowEstimator
+    panel.request_movement_analysis()
+    assert started.wait(2.0)
+    panel.cancel_movement_analysis()
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while panel.movement_coordinator.is_busy(("standalone", str(standalone.resolve()), 0)) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert "Cancelled" in panel.movement_status.get()
+    assert panel.movement_data is not None
+

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import tkinter as tk
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from tkinter import ttk
@@ -50,6 +51,8 @@ class VideoReader:
             self.cap.release()
             raise ValueError(f"Cannot decode video or read its timing: {self.path}")
         self.count = int(count)
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.index = -1
 
     @property
@@ -75,9 +78,10 @@ class ReplayPlayer(ttk.Frame):
         super().__init__(parent, padding=8)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
-        self.comparisons = []
-        self.notes = []
-        self.on_frame = None
+        self.comparisons: list[tuple[VideoReader, tk.Label]] = []
+        self.notes: list[Any] = []
+        self.on_frame: Callable[[int], None] | None = None
+        self.frame_transform: Callable[[Any, int, float], Any] | None = None
         self.reader: VideoReader | None = None
         self.playing = False
         self.closed = False
@@ -85,6 +89,7 @@ class ReplayPlayer(ttk.Frame):
         self.sound: subprocess.Popen | None = None
         self.audio = audio
         self.photo: tk.PhotoImage | None = None
+        self.raw_frame: Any = None
         self.last_image: Any = None
         self.speed = tk.StringVar(value="1")
         self.position = tk.DoubleVar(value=0)
@@ -205,9 +210,26 @@ class ReplayPlayer(ttk.Frame):
         )
         self.image.configure(image=self.photo, text="")
 
+    def refresh_frame(self):
+        if self.reader is None or self.raw_frame is None or self.closed:
+            return
+        base = self.raw_frame.copy()
+        self.last_image = (
+            self.frame_transform(base, self.reader.index, self.reader.fps)
+            if self.frame_transform is not None
+            else base
+        )
+        self._render()
+
     def _frame(self, index: int):
         assert self.reader is not None
-        self.last_image = self.reader.frame(index)
+        decoded = self.reader.frame(index)
+        self.raw_frame = decoded.copy()
+        self.last_image = (
+            self.frame_transform(decoded.copy(), self.reader.index, self.reader.fps)
+            if self.frame_transform is not None
+            else decoded
+        )
         seconds = self.reader.index / self.reader.fps
         self.position.set(seconds)
         self.clock.set(f"{time_label(seconds)} / {time_label(self.reader.duration)}")
@@ -355,7 +377,7 @@ class ReplayPlayer(ttk.Frame):
         if self.reader:
             self.reader.close()
             self.reader = None
-        self.last_image = self.photo = None
+        self.raw_frame = self.last_image = self.photo = None
         self.image.configure(image="", text="No video selected")
         self.name.set("No video selected")
         self.position.set(0)
