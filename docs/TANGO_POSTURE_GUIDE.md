@@ -864,6 +864,29 @@ In the desktop GUI (`Review → Video replay`), an offline **Movement analysis**
   - Outputs represent **estimated pivots** and **observed step placements**, not biomechanical weight-transfer measurements.
   - Keep the camera fixed and level with the dancer's full body (including both feet and ankles) clearly visible against the floor. Pair tracking, moving-camera compensation, and live coaching cues are outside this feature's scope.
 
+### Reference video import, YouTube provenance, soundtrack analysis, and comparison
+
+In `Review → Video replay`, click **Import reference video…** to import and analyse a local teacher or study clip without modifying or copying the source file:
+
+- **Entry point and file limits**:
+  - Choose a local video file (`.mp4`, `.mov`, `.m4v`, `.avi`, `.mkv`, `.webm`) up to **2 GB** and select a half-open range `[in, out)` up to **120 seconds**.
+  - Playback and analysis seek and decode forward over the selected virtual clip range `[in, out)` while keeping three coordinates explicit: **decoded frame index**, **source media time**, and **clip-relative time** (`source_time - in`).
+- **Analysis modes and calibration readiness**:
+  - **Movement review**: Produces confidence-qualified posture observations plus pivot and step overlays without requiring a reference calibration.
+  - **Reference-relative posture review**: Uses either a compatible saved reference or a user-marked stable calibration interval inside the imported clip (validated with the configured duration, sample count, and MAD stability gates, and excluded from scored practice statistics).
+- **YouTube source link and independent clock alignment**:
+  - An optional HTTPS YouTube link (`https://www.youtube.com/watch?v=...`, `https://youtu.be/...`, or `https://www.youtube.com/shorts/...`) is validated locally without network requests, canonicalised to `https://www.youtube.com/watch?v=<id>`, and stripped of tracking/playlist parameters while retaining an optional nonnegative time anchor (`t` / `start`).
+  - Entering a YouTube link without a local file enables **Open on YouTube**, while **Analyse clip** remains disabled with `"Choose a local video file to analyse"`.
+  - **Open this moment on YouTube** is enabled only after confirming that the local file and YouTube video are the same edit and saving a valid local-to-YouTube timestamp alignment. Changing the file or YouTube link invalidates prior alignments.
+- **Storage, reopening, and relinking**:
+  - Analysis writes a Markdown report (omitting full local paths in exported text), a `.metadata.json` file with the clip bounds and SHA-256 content digest, and a `.movement.v1.json` companion.
+  - If the local video file is moved, **Relink video…** verifies the SHA-256 digest before reattaching saved movement overlays, frame timestamps, and YouTube alignments.
+- **Optional video soundtrack analysis**:
+  - Enable **Analyse video soundtrack** (off by default) to decode the selected clip range's audio locally via `ffmpeg` (or a local `.wav` sidecar) into 16 kHz mono samples and feed them into an offline `BeatTracker` labelled **Video soundtrack** (never opening the live microphone or inventing nominal clock beats on silence).
+  - If `ffmpeg` or an audio stream is absent, soundtrack status is reported as unavailable with a clear reason while visual analysis proceeds normally.
+- **Teacher vs practice comparison**:
+  - Select a second clip in the **Compare with clip** bar, set one manual anchor in each clip (for example, the start of a pivot), and click **Compare clips** to play and seek around the anchors synchronously. Each pane stays on its own timeline, reference, and overlay, holding at its clip boundary rather than extrapolating, while displaying observable pivot/step differences and comparability warnings when camera setup or coverage differ.
+
 ### Architecture additions
 
 The main architecture remains capture → pose → quality/geometry → reference/temporal evaluation → storage/display. The extensions add parallel branches:

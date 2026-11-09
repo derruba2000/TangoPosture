@@ -26,6 +26,7 @@ from .archive import (
     practice_directory,
     read_movement_analysis,
 )
+from .calibration import load_calibration_file
 from .config import Config
 from .movement import (
     MovementAnalysisCoordinator,
@@ -36,8 +37,32 @@ from .movement import (
 from .notes_ui import NotesSidebar
 from .ollama import OllamaClient
 from .pose.mediapipe_backend import MediaPipeEstimator
-from .replay import ReplayPlayer, parse_time
-from .review import ReportRecord, read_report, report_directory, save_analysis, saved_analyses
+from .reference_import import (
+    MAX_IMPORT_RANGE_SECONDS,
+    ClipComparisonResult,
+    ImportedClipResult,
+    ReferenceImportWorker,
+    VideoProbeInfo,
+    YouTubeClockAlignment,
+    YouTubeSourceLink,
+    build_youtube_open_url,
+    check_calibration_readiness,
+    compare_clips,
+    load_report_movement_data,
+    parse_youtube_url,
+    probe_import_video,
+    relink_report_video,
+    validate_clip_range,
+)
+from .replay import ReplayPlayer, parse_time, time_label
+from .review import (
+    ReportRecord,
+    read_report,
+    report_directory,
+    save_analysis,
+    saved_analyses,
+    update_report_metadata,
+)
 
 
 class MarkdownView(ttk.Frame):
@@ -284,6 +309,37 @@ class ReviewPanel(ttk.Frame):
         self.movement_coordinator = MovementAnalysisCoordinator(
             lambda payload: self.events.put((payload[1], payload[0], payload[2:]))
         )
+        self.import_worker = ReferenceImportWorker(
+            lambda payload: self.events.put((payload[1], payload[0], payload[2:]))
+        )
+        self.import_estimator_factory: Callable[[], Any] | None = None
+        self.import_probe: VideoProbeInfo | None = None
+        self.import_video_var = tk.StringVar()
+        self.import_title_var = tk.StringVar()
+        self.import_youtube_var = tk.StringVar()
+        self.import_in_var = tk.StringVar(value="0.0")
+        self.import_out_var = tk.StringVar(value="")
+        self.import_mode_var = tk.StringVar(value="movement")
+        self.import_reference_var = tk.StringVar(value="latest")
+        self.import_cal_in_var = tk.StringVar(value="")
+        self.import_cal_out_var = tk.StringVar(value="")
+        self.import_soundtrack_var = tk.BooleanVar(value=False)
+        self.import_confirm_same_edit_var = tk.BooleanVar(value=False)
+        self.import_align_local_var = tk.StringVar(value="0.0")
+        self.import_align_youtube_var = tk.StringVar(value="0.0")
+        self.import_file_info = tk.StringVar(value="No local file selected")
+        self.import_range_status = tk.StringVar(value="Max clip range: 120s")
+        self.import_readiness_status = tk.StringVar(
+            value="Movement review (no calibration required)"
+        )
+        self.import_status = tk.StringVar(value="Choose a local video file to analyse")
+        self.import_panel_visible = False
+        self.last_opened_youtube_url: str = ""
+        self.compare_target_var = tk.StringVar()
+        self.anchor_left_var = tk.StringVar(value="0.0")
+        self.anchor_right_var = tk.StringVar(value="0.0")
+        self.comparison_summary_var = tk.StringVar(value="")
+        self.last_comparison_result: ClipComparisonResult | None = None
         self.job = ""
         self.models_job = ""
         self.cancel = threading.Event()
@@ -344,6 +400,34 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
             side="left", padx=6
         )
+        self.import_reference_button = ttk.Button(
+            chooser,
+            text="Import reference video…",
+            command=lambda: self.guard(self.toggle_import_panel),
+        )
+        self.import_reference_button.pack(side="left", padx=4)
+        self.relink_video_button = ttk.Button(
+            chooser,
+            text="Relink video…",
+            state="disabled",
+            command=lambda: self.guard(self.relink_current_video_dialog),
+        )
+        self.relink_video_button.pack(side="left", padx=4)
+        self.open_youtube_button = ttk.Button(
+            chooser,
+            text="Open on YouTube",
+            state="disabled",
+            command=lambda: self.guard(self.open_current_youtube),
+        )
+        self.open_youtube_button.pack(side="left", padx=4)
+        self.open_moment_youtube_button = ttk.Button(
+            chooser,
+            text="Open this moment on YouTube",
+            state="disabled",
+            command=lambda: self.guard(self.open_current_moment_on_youtube),
+        )
+        self.open_moment_youtube_button.pack(side="left", padx=4)
+        self._build_import_panel(videos)
         movement_bar = ttk.Frame(videos, padding=(6, 2))
         movement_bar.pack(fill="x")
         ttk.Label(movement_bar, text="Movement analysis:").pack(side="left", padx=(0, 6))
@@ -380,6 +464,7 @@ class ReviewPanel(ttk.Frame):
         self.compare_vars: dict[str, tk.BooleanVar] = {}
         self.compare_bar = ttk.Frame(videos)
         self.compare_bar.pack(fill="x")
+        self._build_practice_comparison_bar(videos)
         body = ttk.Panedwindow(videos, orient="horizontal")
         body.pack(fill="both", expand=True)
         self.player = ReplayPlayer(body, settings["replay_audio"])
@@ -565,11 +650,13 @@ class ReviewPanel(ttk.Frame):
         self.selection.set(str(selected_path))
         self.report_paths[str(selected_path)] = selected_path
         self.report_combo.configure(values=list(self.report_paths))
+        self.compare_target_combo.configure(values=list(self.report_paths))
         self.report_view.set(record.markdown)
         self.player.unload()
         self.video_combo.configure(values=list(record.videos))
         self.video_selection.set("")
         self.status.set(str(selected_path) + ("\n" + record.warning if record.warning else ""))
+        self._sync_import_and_youtube_controls()
         preferred_labels = (
             ("Raw video", "Source video", "Overlay")
             if (self.show_pivots_var.get() or self.show_steps_var.get())
@@ -581,6 +668,11 @@ class ReviewPanel(ttk.Frame):
                 self.guard(self.switch_video)
                 break
         else:
+            if record.is_imported_reference and record.videos:
+                missing_name = next(iter(record.videos.values())).name
+                self.status.set(
+                    f"Source video '{missing_name}' was not found at its saved path. Click 'Relink video…' to locate it."
+                )
             self._refresh_movement_state()
         self.analysis_data = None
         self.analysis_meta.set("")
@@ -595,9 +687,15 @@ class ReviewPanel(ttk.Frame):
         if self.opened_video_path is not None and self.video_selection.get() != "Opened video":
             self._clear_standalone_movement()
         seconds = self.player.position.get()
-        self.player.load(self.report.videos[self.video_selection.get()], seconds)
+        clip_range = self.report.clip_range if self.report.is_imported_reference else None
+        self.player.load(
+            self.report.videos[self.video_selection.get()],
+            seconds,
+            clip_range=clip_range,
+        )
         self.update_comparison()
         self._refresh_movement_state(redraw=True)
+        self._sync_import_and_youtube_controls()
 
     def update_comparison(self):
         if self.report:
@@ -737,6 +835,8 @@ class ReviewPanel(ttk.Frame):
                         candidate = read_movement_analysis(target.path, target.segment_index)
                     except (OSError, ValueError):
                         candidate = None
+            elif self.report is not None:
+                candidate = load_report_movement_data(self.report)
 
             if candidate is not None and raw_sha is not None:
                 try:
@@ -811,7 +911,11 @@ class ReviewPanel(ttk.Frame):
             base = "Ready" if has_events else "No reliable events"
             if key in self.session_movement_results and self.session_movement_results[key][1]:
                 base += " (session only; archive is read-only)"
-            elif target.kind == "standalone":
+            elif (
+                target.kind == "standalone"
+                and key in self.session_movement_results
+                and not (self.report and self.report.movement_analysis_file)
+            ):
                 base += " (session only)"
             self.movement_status.set(base)
         else:
@@ -1096,6 +1200,31 @@ class ReviewPanel(ttk.Frame):
                 self.movement_progress_by_key.pop(key, None)
                 self.movement_state_by_key[key] = f"Unavailable: {error_msg}"
                 self._sync_movement_ui()
+            elif kind == "import_progress":
+                cur, tot, msg = value
+                self.import_status.set(f"{msg} ({cur}/{tot}%)")
+                self.import_start_button.configure(state="disabled")
+                self.import_cancel_button.configure(state="normal")
+            elif kind == "import_done":
+                (import_res,) = value
+                assert isinstance(import_res, ImportedClipResult)
+                self.import_cancel_button.configure(state="disabled")
+                self._sync_import_form_state()
+                self.import_status.set(
+                    f"Completed: '{import_res.title}' ({import_res.selected_out - import_res.selected_in:.1f}s)"
+                )
+                self.load_report(import_res.report_path)
+                self.tabs.select(self.video_page)
+            elif kind == "import_cancelled":
+                self.import_cancel_button.configure(state="disabled")
+                self._sync_import_form_state()
+                self.import_status.set("Reference video import cancelled.")
+            elif kind == "import_error":
+                (err_msg,) = value
+                self.import_cancel_button.configure(state="disabled")
+                self._sync_import_form_state()
+                self.import_status.set(f"Import failed: {err_msg}")
+                self.status.set(f"Reference import failed: {err_msg}")
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")
@@ -1124,11 +1253,644 @@ class ReviewPanel(ttk.Frame):
                         self.analysis_status.set(value + " / Partial text has not been saved.")
         self.timer = self.after(50, self.pump)
 
+    def _build_import_panel(self, parent: ttk.Frame) -> None:
+        self.import_panel = ttk.LabelFrame(
+            parent, text="Import Reference Video (Teacher / Study Clip)", padding=6
+        )
+        row0 = ttk.Frame(self.import_panel)
+        row0.pack(fill="x", pady=2)
+        ttk.Label(row0, text="Local video:").pack(side="left")
+        ttk.Entry(row0, textvariable=self.import_video_var, width=36).pack(
+            side="left", padx=4, fill="x", expand=True
+        )
+        ttk.Button(
+            row0,
+            text="Choose file…",
+            command=lambda: self.guard(self.choose_import_video_file),
+        ).pack(side="left", padx=3)
+        ttk.Label(row0, textvariable=self.import_file_info).pack(side="left", padx=6)
+
+        row1 = ttk.Frame(self.import_panel)
+        row1.pack(fill="x", pady=2)
+        ttk.Label(row1, text="Clip In (s):").pack(side="left")
+        in_entry = ttk.Entry(row1, textvariable=self.import_in_var, width=8)
+        in_entry.pack(side="left", padx=3)
+        in_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
+        ttk.Button(
+            row1,
+            text="Set In from player",
+            command=lambda: self.guard(self.set_import_in_from_player),
+        ).pack(side="left", padx=2)
+        ttk.Label(row1, text="Out (s):").pack(side="left", padx=(8, 0))
+        out_entry = ttk.Entry(row1, textvariable=self.import_out_var, width=8)
+        out_entry.pack(side="left", padx=3)
+        out_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
+        ttk.Button(
+            row1,
+            text="Set Out from player",
+            command=lambda: self.guard(self.set_import_out_from_player),
+        ).pack(side="left", padx=2)
+        ttk.Label(row1, textvariable=self.import_range_status).pack(side="left", padx=8)
+
+        row2 = ttk.Frame(self.import_panel)
+        row2.pack(fill="x", pady=2)
+        ttk.Label(row2, text="Title:").pack(side="left")
+        ttk.Entry(row2, textvariable=self.import_title_var, width=22).pack(side="left", padx=4)
+        ttk.Label(row2, text="YouTube link (optional):").pack(side="left", padx=(8, 0))
+        yt_entry = ttk.Entry(row2, textvariable=self.import_youtube_var, width=32)
+        yt_entry.pack(side="left", padx=4, fill="x", expand=True)
+        yt_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
+        self.import_open_yt_button = ttk.Button(
+            row2,
+            text="Open on YouTube",
+            command=lambda: self.guard(self.open_import_youtube_link),
+        )
+        self.import_open_yt_button.pack(side="left", padx=3)
+
+        row3 = ttk.Frame(self.import_panel)
+        row3.pack(fill="x", pady=2)
+        ttk.Label(row3, text="Mode:").pack(side="left")
+        ttk.Radiobutton(
+            row3,
+            text="Movement review",
+            value="movement",
+            variable=self.import_mode_var,
+            command=lambda: self.guard(self._sync_import_form_state),
+        ).pack(side="left", padx=4)
+        ttk.Radiobutton(
+            row3,
+            text="Reference-relative posture review",
+            value="posture",
+            variable=self.import_mode_var,
+            command=lambda: self.guard(self._sync_import_form_state),
+        ).pack(side="left", padx=4)
+        ttk.Label(row3, text="Reference:").pack(side="left", padx=(8, 2))
+        self.import_ref_combo = ttk.Combobox(
+            row3,
+            textvariable=self.import_reference_var,
+            values=("latest", "clip_interval"),
+            width=16,
+        )
+        self.import_ref_combo.pack(side="left", padx=2)
+        self.import_ref_combo.bind(
+            "<<ComboboxSelected>>", lambda _: self.guard(self._sync_import_form_state)
+        )
+        ttk.Label(row3, text="Cal [in, out]:").pack(side="left", padx=(6, 2))
+        ttk.Entry(row3, textvariable=self.import_cal_in_var, width=6).pack(side="left", padx=1)
+        ttk.Entry(row3, textvariable=self.import_cal_out_var, width=6).pack(side="left", padx=1)
+        ttk.Checkbutton(
+            row3,
+            text="Analyse video soundtrack",
+            variable=self.import_soundtrack_var,
+        ).pack(side="left", padx=8)
+
+        row4 = ttk.Frame(self.import_panel)
+        row4.pack(fill="x", pady=2)
+        ttk.Checkbutton(
+            row4,
+            text="Confirm local file & YouTube are same edit",
+            variable=self.import_confirm_same_edit_var,
+            command=lambda: self.guard(self._sync_import_form_state),
+        ).pack(side="left")
+        ttk.Label(row4, text="Local time (s):").pack(side="left", padx=(8, 2))
+        ttk.Entry(row4, textvariable=self.import_align_local_var, width=7).pack(side="left")
+        ttk.Label(row4, text="YouTube time (s):").pack(side="left", padx=(6, 2))
+        ttk.Entry(row4, textvariable=self.import_align_youtube_var, width=7).pack(side="left")
+        ttk.Button(
+            row4,
+            text="Save YouTube alignment",
+            command=lambda: self.guard(self.save_current_youtube_alignment),
+        ).pack(side="left", padx=6)
+        ttk.Label(row4, textvariable=self.import_readiness_status).pack(side="left", padx=6)
+
+        row5 = ttk.Frame(self.import_panel)
+        row5.pack(fill="x", pady=(4, 0))
+        self.import_start_button = ttk.Button(
+            row5,
+            text="Analyse clip",
+            state="disabled",
+            command=lambda: self.guard(self.start_reference_import),
+        )
+        self.import_start_button.pack(side="left")
+        self.import_cancel_button = ttk.Button(
+            row5,
+            text="Cancel import",
+            state="disabled",
+            command=lambda: self.guard(self.cancel_reference_import),
+        )
+        self.import_cancel_button.pack(side="left", padx=6)
+        ttk.Label(row5, textvariable=self.import_status, wraplength=700).pack(
+            side="left", padx=8, fill="x", expand=True
+        )
+
+    def _build_practice_comparison_bar(self, parent: ttk.Frame) -> None:
+        self.practice_compare_bar = ttk.Frame(parent, padding=(6, 2))
+        self.practice_compare_bar.pack(fill="x")
+        ttk.Label(self.practice_compare_bar, text="Compare with clip:").pack(
+            side="left", padx=(0, 4)
+        )
+        self.compare_target_combo = ttk.Combobox(
+            self.practice_compare_bar,
+            textvariable=self.compare_target_var,
+            state="readonly",
+            width=26,
+        )
+        self.compare_target_combo.pack(side="left", padx=2)
+        ttk.Label(self.practice_compare_bar, text="Anchor this (s):").pack(
+            side="left", padx=(6, 2)
+        )
+        ttk.Entry(self.practice_compare_bar, textvariable=self.anchor_left_var, width=6).pack(
+            side="left"
+        )
+        ttk.Button(
+            self.practice_compare_bar,
+            text="Use current",
+            command=lambda: self.guard(self.set_left_anchor_from_player),
+        ).pack(side="left", padx=2)
+        ttk.Label(self.practice_compare_bar, text="Anchor other (s):").pack(
+            side="left", padx=(6, 2)
+        )
+        ttk.Entry(self.practice_compare_bar, textvariable=self.anchor_right_var, width=6).pack(
+            side="left"
+        )
+        ttk.Button(
+            self.practice_compare_bar,
+            text="Compare clips",
+            command=lambda: self.guard(self.run_clip_comparison),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            self.practice_compare_bar,
+            text="Clear",
+            command=lambda: self.guard(self.clear_clip_comparison),
+        ).pack(side="left", padx=2)
+        ttk.Label(
+            self.practice_compare_bar,
+            textvariable=self.comparison_summary_var,
+            wraplength=520,
+        ).pack(side="left", padx=6, fill="x", expand=True)
+
+    def toggle_import_panel(self) -> None:
+        if self.import_panel_visible:
+            self.import_panel.pack_forget()
+            self.import_panel_visible = False
+        else:
+            self.import_panel.pack(fill="x", padx=6, pady=4, before=self.compare_bar)
+            self.import_panel_visible = True
+            self._sync_import_form_state()
+        self.tabs.select(self.video_page)
+
+    def choose_import_video_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            filetypes=[("Video files", "*.mp4 *.mov *.m4v *.avi *.mkv"), ("All files", "*")],
+        )
+        if path:
+            self.set_import_video_file(Path(path))
+
+    def set_import_video_file(self, path: Path | str) -> VideoProbeInfo:
+        probe = probe_import_video(Path(path))
+        self.import_probe = probe
+        self.import_video_var.set(str(probe.path))
+        if not self.import_title_var.get().strip():
+            self.import_title_var.set(probe.path.stem)
+        self.import_in_var.set("0.0")
+        default_out = min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS)
+        self.import_out_var.set(f"{default_out:.2f}")
+        self.import_file_info.set(
+            f"{probe.width}x{probe.height} · {probe.fps:.1f} FPS · {probe.duration_seconds:.1f}s"
+        )
+        # Also load into player for previewing & setting in/out points
+        self.player.load(probe.path)
+        self.opened_video_path = probe.path
+        self.video_selection.set("Opened video")
+        self._sync_import_form_state()
+        return probe
+
+    def set_import_in_from_player(self) -> None:
+        self.import_in_var.set(f"{self.player.source_time_seconds:.2f}")
+        self._sync_import_form_state()
+
+    def set_import_out_from_player(self) -> None:
+        self.import_out_var.set(f"{self.player.source_time_seconds:.2f}")
+        self._sync_import_form_state()
+
+    def _resolve_selected_import_reference(self, cfg: Config):
+        choice = self.import_reference_var.get().strip()
+        if not choice or choice == "clip_interval":
+            return None
+        cal_dir = calibration_directory(cfg.data_dir)
+        return load_calibration_file(choice, cal_dir)
+
+    def _resolve_import_calibration_interval(self) -> tuple[float, float] | None:
+        raw_in = self.import_cal_in_var.get().strip()
+        raw_out = self.import_cal_out_var.get().strip()
+        if not raw_in or not raw_out:
+            return None
+        return (parse_time(raw_in), parse_time(raw_out))
+
+    def _sync_import_form_state(self) -> None:
+        cfg = self.config_provider()
+        raw_video = self.import_video_var.get().strip()
+        raw_yt = self.import_youtube_var.get().strip()
+        if raw_yt:
+            try:
+                parse_youtube_url(raw_yt)
+            except ValueError as exc:
+                self.import_status.set(str(exc))
+                self.import_start_button.configure(state="disabled")
+                return
+
+        if not raw_video:
+            self.import_probe = None
+            self.import_file_info.set("No local file selected")
+            self.import_start_button.configure(state="disabled")
+            self.import_status.set("Choose a local video file to analyse")
+            return
+
+        try:
+            probe = (
+                self.import_probe
+                if self.import_probe is not None and str(self.import_probe.path) == raw_video
+                else probe_import_video(Path(raw_video))
+            )
+            self.import_probe = probe
+            in_sec = parse_time(self.import_in_var.get() or "0.0")
+            out_str = self.import_out_var.get().strip()
+            out_sec = parse_time(out_str) if out_str else min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS)
+            clip_in, clip_out = validate_clip_range(probe, in_sec, out_sec)
+            self.import_range_status.set(
+                f"Range [{time_label(clip_in)} - {time_label(clip_out)}] ({clip_out - clip_in:.1f}s / {MAX_IMPORT_RANGE_SECONDS:.0f}s max)"
+            )
+            mode = self.import_mode_var.get()
+            cal_interval = self._resolve_import_calibration_interval()
+            ref_obj = (
+                None
+                if cal_interval is not None
+                else self._resolve_selected_import_reference(cfg)
+            )
+            readiness = check_calibration_readiness(
+                analysis_mode=mode,
+                cfg=cfg,
+                probe=probe,
+                selected_in=clip_in,
+                selected_out=clip_out,
+                reference=ref_obj,
+                calibration_interval=cal_interval,
+                model_hash=self._expected_model_hash(),
+            )
+            self.import_readiness_status.set(
+                readiness.summary if readiness.ready else f"{readiness.summary}: {readiness.reason}"
+            )
+            if readiness.ready and not self.import_worker.is_running():
+                self.import_start_button.configure(state="normal")
+                self.import_status.set("Ready to analyse clip.")
+            else:
+                self.import_start_button.configure(state="disabled")
+                if not readiness.ready:
+                    self.import_status.set(readiness.reason or readiness.summary)
+        except ValueError as exc:
+            self.import_start_button.configure(state="disabled")
+            self.import_status.set(str(exc))
+
+    def open_import_youtube_link(self) -> str:
+        raw_yt = self.import_youtube_var.get().strip()
+        link = parse_youtube_url(raw_yt)
+        if link is None:
+            raise ValueError("Enter a valid HTTPS YouTube URL first")
+        url = build_youtube_open_url(link)
+        self.last_opened_youtube_url = url
+        webbrowser.open(url)
+        return url
+
+    def _build_pending_youtube_alignment(
+        self,
+        *,
+        source_sha256: str,
+        youtube_video_id: str,
+    ) -> YouTubeClockAlignment | None:
+        if not self.import_confirm_same_edit_var.get():
+            return None
+        try:
+            local_sec = parse_time(self.import_align_local_var.get() or "0.0")
+            yt_sec = parse_time(self.import_align_youtube_var.get() or "0.0")
+        except ValueError:
+            return None
+        return YouTubeClockAlignment(
+            local_source_seconds=local_sec,
+            youtube_seconds=yt_sec,
+            confirmed_same_edit=True,
+            source_sha256=source_sha256,
+            youtube_video_id=youtube_video_id,
+        )
+
+    def start_reference_import(self, *, synchronous: bool = False) -> ImportedClipResult | str:
+        self._sync_import_form_state()
+        raw_video = self.import_video_var.get().strip()
+        if not raw_video:
+            raise ValueError("Choose a local video file to analyse")
+        cfg = self.config_provider()
+        probe = self.import_probe or probe_import_video(Path(raw_video))
+        in_sec = parse_time(self.import_in_var.get() or "0.0")
+        out_str = self.import_out_var.get().strip()
+        out_sec = parse_time(out_str) if out_str else min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS)
+        clip_in, clip_out = validate_clip_range(probe, in_sec, out_sec)
+        mode = self.import_mode_var.get()
+        cal_interval = self._resolve_import_calibration_interval()
+        ref_obj = None if cal_interval is not None else self._resolve_selected_import_reference(cfg)
+        raw_yt = self.import_youtube_var.get().strip() or None
+        yt_link = parse_youtube_url(raw_yt) if raw_yt else None
+        alignment = (
+            self._build_pending_youtube_alignment(
+                source_sha256=file_sha256(probe.path),
+                youtube_video_id=yt_link.video_id,
+            )
+            if yt_link is not None
+            else None
+        )
+        folder = report_directory(cfg.data_dir)
+        kwargs: dict[str, Any] = {
+            "video_path": probe.path,
+            "cfg": cfg,
+            "report_dir": folder,
+            "selected_in": clip_in,
+            "selected_out": clip_out,
+            "title": self.import_title_var.get().strip(),
+            "youtube_url": raw_yt,
+            "youtube_alignment": alignment,
+            "analysis_mode": mode,
+            "reference": ref_obj,
+            "calibration_interval": cal_interval,
+            "analyse_soundtrack": bool(self.import_soundtrack_var.get()),
+            "estimator_factory": self.import_estimator_factory,
+        }
+        if synchronous:
+            from .reference_import import analyse_imported_clip
+
+            result = analyse_imported_clip(**kwargs)
+            self.import_status.set(
+                f"Completed: '{result.title}' ({result.selected_out - result.selected_in:.1f}s)"
+            )
+            self.load_report(result.report_path)
+            self.tabs.select(self.video_page)
+            return result
+
+        self.import_start_button.configure(state="disabled")
+        self.import_cancel_button.configure(state="normal")
+        self.import_status.set("Starting reference video analysis…")
+        return self.import_worker.start(**kwargs)
+
+    def cancel_reference_import(self) -> None:
+        self.import_worker.cancel()
+
+    def _sync_import_and_youtube_controls(self) -> None:
+        if self.report is None:
+            self.relink_video_button.configure(state="disabled")
+            self.open_youtube_button.configure(state="disabled")
+            self.open_moment_youtube_button.configure(state="disabled")
+            return
+
+        self.relink_video_button.configure(
+            state="normal" if (self.report.is_imported_reference or self.report.videos) else "disabled"
+        )
+        yt_link = YouTubeSourceLink.from_dict(self.report.youtube_link)
+        if yt_link is None:
+            self.open_youtube_button.configure(state="disabled")
+            self.open_moment_youtube_button.configure(state="disabled")
+            return
+
+        self.open_youtube_button.configure(state="normal")
+        alignment = YouTubeClockAlignment.from_dict(self.report.youtube_alignment)
+        clip_in = float(self.report.clip_in or 0.0)
+        clip_out = float(
+            self.report.clip_out
+            if self.report.clip_out is not None and self.report.clip_out > clip_in
+            else max(clip_in + 1.0, self.report.duration_seconds)
+        )
+        cur_src = self.player.source_time_seconds if self.player.reader is not None else clip_in
+        if (
+            alignment is not None
+            and not self.report.relinked_content_changed
+            and alignment.is_valid_for(
+                source_sha256=self.report.source_sha256,
+                youtube_video_id=yt_link.video_id,
+                clip_in=clip_in,
+                clip_out=clip_out,
+                local_source_seconds=cur_src,
+            )
+        ):
+            self.open_moment_youtube_button.configure(state="normal")
+        else:
+            self.open_moment_youtube_button.configure(state="disabled")
+
+    def save_current_youtube_alignment(self) -> YouTubeClockAlignment:
+        if self.report is None:
+            raise ValueError("Load an imported reference report first")
+        raw_yt = self.import_youtube_var.get().strip()
+        if raw_yt:
+            yt_link = parse_youtube_url(raw_yt)
+            if yt_link is not None:
+                self.report.youtube_link = yt_link.to_dict()
+        else:
+            yt_link = YouTubeSourceLink.from_dict(self.report.youtube_link)
+        if yt_link is None:
+            raise ValueError("This clip has no YouTube source link")
+        if not self.import_confirm_same_edit_var.get():
+            update_report_metadata(self.report, {"youtube_alignment": None})
+            self.report.youtube_alignment = None
+            self._sync_import_and_youtube_controls()
+            raise ValueError("Confirm that the local file and YouTube video are the same edit")
+        local_sec = parse_time(self.import_align_local_var.get() or "0.0")
+        yt_sec = parse_time(self.import_align_youtube_var.get() or "0.0")
+        clip_in = float(self.report.clip_in or 0.0)
+        clip_out = float(
+            self.report.clip_out
+            if self.report.clip_out is not None and self.report.clip_out > clip_in
+            else max(clip_in + 1.0, self.report.duration_seconds)
+        )
+        alignment = YouTubeClockAlignment(
+            local_source_seconds=local_sec,
+            youtube_seconds=yt_sec,
+            confirmed_same_edit=True,
+            source_sha256=self.report.source_sha256,
+            youtube_video_id=yt_link.video_id,
+        )
+        if not alignment.is_valid_for(
+            source_sha256=self.report.source_sha256,
+            youtube_video_id=yt_link.video_id,
+            clip_in=clip_in,
+            clip_out=clip_out,
+        ):
+            raise ValueError(
+                f"Local alignment point ({local_sec:.1f}s) must lie within the analysed clip range [{clip_in:.1f}s, {clip_out:.1f}s)"
+            )
+        update_report_metadata(
+            self.report,
+            {
+                "youtube_link": yt_link.to_dict(),
+                "youtube_alignment": alignment.to_dict(),
+            },
+        )
+        self.report.youtube_alignment = alignment.to_dict()
+        self._sync_import_and_youtube_controls()
+        self.status.set(
+            f"Saved YouTube clock alignment: local {local_sec:.1f}s -> YouTube {yt_sec:.1f}s."
+        )
+        return alignment
+
+    def open_current_youtube(self) -> str:
+        if self.report is None:
+            raise ValueError("Open a report with a YouTube source link first")
+        yt_link = YouTubeSourceLink.from_dict(self.report.youtube_link)
+        if yt_link is None:
+            raise ValueError("This report has no saved YouTube source link")
+        url = build_youtube_open_url(yt_link)
+        self.last_opened_youtube_url = url
+        webbrowser.open(url)
+        return url
+
+    def open_current_moment_on_youtube(self) -> str:
+        if self.report is None:
+            raise ValueError("Open a report with a YouTube source link first")
+        yt_link = YouTubeSourceLink.from_dict(self.report.youtube_link)
+        alignment = YouTubeClockAlignment.from_dict(self.report.youtube_alignment)
+        if yt_link is None or alignment is None:
+            raise ValueError("Set and confirm a YouTube clock alignment first")
+        clip_in = float(self.report.clip_in or 0.0)
+        clip_out = float(
+            self.report.clip_out
+            if self.report.clip_out is not None and self.report.clip_out > clip_in
+            else max(clip_in + 1.0, self.report.duration_seconds)
+        )
+        cur_src = self.player.source_time_seconds if self.player.reader is not None else clip_in
+        mapped = alignment.youtube_timestamp_at(
+            cur_src,
+            source_sha256=self.report.source_sha256,
+            youtube_video_id=yt_link.video_id,
+            clip_in=clip_in,
+            clip_out=clip_out,
+        )
+        if mapped is None:
+            raise ValueError(
+                "Current playback position has no valid YouTube timestamp alignment"
+            )
+        url = build_youtube_open_url(yt_link, timestamp_seconds=mapped)
+        self.last_opened_youtube_url = url
+        webbrowser.open(url)
+        return url
+
+    def relink_current_video_dialog(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self,
+            filetypes=[("Video files", "*.mp4 *.mov *.m4v *.avi *.mkv"), ("All files", "*")],
+        )
+        if path:
+            self.relink_current_video(Path(path))
+
+    def relink_current_video(self, new_path: Path | str):
+        if self.report is None:
+            raise ValueError("Open a report first")
+        outcome = relink_report_video(self.report, new_path)
+        self.load_report(self.report.path)
+        self.status.set(outcome.message)
+        return outcome
+
+    def set_left_anchor_from_player(self) -> None:
+        self.anchor_left_var.set(f"{self.player.clip_time_seconds:.2f}")
+
+    def run_clip_comparison(self, other_report_path: Path | str | None = None) -> ClipComparisonResult:
+        if self.report is None:
+            raise ValueError("Load a primary report or reference clip first")
+        target_str = str(other_report_path or self.compare_target_var.get()).strip()
+        if not target_str:
+            raise ValueError("Choose a second clip/report to compare with")
+        resolved_target = self.report_paths.get(target_str, Path(target_str).expanduser().resolve())
+        if resolved_target.suffix.lower() in (".tp", ".tpc"):
+            temp_archive = PracticeArchive(resolved_target)
+            try:
+                if not temp_archive.manifest["segments"]:
+                    raise ValueError("Selected archive has no recordings")
+                last_seg = temp_archive.manifest["segments"][-1]
+                other_record = read_report(temp_archive.report(int(last_seg["index"])))
+                other_record.videos = {
+                    label: temp_archive.folder / last_seg[key]
+                    for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
+                    if last_seg[key] is not None
+                }
+            finally:
+                # Keep temp_archive open only if needed; for standalone report_paths we read directly
+                pass
+        else:
+            other_record = read_report(resolved_target)
+
+        left_anchor = parse_time(self.anchor_left_var.get() or "0.0")
+        right_anchor = parse_time(self.anchor_right_var.get() or "0.0")
+        other_mov = load_report_movement_data(other_record)
+        cmp_result = compare_clips(
+            self.report,
+            other_record,
+            anchor_left_clip_time=left_anchor,
+            anchor_right_clip_time=right_anchor,
+            left_movement=self.movement_data,
+            right_movement=other_mov,
+        )
+        self.last_comparison_result = cmp_result
+
+        other_video = other_record.recorded_video
+        if other_video is not None and other_video.is_file():
+            left_in = float(self.report.clip_in or 0.0)
+            right_in = float(other_record.clip_in or 0.0)
+
+            def _other_transform(img: np.ndarray, f_idx: int, f_fps: float) -> np.ndarray:
+                show_p = bool(self.show_pivots_var.get())
+                show_s = bool(self.show_steps_var.get())
+                if (not show_p and not show_s) or other_mov is None:
+                    return img
+                if img.shape[1] != other_mov.get("width") or img.shape[0] != other_mov.get("height"):
+                    return img
+                return render_movement_overlay(
+                    img,
+                    other_mov,
+                    f_idx,
+                    f_fps,
+                    show_pivots=show_p,
+                    show_steps=show_s,
+                    step_history_seconds=self._step_history_seconds(),
+                    mirror=False,
+                )
+
+            self.player.compare(
+                [other_video],
+                refresh=True,
+                specs=[
+                    {
+                        "clip_range": other_record.clip_range,
+                        "primary_anchor_source_seconds": left_in + cmp_result.anchor_left_clip_time,
+                        "anchor_source_seconds": right_in + cmp_result.anchor_right_clip_time,
+                        "frame_transform": _other_transform,
+                    }
+                ],
+            )
+            self.player.seek_clip_relative(cmp_result.anchor_left_clip_time)
+
+        parts = list(cmp_result.summary_lines)
+        if cmp_result.comparability_warnings:
+            parts.append("Note: " + " ".join(cmp_result.comparability_warnings))
+        summary_txt = " | ".join(parts) if parts else "Clips aligned at manual anchors."
+        self.comparison_summary_var.set(summary_txt)
+        self.status.set(summary_txt)
+        return cmp_result
+
+    def clear_clip_comparison(self) -> None:
+        self.last_comparison_result = None
+        self.comparison_summary_var.set("")
+        self.update_comparison()
+
     def close(self):
         if not self.closed:
             self.closed = True
             self.cancel.set()
             self.after_cancel(self.timer)
+            self.import_worker.close()
             self.movement_coordinator.close()
             self.player.close()
             if self.archive is not None:

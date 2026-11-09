@@ -980,3 +980,111 @@ def test_movement_analysis_cancel_preserves_previous_result_and_handles_overlay_
     assert "Cancelled" in panel.movement_status.get()
     assert panel.movement_data is not None
 
+
+def test_reference_video_import_youtube_relink_and_comparison_workflow(
+    studio, tmp_path, monkeypatch
+):
+    import shutil
+
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    est_cls = _make_synthetic_movement_estimator(1.0)
+    panel.import_estimator_factory = lambda: est_cls(Path("models/pose_landmarker_lite.task"))
+
+    opened_urls: list[str] = []
+    monkeypatch.setattr("tango_posture.review_ui.webbrowser.open", lambda u: opened_urls.append(u))
+
+    # 1. Open Import Reference Video panel; verify URL-only enables Open on YouTube
+    #    while leaving Analyse clip disabled with "Choose a local video file to analyse"
+    panel.toggle_import_panel()
+    root.update()
+    assert panel.import_panel_visible is True
+    panel.import_youtube_var.set("https://youtu.be/dQw4w9WgXcQ?t=15")
+    panel._sync_import_form_state()
+    assert panel.import_start_button.instate(["disabled"])
+    assert panel.import_status.get() == "Choose a local video file to analyse"
+    panel.open_import_youtube_link()
+    assert opened_urls[-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=15s"
+
+    # 2. Select local teacher video file and set sub-range [0.2, 2.0)
+    teacher_vid = tmp_path / "teacher_demo.mp4"
+    writer = cv2.VideoWriter(str(teacher_vid), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for i in range(36):
+        writer.write(np.full((120, 160, 3), 25 + i * 2, np.uint8))
+    writer.release()
+
+    panel.set_import_video_file(teacher_vid)
+    panel.import_title_var.set("Teacher Giro Clip")
+    panel.import_in_var.set("0.2")
+    panel.import_out_var.set("2.0")
+    panel._sync_import_form_state()
+    assert panel.import_start_button.instate(["!disabled"])
+
+    # Run import via background worker and pump until complete
+    panel.start_reference_import()
+    deadline = time.monotonic() + 5.0
+    while panel.import_worker.is_running() and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+
+    assert panel.report is not None
+    assert panel.report.is_imported_reference is True
+    assert panel.report.title == "Teacher Giro Clip"
+    assert panel.report.clip_range == pytest.approx((0.2, 2.0))
+    assert panel.player.clip_range == pytest.approx((0.2, 2.0))
+    assert panel.movement_data is not None
+    assert panel.open_youtube_button.instate(["!disabled"])
+    # Without confirmed alignment, Open this moment on YouTube is disabled
+    assert panel.open_moment_youtube_button.instate(["disabled"])
+
+    # 3. Confirm same edit and save YouTube alignment at local 0.5s -> YouTube 30.0s
+    panel.import_confirm_same_edit_var.set(True)
+    panel.import_align_local_var.set("0.5")
+    panel.import_align_youtube_var.set("30.0")
+    panel.save_current_youtube_alignment()
+    panel.player.seek(1.5)
+    panel._sync_import_and_youtube_controls()
+    assert panel.open_moment_youtube_button.instate(["!disabled"])
+    moment_url = panel.open_current_moment_on_youtube()
+    assert moment_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=31s"
+
+    # 4. Move local file, reopen report, and relink with SHA-256 verification
+    teacher_report_path = panel.report.path
+    moved_vid = tmp_path / "relocated_teacher.mp4"
+    shutil.move(str(teacher_vid), str(moved_vid))
+    panel.load_report(teacher_report_path)
+    root.update()
+    assert "Relink video" in panel.status.get()
+    outcome = panel.relink_current_video(moved_vid)
+    assert outcome.exact_match is True
+    assert panel.movement_data is not None
+
+    # 5. Import a second clip (Practice) and run anchored Teacher-vs-Practice comparison
+    practice_vid = tmp_path / "student_practice.mp4"
+    writer2 = cv2.VideoWriter(str(practice_vid), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for i in range(36):
+        writer2.write(np.full((120, 160, 3), 40 + i * 2, np.uint8))
+    writer2.release()
+    panel.set_import_video_file(practice_vid)
+    panel.import_title_var.set("Student Practice Clip")
+    panel.import_in_var.set("0.0")
+    panel.import_out_var.set("2.0")
+    practice_res = panel.start_reference_import(synchronous=True)
+
+    # Load teacher report and compare against practice report at manual anchors
+    panel.load_report(teacher_report_path)
+    panel.anchor_left_var.set("0.5")
+    panel.anchor_right_var.set("0.6")
+    cmp_res = panel.run_clip_comparison(practice_res.report_path)
+    root.update()
+    assert len(panel.player.comparisons) == 1
+    assert cmp_res.left_title == "Teacher Giro Clip"
+    assert cmp_res.right_title == "Student Practice Clip"
+    assert panel.comparison_summary_var.get() != ""
+
+
