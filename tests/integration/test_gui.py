@@ -107,10 +107,13 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
 def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path):
     root, gui = studio
     archive = tmp_path / "practice" / "Evening.tp"
-    video, overlay, report = (tmp_path / name for name in ("raw.mp4", "overlay.mp4", "report.md"))
+    video, overlay, lines, report = (
+        tmp_path / name
+        for name in ("raw.mp4", "overlay.mp4", "overlay_lines.mp4", "report.md")
+    )
     import cv2
 
-    for path in (video, overlay):
+    for path in (video, overlay, lines):
         writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
         assert writer.isOpened()
         writer.write(np.zeros((64, 64, 3), np.uint8))
@@ -122,15 +125,25 @@ def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path
     root.update()
     assert list(gui.review.segment_paths) == ["Recording 00", "Recording 01", "Recording 02"]
     assert gui.review.report.markdown == "# Recording 2"
+    assert tuple(gui.review.video_combo["values"]) == (
+        "Practice video",
+        "Overlay video",
+        "Overlay with lines",
+    )
     for index in range(3):
         gui.review.segment_selection.set(f"Recording {index:02d}")
         gui.review.segment_combo.event_generate("<<ComboboxSelected>>")
         root.update()
         assert gui.review.report.markdown == f"# Recording {index}"
-        assert gui.review.player.reader.path.name == f"overlay_{index:02d}.mp4"
-        gui.review.video_selection.set("Raw video")
+        assert gui.review.player.reader.path.name == f"video_{index:02d}.mp4"
+        gui.review.video_selection.set("Practice video")
         gui.review.switch_video()
         assert gui.review.player.reader.path.name == f"video_{index:02d}.mp4"
+    gui.review.archive.path.unlink()
+    target, raw_path, reason = gui.review._resolve_movement_target()
+    assert target is not None and target.kind == "standalone"
+    assert raw_path is not None and raw_path.is_file()
+    assert reason == ""
     extracted = gui.review.archive.folder
     gui.review.close()
     assert not extracted.exists()
@@ -153,8 +166,8 @@ def test_review_opens_calibration_reference_and_its_videos(studio, tmp_path, ref
     root.update()
     assert list(gui.review.segment_paths) == ["Calibration"]
     assert reference.id in gui.review.report.markdown
-    assert gui.review.player.reader.path.name == "overlay_00.mp4"
-    gui.review.video_selection.set("Raw video")
+    assert gui.review.player.reader.path.name == "video_00.mp4"
+    gui.review.video_selection.set("Practice video")
     gui.review.switch_video()
     assert gui.review.player.reader.path.name == "video_00.mp4"
     gui.refresh_references()
@@ -502,7 +515,7 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
     root.update()
     assert "tracking was UNKNOWN" in panel.report_view.text.get("1.0", "end")
     assert len([tag for tag in panel.report_view.text.tag_names() if tag.startswith("time-")]) == 1
-    assert panel.video_selection.get() == "Overlay"
+    assert panel.video_selection.get() == "Practice video"
     panel.seek_report_time(1.2)
     root.geometry("840x640")
     root.update()
@@ -512,11 +525,8 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
             button.winfo_rooty() + button.winfo_height() <= root.winfo_rooty() + root.winfo_height()
         )
     assert panel.player.reader.index == 2
-    overlay_mean = panel.player.last_image.mean()
-    panel.video_selection.set("Raw video")
-    panel.switch_video()
     assert panel.player.reader.index == 2
-    assert panel.player.last_image.mean() < overlay_mean
+    assert panel.player.reader.path == (tmp_path / "raw.avi").resolve()
     panel.player.step(1)
     assert panel.player.reader.index == 3
     panel.player.toggle()
@@ -871,20 +881,19 @@ def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studi
     panel.load_report(archive)
     root.update()
     assert panel.segment_selection.get() == "Recording 01"
-    assert panel.video_selection.get() == "Overlay"
+    assert panel.video_selection.get() == "Practice video"
     assert panel.movement_status.get() == "Ready"
     assert panel.movement_button.cget("text") == "Re-run movement analysis"
 
-    # Seek to frame 12 (0.8s, inside pivot & step history) while on Overlay
+    # Seek to frame 12 (0.8s, inside pivot & step history) on the Practice video
     panel.player.seek(0.8)
     assert panel.player.reader.index == 12
-    # Enabling Show pivots while viewing baked Overlay switches to Practice video at the same timestamp
+    # Movement overlays render directly over the Practice video.
     panel.show_pivots_var.set(True)
     panel.show_steps_var.set(True)
     panel.on_movement_toggle()
     root.update()
     assert panel.video_selection.get() == "Practice video"
-    assert "Switched to Practice video" in panel.status.get()
     assert panel.player.reader.index == 12
     assert not np.array_equal(panel.player.last_image, panel.player.raw_frame)
 
@@ -1004,8 +1013,11 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
 
     # 1. Open Import Reference Video panel; verify URL-only enables Open on YouTube,
     #    Download from YouTube, and Analyse clip
+    assert panel.replay_controls_visible is False
+    assert panel.replay_options.winfo_manager() == ""
     panel.toggle_import_panel()
     root.update()
+    assert panel.replay_controls_visible is True
     assert panel.import_panel_visible is True
     assert panel.import_soundtrack_var.get() is True
     panel.import_youtube_var.set("https://youtu.be/dQw4w9WgXcQ?t=15")
@@ -1030,7 +1042,17 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     root.update()
     assert yt_direct_res.video_path.name == "youtube_dQw4w9WgXcQ.mp4"
     assert panel.report is not None and panel.report.title == "Direct YouTube Clip"
-    assert tuple(panel.video_combo["values"]) == ("Practice video",)
+    assert tuple(panel.video_combo["values"]) == (
+        "Practice video",
+        "Overlay video",
+        "Overlay with lines",
+    )
+    missing_reference = tmp_path / "missing_reference.tp"
+    panel.reference_paths["Missing reference"] = missing_reference
+    panel.reference_combo.configure(values=("Missing reference",))
+    panel.compare_target_var.set("Missing reference")
+    panel.guard(panel.show_reference_video)
+    assert "Reference file is missing" in panel.status.get()
     assert panel.open_youtube_button.instate(["!disabled"])
     assert panel.open_moment_youtube_button.instate(["!disabled"])
     assert panel.show_coach_var.get() is True
@@ -1047,11 +1069,16 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     assert "Torso axis" in sidebar_text and "Clip Movement Totals" in sidebar_text
     assert panel.player.reader is not None and panel.player.raw_frame is not None
     panel.floor_only_var.set(True)
+    panel.video_selection.set("Overlay with lines")
+    panel.switch_video()
+    assert panel.player.reader.path == yt_direct_res.video_path
     floor_frame = panel._transform_replay_frame(
         panel.player.raw_frame.copy(), panel.player.reader.index, panel.player.reader.fps
     )
     assert not np.array_equal(floor_frame, panel.player.raw_frame)
     assert floor_frame[2, 2].tolist() == [63, 67, 70]
+    panel.video_selection.set("Practice video")
+    panel.switch_video()
     overlay_path = tmp_path / "direct_youtube_overlay.mp4"
     monkeypatch.setattr(
         "tango_posture.review_ui.filedialog.asksaveasfilename",
