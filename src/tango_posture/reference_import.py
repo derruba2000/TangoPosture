@@ -11,6 +11,7 @@ import math
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -18,7 +19,7 @@ from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from .domain import (
     METRIC_VERSION,
     Calibration,
     FrameObservation,
+    Landmark,
     MetricObservation,
     PoseEstimator,
 )
@@ -40,6 +42,7 @@ from .geometry import (
     AnkleStepTracker,
     AxisCurveTracker,
     EmbraceTracker,
+    PoseSmoother,
     RoleTracker,
     axis_curve_alignment,
     calculate,
@@ -48,6 +51,7 @@ from .geometry import (
     knee_bend_alignment,
     pixel,
     shoulder_tension_alignment,
+    torso_axis_alignment,
 )
 from .metrics import measure
 from .models import verify
@@ -55,6 +59,7 @@ from .movement import (
     analyse_movement_observations,
     validate_movement_analysis,
 )
+from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
 from .reports import write_markdown_report
 from .review import ReportRecord, update_report_metadata, write_metadata
@@ -319,6 +324,243 @@ def build_youtube_open_url(
         if sec_int > 0:
             return f"{link.canonical_url}&t={sec_int}s"
     return link.canonical_url
+
+
+def imports_directory(data_dir: str) -> Path:
+    """Directory where YouTube-imported videos are stored locally."""
+    return Path("videos") / "imports" if data_dir == "data" else Path(data_dir) / "imports"
+
+
+_YTDLP_FORMAT = "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+_YTDLP_MISSING_MESSAGE = (
+    "Cannot download from YouTube: 'yt-dlp' is not installed. Install it with "
+    "'brew install yt-dlp' or 'uv tool install yt-dlp', or download the MP4 locally "
+    "and choose it with 'Choose file…'."
+)
+_YTDLP_TIMEOUT_SECONDS: float = 1800.0
+
+
+def _find_ytdlp_command() -> list[str] | None:
+    """Locate a `yt-dlp` binary, then `uv tool run yt-dlp`, without any shell execution."""
+    candidates = [
+        shutil.which("yt-dlp"),
+        str(Path(sys.executable).parent / "yt-dlp"),
+        "/opt/homebrew/bin/yt-dlp",
+        "/usr/local/bin/yt-dlp",
+        str(Path.home() / ".local" / "bin" / "yt-dlp"),
+    ]
+    for cand in candidates:
+        if cand and Path(cand).is_file():
+            return [cand]
+    uv_candidates = [
+        shutil.which("uv"),
+        "/opt/homebrew/bin/uv",
+        "/usr/local/bin/uv",
+        str(Path.home() / ".local" / "bin" / "uv"),
+    ]
+    for uv_cand in uv_candidates:
+        if uv_cand and Path(uv_cand).is_file():
+            return [uv_cand, "tool", "run", "yt-dlp"]
+    return None
+
+
+def _partial_download_bytes(folder: Path, video_id: str) -> int:
+    total = 0
+    for p in folder.glob(f"youtube_{video_id}.*"):
+        with suppress(OSError):
+            total += p.stat().st_size
+    return total
+
+
+def _discard_partial_downloads(folder: Path, video_id: str, keep: Path | None = None) -> None:
+    for p in folder.glob(f"youtube_{video_id}.*"):
+        if keep is not None and p == keep:
+            continue
+        with suppress(OSError):
+            p.unlink()
+
+
+def _download_with_python_module(
+    yt_dlp_module: Any,
+    link: YouTubeSourceLink,
+    target_mp4: Path,
+    cancel_check: Callable[[], bool] | None,
+) -> None:
+    cancelled = False
+
+    def hook(status: dict[str, Any]) -> None:
+        nonlocal cancelled
+        if cancel_check is not None and cancel_check():
+            cancelled = True
+            raise ImportCancelledError("YouTube video download was cancelled")
+        downloaded = status.get("downloaded_bytes")
+        if isinstance(downloaded, int | float) and downloaded > MAX_IMPORT_VIDEO_BYTES:
+            raise ValueError("YouTube video exceeds the 2 GB import limit")
+
+    opts: dict[str, Any] = {
+        "format": _YTDLP_FORMAT,
+        "merge_output_format": "mp4",
+        "outtmpl": str(target_mp4),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "progress_hooks": [hook],
+    }
+    try:
+        with yt_dlp_module.YoutubeDL(opts) as ydl:
+            ydl.download([link.canonical_url])
+    except ImportCancelledError:
+        raise
+    except Exception as exc:
+        if cancelled:
+            raise ImportCancelledError("YouTube video download was cancelled") from exc
+        raise ValueError(f"YouTube download failed: {exc}") from exc
+
+
+def _download_with_subprocess(
+    cmd_prefix: list[str],
+    link: YouTubeSourceLink,
+    target_mp4: Path,
+    cancel_check: Callable[[], bool] | None,
+) -> None:
+    cmd = [
+        *cmd_prefix,
+        "--no-playlist",
+        "--no-warnings",
+        "-f",
+        _YTDLP_FORMAT,
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        str(target_mp4),
+        link.canonical_url,
+    ]
+    log_path = target_mp4.parent / f".youtube_{link.video_id}.log"
+    try:
+        with log_path.open("w+b") as log:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ValueError(f"Failed to launch YouTube downloader: {exc}") from exc
+            started = time.monotonic()
+            try:
+                while True:
+                    try:
+                        proc.wait(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if cancel_check is not None and cancel_check():
+                        raise ImportCancelledError("YouTube video download was cancelled")
+                    if _partial_download_bytes(target_mp4.parent, link.video_id) > (
+                        MAX_IMPORT_VIDEO_BYTES
+                    ):
+                        raise ValueError("YouTube video exceeds the 2 GB import limit")
+                    if time.monotonic() - started > _YTDLP_TIMEOUT_SECONDS:
+                        raise ValueError("YouTube video download timed out")
+            except BaseException:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                _discard_partial_downloads(target_mp4.parent, link.video_id)
+                raise
+            if proc.returncode != 0:
+                log.seek(0)
+                text = log.read().decode("utf-8", errors="replace")
+                err_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                detail = err_lines[-1] if err_lines else f"exit code {proc.returncode}"
+                raise ValueError(f"YouTube download failed: {detail}")
+    finally:
+        with suppress(OSError):
+            log_path.unlink()
+
+
+def download_youtube_video(
+    youtube_url: str,
+    output_dir: Path | str,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    downloader: Callable[[str, Path], Path] | None = None,
+) -> tuple[Path, YouTubeSourceLink]:
+    """Validate `youtube_url` and download the video locally into `output_dir`.
+
+    - Always validates `youtube_url` with `parse_youtube_url` first.
+    - Reuses `<output_dir>/youtube_<video_id>.mp4` if an already-downloaded valid video exists.
+    - Resolution order: injectable `downloader(canonical_url, target_path) -> Path`, Python
+      `yt_dlp`, a local `yt-dlp` binary, then `uv tool run yt-dlp`.
+    """
+    link = parse_youtube_url(youtube_url)
+    if link is None:
+        raise ValueError("Enter a valid HTTPS YouTube URL to import")
+    out_folder = Path(output_dir)
+    out_folder.mkdir(parents=True, exist_ok=True)
+    target_mp4 = out_folder / f"youtube_{link.video_id}.mp4"
+
+    if target_mp4.is_file() and target_mp4.stat().st_size > 0:
+        with suppress(ValueError):
+            probe_import_video(target_mp4)
+            return (target_mp4.resolve(), link)
+
+    if cancel_check is not None and cancel_check():
+        raise ImportCancelledError("YouTube video download was cancelled")
+
+    if progress_callback is not None:
+        progress_callback(2, 100, f"Downloading YouTube video ({link.video_id})…")
+
+    if downloader is not None:
+        downloaded = Path(downloader(link.canonical_url, target_mp4))
+        if downloaded.is_file() and downloaded.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
+            raise ValueError("YouTube video exceeds the 2 GB import limit")
+        probe_import_video(downloaded)
+        return (downloaded.resolve(), link)
+
+    yt_dlp_module: Any = None
+    try:
+        import yt_dlp as yt_dlp_module  # type: ignore[import-not-found,no-redef]
+    except ImportError:
+        yt_dlp_module = None
+
+    if yt_dlp_module is not None:
+        _download_with_python_module(yt_dlp_module, link, target_mp4, cancel_check)
+    else:
+        cmd_prefix = _find_ytdlp_command()
+        if cmd_prefix is None:
+            raise ValueError(_YTDLP_MISSING_MESSAGE)
+        _download_with_subprocess(cmd_prefix, link, target_mp4, cancel_check)
+
+    if cancel_check is not None and cancel_check():
+        raise ImportCancelledError("YouTube video download was cancelled")
+
+    result: Path | None = target_mp4 if target_mp4.is_file() else None
+    if result is None:
+        matches = sorted(
+            (
+                p
+                for p in out_folder.glob(f"youtube_{link.video_id}.*")
+                if p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+            ),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+        result = matches[0] if matches else None
+    if result is None:
+        raise ValueError("YouTube download completed, but no playable local video file was produced")
+    if result.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
+        result.unlink(missing_ok=True)
+        raise ValueError("YouTube video exceeds the 2 GB import limit")
+    probe_import_video(result)
+    return (result.resolve(), link)
 
 
 @dataclass(frozen=True)
@@ -1074,6 +1316,172 @@ def load_movement_companion(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def save_coach_companion(path: Path, data: dict[str, Any]) -> Path:
+    """Save a per-frame Open Practice Coach overlay and insights companion file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(data, separators=(",", ":"), allow_nan=False) + "\n", encoding="utf-8"
+    )
+    return path
+
+
+def load_coach_companion(path: Path) -> dict[str, Any] | None:
+    """Load a per-frame Open Practice Coach companion file if it exists and is valid."""
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("frames"), dict):
+            return None
+        return raw
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def load_report_coach_data(report: ReportRecord) -> dict[str, Any] | None:
+    """Load the per-frame coach overlay & insights JSON associated with a report if valid."""
+    if report.relinked_content_changed:
+        return None
+    candidates: list[Path] = []
+    coach_file = getattr(report, "coach_overlay_file", None)
+    if coach_file:
+        candidates.append(report.path.parent / coach_file)
+    candidates.append(report.path.parent / f"{report.path.stem}.coach.v1.json")
+    for cand in candidates:
+        data = load_coach_companion(cand)
+        if data is not None:
+            if report.source_sha256 and data.get("source_sha256") != report.source_sha256:
+                continue
+            return data
+    return None
+
+
+def render_coach_frame_overlay(
+    image: np.ndarray,
+    coach_data: dict[str, Any],
+    frame_index: int,
+    cfg: Config,
+    *,
+    verbose_skeleton: bool = True,
+    show_vertical_axis: bool = True,
+    show_footer: bool = False,
+) -> np.ndarray:
+    """Render the Open Practice Coach HUD (axis lines, skeleton, alerts, role, beats) on a frame.
+
+    Uses the per-frame state saved by `analyse_imported_clip` and the live-coach `overlay.draw()`.
+    Returns `image` unchanged when the frame has no saved coach state or sizes disagree.
+    """
+    frames_map = coach_data.get("frames")
+    if not isinstance(frames_map, dict):
+        return image
+    entry = frames_map.get(str(frame_index))
+    if not isinstance(entry, dict):
+        return image
+
+    width = int(coach_data.get("width") or image.shape[1])
+    height = int(coach_data.get("height") or image.shape[0])
+    if image.shape[1] != width or image.shape[0] != height:
+        return image
+
+    poses: list[dict[str, Landmark]] = []
+    raw_poses = entry.get("poses")
+    if not isinstance(raw_poses, list):
+        raw_poses = [entry.get("pose")]
+    for raw_pose in raw_poses:
+        if not isinstance(raw_pose, dict) or not raw_pose:
+            continue
+        pose_dict: dict[str, Landmark] = {}
+        for name, coords in raw_pose.items():
+            if isinstance(coords, list | tuple) and len(coords) >= 3:
+                pose_dict[str(name)] = Landmark(
+                    x=float(coords[0]),
+                    y=float(coords[1]),
+                    z=float(coords[2]),
+                    visibility=(
+                        float(coords[3]) if len(coords) >= 4 and coords[3] is not None else None
+                    ),
+                    presence=(
+                        float(coords[4]) if len(coords) >= 5 and coords[4] is not None else None
+                    ),
+                )
+        if pose_dict:
+            poses.append(pose_dict)
+
+    def _opt(key: str) -> float | None:
+        value = entry.get(key)
+        return float(value) if isinstance(value, int | float) else None
+
+    observation = FrameObservation(
+        timestamp=float(entry.get("timestamp", 0.0)), width=width, height=height, poses=poses
+    )
+    beat_state = entry.get("beat_state")
+    return cast(
+        np.ndarray,
+        draw(
+            image,
+            observation,
+            False,
+            list(entry.get("lines") or []),
+            str(entry.get("message") or ""),
+            cfg.confidence,
+            head_down_angle=cfg.head_down_angle,
+            head_down_duration=cfg.head_down_duration,
+            head_down_elapsed=float(entry.get("head_down_elapsed", 0.0)),
+            head_angle_smoothed=_opt("head_angle"),
+            role=str(entry.get("role") or "NONE"),
+            beat_state=beat_state if isinstance(beat_state, dict) else None,
+            head_neutral_offset=float(coach_data.get("neutral_offset", cfg.head_neutral_offset)),
+            shoulder_raise_threshold=cfg.shoulder_raise_threshold,
+            shoulder_tension_duration=cfg.shoulder_tension_duration,
+            shoulder_tension_elapsed=float(entry.get("shoulder_tension_elapsed", 0.0)),
+            shoulder_neutral_clearance=float(
+                entry.get("shoulder_neutral_clearance", cfg.shoulder_neutral_clearance)
+            ),
+            shoulder_elev_smoothed=_opt("shoulder_elev_pct"),
+            embrace_type=str(entry.get("embrace_type") or "OPEN"),
+            embrace_closed_threshold=cfg.embrace_closed_threshold,
+            closed_embrace_min_knee_bend=cfg.closed_embrace_min_knee_bend,
+            knee_straight_duration=cfg.knee_straight_duration,
+            knee_straight_elapsed=float(entry.get("knee_straight_elapsed", 0.0)),
+            knee_bend_smoothed=_opt("knee_bend_deg"),
+            facing=cfg.facing,
+            side=cfg.side,
+            axis_neutral_offset=float(
+                coach_data.get("axis_neutral_offset", cfg.axis_neutral_offset)
+            ),
+            axis_curve_entry=cfg.axis_curve_entry,
+            axis_curve_clear=cfg.axis_curve_clear,
+            axis_curve_duration=cfg.axis_curve_duration,
+            axis_curve_elapsed=float(entry.get("axis_curve_elapsed", 0.0)),
+            axis_curve_smoothed=_opt("axis_curve_smoothed"),
+            axis_curve_state=str(entry.get("axis_curve_state") or "WITHIN_LIMIT"),
+            ankle_high_lift_ratio=cfg.ankle_high_lift_ratio,
+            ankle_lift_smoothed=_opt("ankle_lift_ratio"),
+            consecutive_high_ankle_steps=int(entry.get("consecutive_high_ankle_steps", 0)),
+            max_consecutive_high_ankle_steps=cfg.max_consecutive_high_ankle_steps,
+            slow_tango_max_bpm=cfg.slow_tango_max_bpm,
+            ankle_high_alert=bool(entry.get("ankle_alert", False)),
+            verbose_skeleton=verbose_skeleton,
+            show_vertical_axis=show_vertical_axis,
+            show_footer=show_footer,
+        ),
+    )
+
+
+def coach_notes_for_frame(coach_data: dict[str, Any], frame_index: int) -> list[str] | None:
+    """Return the saved Live-coaching-notes lines for a source frame, if present."""
+    frames_map = coach_data.get("frames")
+    if not isinstance(frames_map, dict):
+        return None
+    entry = frames_map.get(str(frame_index))
+    if not isinstance(entry, dict):
+        return None
+    notes = entry.get("notes")
+    if isinstance(notes, list) and notes:
+        return [str(n) for n in notes]
+    return None
+
+
 @dataclass(frozen=True)
 class ImportedClipResult:
     """Complete result of importing and analysing a reference video clip."""
@@ -1094,6 +1502,8 @@ class ImportedClipResult:
     coverage: dict[str, FamilyCoverage]
     youtube_link: YouTubeSourceLink | None = None
     youtube_alignment: YouTubeClockAlignment | None = None
+    coach_path: Path | None = None
+    coach_data: dict[str, Any] | None = None
 
 
 def _compute_family_coverage(
@@ -1259,6 +1669,329 @@ def _compute_family_coverage(
     }
 
 
+@dataclass
+class _AlertTimers:
+    """Sustained-alert timers mirroring the live Open Practice Coach (`Application.run`)."""
+
+    head_down_since: float | None = None
+    shoulder_tension_since: float | None = None
+    shoulder_last_valid: float | None = None
+    knee_straight_since: float | None = None
+    knee_last_valid: float | None = None
+
+
+def _round_or_none(value: float | None, digits: int = 4) -> float | None:
+    return None if value is None or not math.isfinite(value) else round(float(value), digits)
+
+
+def _serialise_pose(pose: dict[str, Landmark]) -> dict[str, list[float | None]]:
+    out: dict[str, list[float | None]] = {}
+    for name, lm in pose.items():
+        if not (math.isfinite(lm.x) and math.isfinite(lm.y)):
+            continue
+        out[name] = [
+            round(float(lm.x), 4),
+            round(float(lm.y), 4),
+            round(float(lm.z), 4) if lm.z is not None and math.isfinite(lm.z) else 0.0,
+            _round_or_none(lm.visibility, 3),
+            _round_or_none(lm.presence, 3),
+        ]
+    return out
+
+
+def _build_coach_frame_entry(
+    *,
+    cfg: Config,
+    frame_obs: FrameObservation,
+    display_poses: list[dict[str, Landmark]],
+    source_time: float,
+    clip_time: float,
+    head_angle: float | None,
+    shoulder_elev_pct: float | None,
+    shoulder_neutral_clearance: float,
+    knee_bend_deg: float | None,
+    ankle_lift_ratio: float | None,
+    consecutive_high_ankle_steps: int,
+    bad_ankles: bool,
+    ankle_high_now: bool,
+    axis_curve_smoothed: float | None,
+    axis_curve_state: str,
+    axis_curve_elapsed: float,
+    bad_axis: bool,
+    role: str,
+    embrace_type: str,
+    upper_body: dict[str, float] | None,
+    st_state: dict[str, Any] | None,
+    quality_reason: str,
+    timers: _AlertTimers,
+    session_rows: list[dict[str, Any]],
+    single_pose_ok: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Compute alert timers and per-frame coaching state/notes for one analysed frame."""
+    # Head pitch: continuous downward tilt.
+    if head_angle is not None and head_angle < cfg.head_down_angle:
+        if timers.head_down_since is None:
+            timers.head_down_since = source_time
+        head_down_elapsed = source_time - timers.head_down_since
+    else:
+        timers.head_down_since = None
+        head_down_elapsed = 0.0
+    bad_head = head_down_elapsed >= cfg.head_down_duration
+
+    # Shoulder tension with hysteresis.
+    sh_clear = max(4.0, cfg.shoulder_raise_threshold * 0.65)
+    if shoulder_elev_pct is not None:
+        timers.shoulder_last_valid = source_time
+        if shoulder_elev_pct >= cfg.shoulder_raise_threshold:
+            if timers.shoulder_tension_since is None:
+                timers.shoulder_tension_since = source_time
+            shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+        elif timers.shoulder_tension_since is not None and shoulder_elev_pct >= sh_clear:
+            shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+        else:
+            timers.shoulder_tension_since = None
+            shoulder_tension_elapsed = 0.0
+    elif (
+        timers.shoulder_last_valid is None
+        or (source_time - timers.shoulder_last_valid) > cfg.max_gap
+    ):
+        timers.shoulder_tension_since = None
+        shoulder_tension_elapsed = 0.0
+    elif timers.shoulder_tension_since is not None:
+        shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+    else:
+        shoulder_tension_elapsed = 0.0
+    bad_shoulders = shoulder_tension_elapsed >= cfg.shoulder_tension_duration
+
+    # Knee bend with hysteresis.
+    knee_clear = cfg.closed_embrace_min_knee_bend + 2.5
+    if knee_bend_deg is not None:
+        timers.knee_last_valid = source_time
+        if knee_bend_deg < cfg.closed_embrace_min_knee_bend:
+            if timers.knee_straight_since is None:
+                timers.knee_straight_since = source_time
+            knee_straight_elapsed = source_time - timers.knee_straight_since
+        elif timers.knee_straight_since is not None and knee_bend_deg < knee_clear:
+            knee_straight_elapsed = source_time - timers.knee_straight_since
+        else:
+            timers.knee_straight_since = None
+            knee_straight_elapsed = 0.0
+    elif timers.knee_last_valid is None or (source_time - timers.knee_last_valid) > cfg.max_gap:
+        timers.knee_straight_since = None
+        knee_straight_elapsed = 0.0
+    elif timers.knee_straight_since is not None:
+        knee_straight_elapsed = source_time - timers.knee_straight_since
+    else:
+        knee_straight_elapsed = 0.0
+    bad_knees = knee_straight_elapsed >= cfg.knee_straight_duration
+
+    sh_disp = shoulder_elev_pct if shoulder_elev_pct is not None else 0.0
+    head_disp = head_angle if head_angle is not None else 0.0
+    knee_disp = knee_bend_deg if knee_bend_deg is not None else 0.0
+    alert = ""
+    if bad_ankles:
+        lift_pct = (ankle_lift_ratio or cfg.ankle_high_lift_ratio) * 100.0
+        alert = (
+            f"KEEP FEET CLOSE TO FLOOR (SLOW TANGO <={cfg.slow_tango_max_bpm:.0f} BPM): "
+            f"ankle raised too high ({lift_pct:.1f}%) for {consecutive_high_ankle_steps} "
+            f"consecutive steps (>={cfg.max_consecutive_high_ankle_steps})"
+        )
+    elif bad_axis and axis_curve_smoothed is not None:
+        alert = (
+            f"HIP OFFSET: hip/pelvis +{axis_curve_smoothed * 100.0:.1f}% "
+            f"past ankle-to-head line ({axis_curve_elapsed:.1f}s)"
+        )
+    elif bad_knees:
+        alert = (
+            f"BEND YOUR KNEES: knee bend {knee_disp:.1f} deg "
+            f"< {cfg.closed_embrace_min_knee_bend:.1f} deg ({knee_straight_elapsed:.1f}s)"
+        )
+    elif bad_head and bad_shoulders:
+        alert = (
+            f"BAD HEAD ALIGNMENT ({head_disp:+.1f} deg) & "
+            f"LOWER YOUR SHOULDERS ({sh_disp:+.0f}% for {shoulder_tension_elapsed:.1f}s)"
+        )
+    elif bad_shoulders:
+        alert = (
+            f"LOWER YOUR SHOULDERS: shoulder tension detected "
+            f"({sh_disp:+.0f}% raised for {shoulder_tension_elapsed:.1f}s)"
+        )
+    elif bad_head:
+        alert = (
+            f"BAD HEAD ALIGNMENT: head pointing down ({head_disp:+.1f} deg for "
+            f"{head_down_elapsed:.1f}s)"
+        )
+
+    if alert:
+        primary = alert
+    elif not frame_obs.poses:
+        primary = quality_reason or "Coaching status: No dancer detected in this frame"
+    elif quality_reason:
+        primary = quality_reason
+    elif any(r.get("state") == "DEVIATION" for r in session_rows):
+        primary = next(MESSAGES[r["metric"]] for r in session_rows if r.get("state") == "DEVIATION")
+    else:
+        primary = "Coaching status: Posture & axis within target thresholds"
+
+    # Beat/phrase state for the HUD and notes.
+    beat_state: dict[str, Any] | None = None
+    if st_state is not None:
+        beat_state = {
+            "beat": int(st_state.get("beat") or 0),
+            "phrase": int(st_state.get("phrase") or 0),
+            "bpm": float(st_state.get("bpm") or cfg.tango_bpm),
+            "playing": bool(st_state.get("playing", False)),
+            "analyzing": bool(st_state.get("analyzing", False)),
+            "analyzed_seconds": 0.0,
+            "analysis_target_seconds": 30.0,
+            "phrase_locked": st_state.get("phrase") is not None,
+            "source": str(st_state.get("source") or SOUNDTRACK_SOURCE_LABEL),
+        }
+    if st_state is None:
+        beat_txt = "disabled"
+    elif not st_state.get("playing") or not st_state.get("beat"):
+        beat_txt = "No rhythmic beat detected at this moment"
+    elif st_state.get("phrase") is None:
+        beat_txt = f"Beat pulse {st_state.get('bpm') or 0:.0f} BPM ({SOUNDTRACK_SOURCE_LABEL})"
+    else:
+        beat_txt = (
+            f"Phrase {st_state['phrase']} Beat {st_state['beat']}/8 "
+            f"({float(st_state.get('bpm') or 0.0):.0f} BPM, {SOUNDTRACK_SOURCE_LABEL})"
+        )
+    role_txt = (
+        f"{role} ({embrace_type})"
+        if role in ("LEADER", "FOLLOWER") and embrace_type in ("CLOSED", "OPEN")
+        else role
+    )
+
+    torso_txt = "N/A"
+    if single_pose_ok:
+        torso = torso_axis_alignment(
+            frame_obs.poses[0], frame_obs.width, frame_obs.height, cfg.confidence
+        )
+        if torso is not None:
+            torso_txt = f"{abs(torso[0]):.1f} deg from vertical"
+    if axis_curve_smoothed is None:
+        hip_txt = "N/A"
+    elif bad_axis:
+        hip_txt = f"HIGH {axis_curve_smoothed * 100.0:+.1f}% [DEVIATION]"
+    elif axis_curve_state == "PENDING":
+        hip_txt = f"PENDING {axis_curve_smoothed * 100.0:+.1f}%"
+    else:
+        hip_txt = f"OK ({axis_curve_smoothed * 100.0:+.1f}%)"
+    head_txt = "N/A" if head_angle is None else f"{head_angle:+.1f} deg"
+    sh_txt = (
+        "N/A"
+        if shoulder_elev_pct is None
+        else (
+            f"HIGH {shoulder_elev_pct:+.0f}%"
+            if shoulder_elev_pct >= cfg.shoulder_raise_threshold
+            else f"OK ({shoulder_elev_pct:+.0f}%)"
+        )
+    )
+    knee_txt = (
+        "N/A"
+        if knee_bend_deg is None
+        else (
+            f"STRAIGHT {knee_bend_deg:.1f} deg"
+            if bad_knees or knee_bend_deg < cfg.closed_embrace_min_knee_bend
+            else f"OK ({knee_bend_deg:.1f} deg)"
+        )
+    )
+    feet_txt = (
+        "N/A"
+        if ankle_lift_ratio is None
+        else (
+            f"HIGH {ankle_lift_ratio * 100.0:.1f}% "
+            f"({consecutive_high_ankle_steps}/{cfg.max_consecutive_high_ankle_steps} steps)"
+            if bad_ankles or ankle_high_now
+            else f"OK ({ankle_lift_ratio * 100.0:.1f}%, "
+            f"{consecutive_high_ankle_steps}/{cfg.max_consecutive_high_ankle_steps} steps)"
+        )
+    )
+    lines = [
+        f"Role: {role_txt} | Beat: {beat_txt}",
+        f"Torso axis: {torso_txt} | Hip offset: {hip_txt}",
+        f"Head: {head_txt} | Shoulders: {sh_txt} | Knees: {knee_txt} | Feet: {feet_txt}",
+    ]
+    if upper_body:
+        lines.append(
+            "Upper body: "
+            + " | ".join(f"{name} {float(val):+.3f}" for name, val in upper_body.items())
+        )
+    for row in session_rows:
+        val = "N/A" if row.get("smoothed") is None else f"{float(row['smoothed']):.3f}"
+        delta = "N/A" if row.get("delta") is None else f"{float(row['delta']):+.3f}"
+        lines.append(f"{row['metric']}: {val} | delta {delta} | {row['state']}")
+
+    entry: dict[str, Any] = {
+        "timestamp": round(float(source_time), 4),
+        "clip_timestamp": round(float(clip_time), 4),
+        "poses": [_serialise_pose(p) for p in display_poses if p],
+        "message": alert,
+        "lines": [],
+        "head_angle": _round_or_none(head_angle, 3),
+        "head_down_elapsed": round(head_down_elapsed, 3),
+        "shoulder_elev_pct": _round_or_none(shoulder_elev_pct, 2),
+        "shoulder_tension_elapsed": round(shoulder_tension_elapsed, 3),
+        "shoulder_neutral_clearance": round(float(shoulder_neutral_clearance), 4),
+        "knee_bend_deg": _round_or_none(knee_bend_deg, 2),
+        "knee_straight_elapsed": round(knee_straight_elapsed, 3),
+        "embrace_type": embrace_type,
+        "ankle_alert": bool(bad_ankles),
+        "ankle_lift_ratio": _round_or_none(ankle_lift_ratio, 4),
+        "consecutive_high_ankle_steps": int(consecutive_high_ankle_steps),
+        "axis_curve_smoothed": _round_or_none(axis_curve_smoothed, 4),
+        "axis_curve_state": axis_curve_state if axis_curve_state != "UNKNOWN" else "WITHIN_LIMIT",
+        "axis_curve_elapsed": round(axis_curve_elapsed, 3),
+        "role": role,
+        "beat_state": beat_state,
+        "alerts": {
+            "head": bad_head,
+            "shoulders": bad_shoulders,
+            "knees": bad_knees,
+            "axis": bad_axis,
+            "ankles": bool(bad_ankles),
+        },
+    }
+    return entry, {"primary": primary, "lines": lines}
+
+
+def _movement_note_lines(
+    movement_data: dict[str, Any],
+    frame_index: int,
+    fps: float,
+    step_history_seconds: float,
+) -> list[str]:
+    """Pivot/step insights for the current frame plus clip totals."""
+    out: list[str] = []
+    pivots = list(movement_data.get("pivots") or [])
+    steps = list(movement_data.get("steps") or [])
+    for p in pivots:
+        if int(p["start_frame"]) <= frame_index < int(p["end_frame"]):
+            rate = p.get("peak_rate_deg_s", p.get("mean_rate_deg_s"))
+            rate_txt = f", peak {abs(float(rate)):.0f} deg/s" if rate is not None else ""
+            out.append(
+                f"Active Pivot: {str(p['direction']).upper()} "
+                f"({float(p['net_rotation_deg']):+.1f} deg net turn{rate_txt})"
+            )
+            break
+    window = max(1, round(step_history_seconds * max(fps, 1.0)))
+    for st in steps:
+        sf = int(st["frame"])
+        if sf <= frame_index < sf + window:
+            t = float(st.get("time", sf / max(fps, 1.0)))
+            mins = int(t // 60)
+            conf = float(st.get("confidence", 0.0)) * 100.0
+            out.append(
+                f"Recent Step: {str(st['side']).upper()} foot landed at "
+                f"{mins:02d}:{t - mins * 60:04.1f} "
+                f"(travel {float(st.get('travel_px', 0.0)):.0f} px, conf {conf:.0f}%)"
+            )
+    out.append(f"Clip Movement Totals: {len(pivots)} pivots, {len(steps)} steps detected")
+    return out
+
+
 def analyse_imported_clip(
     *,
     video_path: Path | str,
@@ -1277,8 +2010,13 @@ def analyse_imported_clip(
     estimator_factory: Callable[[], PoseEstimator] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    youtube_downloader: Callable[[str, Path], Path] | None = None,
 ) -> ImportedClipResult:
     """Import and analyse a selected range `[selected_in, selected_out)` of a local video file.
+
+    When `video_path` is blank and `youtube_url` is valid, the video is first downloaded into
+    `imports_directory(cfg.data_dir)` (reusing a cached copy) and analysed; a downloaded video is
+    the exact same edit as YouTube, so a confirmed 1:1 clock alignment is stored automatically.
 
     - Leaves the user's video file untouched on disk.
     - Supports `analysis_mode="movement"` (no calibration required) and
@@ -1287,12 +2025,44 @@ def analyse_imported_clip(
     - Writes a Markdown report, companion `.metadata.json`, and `.movement.v1.json`.
     """
     yt_link = parse_youtube_url(youtube_url) if youtube_url and youtube_url.strip() else None
+    downloaded_from_youtube = False
     if not video_path or not str(video_path).strip():
-        raise ValueError("Choose a local video file to analyse")
+        if yt_link is None:
+            raise ValueError("Choose a local video file or enter a YouTube link to analyse")
+        downloaded_path, _ = download_youtube_video(
+            yt_link.canonical_url,
+            imports_directory(cfg.data_dir),
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+            downloader=youtube_downloader,
+        )
+        video_path = downloaded_path
+        downloaded_from_youtube = True
 
     probe = probe_import_video(Path(video_path))
-    raw_out = float(selected_out) if selected_out is not None else probe.duration_seconds
-    clip_in, clip_out = validate_clip_range(probe, float(selected_in), raw_out)
+    if (
+        yt_link is not None
+        and not downloaded_from_youtube
+        and probe.path.name == f"youtube_{yt_link.video_id}.mp4"
+        and probe.path.parent.resolve() == imports_directory(cfg.data_dir).resolve()
+    ):
+        downloaded_from_youtube = True
+    effective_in = float(selected_in)
+    if downloaded_from_youtube and yt_link is not None and yt_link.anchor_seconds is not None:
+        if effective_in == 0.0 and 0.0 < yt_link.anchor_seconds < probe.duration_seconds:
+            effective_in = float(yt_link.anchor_seconds)
+        elif (
+            effective_in >= probe.duration_seconds
+            and abs(effective_in - float(yt_link.anchor_seconds)) < 1e-6
+        ):
+            effective_in = 0.0
+    if selected_out is not None:
+        raw_out = float(selected_out)
+    elif downloaded_from_youtube:
+        raw_out = min(probe.duration_seconds, effective_in + MAX_IMPORT_RANGE_SECONDS)
+    else:
+        raw_out = probe.duration_seconds
+    clip_in, clip_out = validate_clip_range(probe, effective_in, raw_out)
     clip_duration = clip_out - clip_in
 
     model_path = Path(cfg.model_path)
@@ -1323,7 +2093,16 @@ def analyse_imported_clip(
     source_sha = file_sha256(probe.path)
 
     validated_alignment: YouTubeClockAlignment | None = None
-    if yt_link is not None and youtube_alignment is not None and youtube_alignment.is_valid_for(
+    if yt_link is not None and downloaded_from_youtube:
+        # TangoPosture fetched this exact file from YouTube, so the clocks are 1:1.
+        validated_alignment = YouTubeClockAlignment(
+            local_source_seconds=clip_in,
+            youtube_seconds=clip_in,
+            confirmed_same_edit=True,
+            source_sha256=source_sha,
+            youtube_video_id=yt_link.video_id,
+        )
+    elif yt_link is not None and youtube_alignment is not None and youtube_alignment.is_valid_for(
         source_sha256=source_sha,
         youtube_video_id=yt_link.video_id,
         clip_in=clip_in,
@@ -1534,13 +2313,19 @@ def analyse_imported_clip(
         else None
     )
 
+    pose_smoother = PoseSmoother(smoothing_sec=cfg.overlay_smoothing, max_gap=cfg.max_gap)
+    timers = _AlertTimers()
+    coach_pending: dict[int, dict[str, Any]] = {}
+    coach_frame_meta: dict[int, dict[str, Any]] = {}
+
     for frame_index, source_time, clip_time, frame_obs in decoded_frames:
         in_cal = bool(
             cal_window is not None and cal_window[0] - 1e-6 <= source_time < cal_window[1] - 1e-6
         )
         observation = measure(frame_obs, cfg, view_range if not in_cal else None)
+        session_rows: list[dict[str, Any]] = []
         if session is not None and not in_cal and source_time >= (session.start or clip_in):
-            session.update(observation)
+            session_rows = session.update(observation)
 
         head_angle = None
         shoulder_elev_pct = None
@@ -1691,6 +2476,36 @@ def analyse_imported_clip(
         consecutive_high_ankle_steps = int(ankle_track["consecutive_high_steps"] or 0)
         bad_ankles = bool(ankle_track["alert"])
 
+        coach_entry, coach_meta = _build_coach_frame_entry(
+            cfg=cfg,
+            frame_obs=frame_obs,
+            display_poses=pose_smoother.update(frame_obs.poses, source_time),
+            source_time=source_time,
+            clip_time=clip_time,
+            head_angle=head_angle,
+            shoulder_elev_pct=shoulder_elev_pct,
+            shoulder_neutral_clearance=sh_neutral,
+            knee_bend_deg=knee_bend_deg,
+            ankle_lift_ratio=ankle_lift_ratio,
+            consecutive_high_ankle_steps=consecutive_high_ankle_steps,
+            bad_ankles=bad_ankles,
+            ankle_high_now=bool(ankle_track.get("high_now")),
+            axis_curve_smoothed=axis_curve_smoothed,
+            axis_curve_state=axis_curve_state,
+            axis_curve_elapsed=float(axis_track.get("elapsed") or 0.0),
+            bad_axis=bad_axis,
+            role=role,
+            embrace_type=embrace_type,
+            upper_body=upper_body,
+            st_state=st_state,
+            quality_reason=quality_reason,
+            timers=timers,
+            session_rows=session_rows,
+            single_pose_ok=len(frame_obs.poses) == 1,
+        )
+        coach_pending[frame_index] = coach_entry
+        coach_frame_meta[frame_index] = coach_meta
+
         frame_log.append(
             {
                 "frame_index": frame_index,
@@ -1733,6 +2548,29 @@ def analyse_imported_clip(
         segment_index=-1,
         source_member=probe.path.name,
     )
+
+    for frame_index, entry in coach_pending.items():
+        meta = coach_frame_meta[frame_index]
+        entry["lines"] = list(meta["lines"])
+        entry["notes"] = [
+            meta["primary"],
+            *meta["lines"],
+            *_movement_note_lines(
+                movement_data, frame_index, probe.fps, cfg.replay_step_history_seconds
+            ),
+        ]
+    coach_data: dict[str, Any] = {
+        "version": 1,
+        "source_sha256": source_sha,
+        "width": probe.width,
+        "height": probe.height,
+        "fps": probe.fps,
+        "clip_in": round(clip_in, 4),
+        "clip_out": round(clip_out, 4),
+        "neutral_offset": neutral_offset,
+        "axis_neutral_offset": axis_neutral,
+        "frames": {str(k): v for k, v in coach_pending.items()},
+    }
 
     coverage = _compute_family_coverage(
         clip_duration=clip_duration,
@@ -1800,10 +2638,13 @@ def analyse_imported_clip(
         recorded_video=probe.path,
         recorded_overlay=None,
         import_context=import_context,
+        movement_data=movement_data,
     )
 
     companion_movement_path = target_dir / f"{report_path.stem}.movement.v1.json"
     save_movement_companion(companion_movement_path, movement_data)
+    companion_coach_path = target_dir / f"{report_path.stem}.coach.v1.json"
+    save_coach_companion(companion_coach_path, coach_data)
 
     meta_path = write_metadata(
         report_path,
@@ -1837,6 +2678,7 @@ def analyse_imported_clip(
                 validated_alignment.to_dict() if validated_alignment is not None else None
             ),
             "movement_analysis_file": companion_movement_path.name,
+            "coach_overlay_file": companion_coach_path.name,
             "coverage": {k: v.to_dict() for k, v in coverage.items()},
             "soundtrack": soundtrack_summary.to_metadata_dict(),
             "capture_profile": cap_profile,
@@ -1863,6 +2705,8 @@ def analyse_imported_clip(
         coverage=coverage,
         youtube_link=yt_link,
         youtube_alignment=validated_alignment,
+        coach_path=companion_coach_path,
+        coach_data=coach_data,
     )
 
 
@@ -1903,6 +2747,7 @@ def relink_report_video(
     if not exact_match:
         updates["youtube_alignment"] = None
         updates["movement_analysis_file"] = None
+        updates["coach_overlay_file"] = None
         updates["frame_timestamps"] = []
         updates["relinked_content_changed"] = True
         msg = (
@@ -2269,6 +3114,50 @@ class ReferenceImportWorker:
                         self.event_sink(("import_error", job_id, str(exc)))
 
             thread = threading.Thread(target=_run, name="reference-import-worker", daemon=True)
+            self._thread = thread
+            thread.start()
+            return job_id
+
+    def start_download(
+        self,
+        youtube_url: str,
+        output_dir: Path,
+        *,
+        downloader: Callable[[str, Path], Path] | None = None,
+    ) -> str:
+        """Download a YouTube video in the background without analysing it."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("A reference video import is already running")
+            job_id = uuid4().hex
+            cancel_ev = threading.Event()
+            self._cancel = cancel_ev
+            self._active_job_id = job_id
+
+            def _run() -> None:
+                try:
+                    path, link = download_youtube_video(
+                        youtube_url,
+                        output_dir,
+                        progress_callback=lambda cur, tot, msg: self.event_sink(
+                            ("import_progress", job_id, cur, tot, msg)
+                        ),
+                        cancel_check=cancel_ev.is_set,
+                        downloader=downloader,
+                    )
+                    if cancel_ev.is_set():
+                        self.event_sink(("import_cancelled", job_id))
+                    else:
+                        self.event_sink(("youtube_downloaded", job_id, path, link))
+                except ImportCancelledError:
+                    self.event_sink(("import_cancelled", job_id))
+                except Exception as exc:  # noqa: BLE001 - worker boundary reports error to UI
+                    if cancel_ev.is_set():
+                        self.event_sink(("import_cancelled", job_id))
+                    else:
+                        self.event_sink(("import_error", job_id, str(exc)))
+
+            thread = threading.Thread(target=_run, name="youtube-download-worker", daemon=True)
             self._thread = thread
             thread.start()
             return job_id

@@ -113,6 +113,7 @@ def write_markdown_report(
     recorded_video: Path | None = None,
     recorded_overlay: Path | None = None,
     import_context: dict[str, Any] | None = None,
+    movement_data: dict[str, Any] | None = None,
 ) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     now_utc = datetime.now(UTC)
@@ -536,6 +537,59 @@ def write_markdown_report(
                 f"| `{m}` | `{data['valid_duration']:.2f}s` | `{data['unknown_duration']:.2f}s` | "
                 f"`{med_d}` | `{peak_d}` | `{data['event_count']}` | `{pct}` |"
             )
+
+    pivots_list = list((movement_data or {}).get("pivots") or [])
+    steps_list = list((movement_data or {}).get("steps") or [])
+    if movement_data is not None and (pivots_list or steps_list):
+        lines.extend(
+            [
+                "",
+                "### 3.4 Movement Analysis (Pivots & Step Placements Timeline)",
+                "",
+                f"Detected `{len(pivots_list)}` pivots and `{len(steps_list)}` step placements.",
+                "",
+            ]
+        )
+        if pivots_list:
+            lines.extend(
+                [
+                    "#### Pivots",
+                    "",
+                    "| # | Start Time | End Time | Duration | Direction | Net Rotation | Peak Rate | Quality |",
+                    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for idx, p in enumerate(pivots_list, 1):
+                st = float(p.get("start_time", 0.0))
+                en = float(p.get("end_time", st))
+                rate = p.get("peak_rate_deg_s", p.get("mean_rate_deg_s"))
+                rate_txt = f"{abs(float(rate)):.0f} deg/s" if rate is not None else "N/A"
+                qual = p.get("quality")
+                qual_txt = f"{float(qual) * 100.0:.0f}%" if qual is not None else "N/A"
+                lines.append(
+                    f"| {idx} | {_fmt_time(st)} | {_fmt_time(en)} | `{max(0.0, en - st):.2f}s` | "
+                    f"`{str(p.get('direction', '')).upper()}` | "
+                    f"`{float(p.get('net_rotation_deg', 0.0)):+.1f} deg` | `{rate_txt}` | `{qual_txt}` |"
+                )
+            lines.append("")
+        if steps_list:
+            lines.extend(
+                [
+                    "#### Step Placements",
+                    "",
+                    "| # | Landing Time | Foot Side | Travel Distance | Confidence |",
+                    "| --- | --- | --- | --- | --- |",
+                ]
+            )
+            for idx, s in enumerate(steps_list, 1):
+                conf = s.get("confidence")
+                conf_txt = f"{float(conf) * 100.0:.0f}%" if conf is not None else "N/A"
+                lines.append(
+                    f"| {idx} | {_fmt_time(float(s.get('time', 0.0)))} | "
+                    f"`{str(s.get('side', '')).upper()}` | "
+                    f"`{float(s.get('travel_px', 0.0)):.0f} px` | `{conf_txt}` |"
+                )
+            lines.append("")
 
     lines.extend(
         [

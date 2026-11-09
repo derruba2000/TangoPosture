@@ -996,25 +996,52 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     opened_urls: list[str] = []
     monkeypatch.setattr("tango_posture.review_ui.webbrowser.open", lambda u: opened_urls.append(u))
 
-    # 1. Open Import Reference Video panel; verify URL-only enables Open on YouTube
-    #    while leaving Analyse clip disabled with "Choose a local video file to analyse"
+    # 1. Open Import Reference Video panel; verify URL-only enables Open on YouTube,
+    #    Download from YouTube, and Analyse clip
     panel.toggle_import_panel()
     root.update()
     assert panel.import_panel_visible is True
+    assert panel.import_soundtrack_var.get() is True
     panel.import_youtube_var.set("https://youtu.be/dQw4w9WgXcQ?t=15")
     panel._sync_import_form_state()
-    assert panel.import_start_button.instate(["disabled"])
-    assert panel.import_status.get() == "Choose a local video file to analyse"
+    assert panel.import_download_button.instate(["!disabled"])
+    assert panel.import_start_button.instate(["!disabled"])
+    assert "YouTube" in panel.import_status.get()
     panel.open_import_youtube_link()
     assert opened_urls[-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=15s"
 
-    # 2. Select local teacher video file and set sub-range [0.2, 2.0)
+    # 1b. Test direct YouTube import with blank Local video using injectable downloader
+    def _mock_yt_downloader(canonical_url: str, target_path: Path) -> Path:
+        w = cv2.VideoWriter(str(target_path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+        for idx in range(36):
+            w.write(np.full((120, 160, 3), 30 + idx * 2, np.uint8))
+        w.release()
+        return target_path
+
+    panel.import_youtube_downloader = _mock_yt_downloader
+    panel.import_title_var.set("Direct YouTube Clip")
+    yt_direct_res = panel.start_reference_import(synchronous=True)
+    root.update()
+    assert yt_direct_res.video_path.name == "youtube_dQw4w9WgXcQ.mp4"
+    assert panel.report is not None and panel.report.title == "Direct YouTube Clip"
+    assert panel.open_youtube_button.instate(["!disabled"])
+    assert panel.open_moment_youtube_button.instate(["!disabled"])
+    assert panel.show_coach_var.get() is True
+    assert panel.show_pivots_var.get() is True
+    assert panel.show_steps_var.get() is True
+    assert panel.coach_data is not None
+    sidebar_text = panel.video_notes.get("1.0", "end")
+    assert "No separate notes for this frame" not in sidebar_text
+    assert "Torso axis" in sidebar_text and "Clip Movement Totals" in sidebar_text
+
+    # 2. Select local teacher video file (not downloaded from YouTube) and set sub-range [0.2, 2.0)
     teacher_vid = tmp_path / "teacher_demo.mp4"
     writer = cv2.VideoWriter(str(teacher_vid), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
     for i in range(36):
         writer.write(np.full((120, 160, 3), 25 + i * 2, np.uint8))
     writer.release()
 
+    panel.import_confirm_same_edit_var.set(False)
     panel.set_import_video_file(teacher_vid)
     panel.import_title_var.set("Teacher Giro Clip")
     panel.import_in_var.set("0.2")

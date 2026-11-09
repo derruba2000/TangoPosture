@@ -101,6 +101,7 @@ class ReportRecord:
     youtube_link: dict[str, Any] | None = None
     youtube_alignment: dict[str, Any] | None = None
     movement_analysis_file: str | None = None
+    coach_overlay_file: str | None = None
     coverage: dict[str, Any] = field(default_factory=dict)
     soundtrack: dict[str, Any] = field(default_factory=dict)
     capture_profile: dict[str, Any] = field(default_factory=dict)
@@ -143,7 +144,19 @@ class ReportRecord:
             return max(0.0, float(self.timestamps[-1] - self.timestamps[0]))
         return 0.0
 
-    def recording_seconds(self, seconds: float, fps: float) -> float:
+    def recording_seconds(self, seconds: float, fps: float, stream: str | None = None) -> float:
+        """Map a report timestamp to a position in the selected video stream.
+
+        Imported clips log absolute source-video times for `[clip_in, clip_out)`. The raw/source
+        video is the whole file, so the time is used directly (clamped into the clip); any
+        clip-length overlay video starts at `clip_in`, so that offset is removed.
+        """
+        bounds = self.clip_range if self.is_imported_reference else None
+        if bounds is not None:
+            clamped = min(max(seconds, bounds[0]), bounds[1])
+            if stream in ("Overlay", "Full lines + messages"):
+                return max(0.0, clamped - bounds[0])
+            return clamped
         if not self.timestamps:
             return seconds
         index = min(bisect_left(self.timestamps, seconds), len(self.timestamps) - 1)
@@ -168,6 +181,7 @@ def read_report(path: Path) -> ReportRecord:
     youtube_link: dict[str, Any] | None = None
     youtube_alignment: dict[str, Any] | None = None
     movement_analysis_file: str | None = None
+    coach_overlay_file: str | None = None
     coverage: dict[str, Any] = {}
     soundtrack: dict[str, Any] = {}
     capture_profile: dict[str, Any] = {}
@@ -231,6 +245,8 @@ def read_report(path: Path) -> ReportRecord:
                 youtube_alignment = data["youtube_alignment"]
             if isinstance(data.get("movement_analysis_file"), str):
                 movement_analysis_file = data["movement_analysis_file"]
+            if isinstance(data.get("coach_overlay_file"), str):
+                coach_overlay_file = data["coach_overlay_file"]
             if isinstance(data.get("coverage"), dict):
                 coverage = data["coverage"]
             if isinstance(data.get("soundtrack"), dict):
@@ -288,6 +304,7 @@ def read_report(path: Path) -> ReportRecord:
         youtube_link=youtube_link,
         youtube_alignment=youtube_alignment,
         movement_analysis_file=movement_analysis_file,
+        coach_overlay_file=coach_overlay_file,
         coverage=coverage,
         soundtrack=soundtrack,
         capture_profile=capture_profile,

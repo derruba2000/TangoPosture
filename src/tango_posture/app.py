@@ -16,7 +16,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .archive import append_segment, practice_directory, practice_path
+from .archive import (
+    append_segment,
+    practice_directory,
+    practice_path,
+)
 from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
@@ -49,8 +53,8 @@ GUIDANCE = (
     "Fixed, level camera; whole body in frame; adequate light; uncluttered background.\n"
     "Stand side-on; fitted clothing helps. Keep the selected anatomical side visible.\n"
     "Facing means direction in the ORIGINAL UNMIRRORED image; setup is unmirrored.\n"
-    "C: calibrate (3s countdown + 12s capture); A: accept; R: retry; S: start;\n"
-    "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit.\n"
+    "C: calibrate (3s countdown + configured capture window); A: accept; R: record video; S: start scoring;\n"
+    "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit/save; X: abort.\n"
     "Measurements are relative to your reference, not medical or technique judgements."
 )
 
@@ -284,7 +288,14 @@ class Application:
             if (
                 self.display is not None
                 and self.practice_file is not None
-                and self.recording_finished
+                and (
+                    self.recording_finished
+                    or (
+                        self.session is not None
+                        and self.session.finished
+                        and self.recordings_started == 0
+                    )
+                )
             ):
                 seg_idx = append_segment(
                     self.practice_file,

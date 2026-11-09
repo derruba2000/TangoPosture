@@ -19,16 +19,22 @@ from tango_posture.reference_import import (
     MAX_IMPORT_RANGE_SECONDS,
     SOUNDTRACK_SAMPLE_RATE,
     SOUNDTRACK_SOURCE_LABEL,
+    ImportCancelledError,
     YouTubeClockAlignment,
     analyse_imported_clip,
     analyse_video_soundtrack,
     build_youtube_open_url,
+    coach_notes_for_frame,
     compare_clips,
+    download_youtube_video,
+    imports_directory,
     iter_virtual_clip_frames,
+    load_report_coach_data,
     load_report_movement_data,
     parse_youtube_url,
     probe_import_video,
     relink_report_video,
+    render_coach_frame_overlay,
     validate_clip_range,
 )
 from tango_posture.review import read_report
@@ -516,3 +522,91 @@ def test_teacher_vs_practice_comparison_anchors_and_bounds(tmp_path):
     assert sync_point.right_at_boundary is True
     assert sync_point.left_clip_time == pytest.approx(4.0)
     assert sync_point.right_clip_time == pytest.approx(4.0)
+
+
+def test_direct_youtube_download_caching_and_full_open_coach_analysis(tmp_path, monkeypatch):
+    cfg = Config(data_dir=str(tmp_path / "data"), side="left", facing="right", allow_all_angles=True)
+    calls: list[tuple[str, Path]] = []
+
+    def _fake_downloader(canonical_url: str, target_path: Path) -> Path:
+        calls.append((canonical_url, target_path))
+        return _write_test_video(target_path, fps=15.0, duration_seconds=5.0)
+
+    # 1. Direct download validates URL, writes youtube_<id>.mp4, and reuses cached file on repeat
+    imp_dir = imports_directory(cfg.data_dir)
+    downloaded_path, link = download_youtube_video(
+        "https://youtu.be/dQw4w9WgXcQ?t=1",
+        imp_dir,
+        downloader=_fake_downloader,
+    )
+    assert len(calls) == 1
+    assert calls[0][0] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert downloaded_path.name == "youtube_dQw4w9WgXcQ.mp4"
+    assert link.video_id == "dQw4w9WgXcQ"
+    assert link.anchor_seconds == pytest.approx(1.0)
+
+    cached_path, _ = download_youtube_video(
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        imp_dir,
+        downloader=_fake_downloader,
+    )
+    assert cached_path == downloaded_path
+    assert len(calls) == 1  # Reused cached file without invoking downloader again
+
+    # Cancellation check before download
+    with pytest.raises(ImportCancelledError):
+        download_youtube_video(
+            "https://youtu.be/oHg5SJYRHA0",
+            imp_dir,
+            cancel_check=lambda: True,
+            downloader=_fake_downloader,
+        )
+
+    # Missing yt-dlp surfaces clear actionable error when no downloader is available
+    monkeypatch.setattr("tango_posture.reference_import._find_ytdlp_command", lambda: None)
+    monkeypatch.setitem(__import__("sys").modules, "yt_dlp", None)
+    with pytest.raises(ValueError, match="Cannot download from YouTube: 'yt-dlp' is not installed"):
+        download_youtube_video("https://youtu.be/oHg5SJYRHA0", imp_dir)
+
+    # 2. One-step analyse_imported_clip from YouTube URL (blank video_path)
+    res = analyse_imported_clip(
+        video_path="",
+        youtube_url="https://youtu.be/9bZkp7q19f0?t=1",
+        cfg=cfg,
+        report_dir=tmp_path / "reports",
+        title="YouTube Direct Study",
+        analysis_mode="movement",
+        analyse_soundtrack=True,
+        estimator_factory=lambda: _SyntheticEstimator(pivot_window=(2.0, 2.7), step_at=3.2),
+        youtube_downloader=_fake_downloader,
+    )
+    assert res.video_path.name == "youtube_9bZkp7q19f0.mp4"
+    assert res.selected_in == pytest.approx(1.0)
+    assert res.selected_out == pytest.approx(5.0)
+    assert res.youtube_alignment is not None
+    assert res.youtube_alignment.confirmed_same_edit is True
+    assert res.youtube_alignment.local_source_seconds == pytest.approx(1.0)
+    assert res.youtube_alignment.youtube_seconds == pytest.approx(1.0)
+    assert res.coach_path is not None and res.coach_path.is_file()
+
+    # 3. Verify report Section 3.4, coach companion data, overlay rendering, and notes
+    rec = read_report(res.report_path)
+    assert "### 3.4 Movement Analysis (Pivots & Step Placements Timeline)" in rec.markdown
+    assert "#### Pivots" in rec.markdown
+    assert "#### Step Placements" in rec.markdown
+    assert rec.recording_seconds(2.5, 15.0) == pytest.approx(2.5)
+    assert rec.recording_seconds(2.5, 15.0, "Overlay") == pytest.approx(1.5)
+
+    coach_data = load_report_coach_data(rec)
+    assert coach_data is not None
+    first_frame_idx = int(next(iter(coach_data["frames"].keys())))
+    raw_img = np.full((120, 160, 3), 40, dtype=np.uint8)
+    rendered = render_coach_frame_overlay(raw_img, coach_data, first_frame_idx, cfg)
+    assert rendered.shape[0] >= 120 and rendered.shape[1] >= 960
+    assert not np.array_equal(cv2.resize(raw_img, (rendered.shape[1], rendered.shape[0])), rendered)
+
+    notes = coach_notes_for_frame(coach_data, first_frame_idx)
+    assert notes is not None and len(notes) >= 4
+    joined = "\n".join(notes)
+    assert "Role:" in joined and "Torso axis:" in joined and "Clip Movement Totals:" in joined
+

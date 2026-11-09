@@ -253,8 +253,57 @@ def export_toml(cfg: Config) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load(path: Path | None, overrides: dict) -> Config:
+ENV_MAP: dict[str, tuple[str, Callable[[str], float | int | bool]]] = {
+    "HEAD_NEUTRAL_OFFSET_DEGREES": ("head_neutral_offset", float),
+    "HEAD_DOWN_DURATION_SECONDS": ("head_down_duration", float),
+    "HEAD_DOWN_ANGLE_DEGREES": ("head_down_angle", float),
+    "BEAT_TRACKING_ENABLED": (
+        "beat_tracking",
+        lambda s: s.lower() not in ("0", "false", "no", "off"),
+    ),
+    "TANGO_BPM": ("tango_bpm", float),
+    "BEAT_ANALYSIS_SECONDS": ("beat_analysis_seconds", float),
+    "ROLE_ASSIGN_MS": ("role_assign_ms", float),
+    "ROLE_HOLD_MS": ("role_hold_ms", float),
+    "SHOULDER_TENSION_DURATION_SECONDS": ("shoulder_tension_duration", float),
+    "SHOULDER_RAISE_THRESHOLD_PCT": ("shoulder_raise_threshold", float),
+    "SHOULDER_NEUTRAL_CLEARANCE": ("shoulder_neutral_clearance", float),
+    "ALLOW_ALL_ANGLES": (
+        "allow_all_angles",
+        lambda s: s.lower() not in ("0", "false", "no", "off"),
+    ),
+    "EMBRACE_CLOSED_THRESHOLD": ("embrace_closed_threshold", float),
+    "EMBRACE_HYSTERESIS_SECONDS": ("embrace_hysteresis_seconds", float),
+    "CLOSED_EMBRACE_MIN_KNEE_BEND_DEGREES": ("closed_embrace_min_knee_bend", float),
+    "KNEE_STRAIGHT_DURATION_SECONDS": ("knee_straight_duration", float),
+    "AXIS_CURVE_ENTRY": ("axis_curve_entry", float),
+    "AXIS_CURVE_CLEAR": ("axis_curve_clear", float),
+    "AXIS_CURVE_DURATION_SECONDS": ("axis_curve_duration", float),
+    "AXIS_CURVE_CLEAR_DURATION_SECONDS": ("axis_curve_clear_duration", float),
+    "AXIS_NEUTRAL_OFFSET": ("axis_neutral_offset", float),
+    "SMOOTHING_SECONDS": ("smoothing", float),
+    "OVERLAY_SMOOTHING_SECONDS": ("overlay_smoothing", float),
+    "SLOW_TANGO_MAX_BPM": ("slow_tango_max_bpm", float),
+    "ANKLE_HIGH_LIFT_RATIO": ("ankle_high_lift_ratio", float),
+    "MAX_CONSECUTIVE_HIGH_ANKLE_STEPS": ("max_consecutive_high_ankle_steps", int),
+}
+
+
+def load(
+    path: Path | None,
+    overrides: dict,
+    env_path: Path | None = None,
+) -> Config:
     data: dict = {}
+    if env_path is not None and env_path.is_file():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = (part.strip() for part in line.split("=", 1))
+            if key in ENV_MAP:
+                field_name, parser_fn = ENV_MAP[key]
+                data[field_name] = parser_fn(val.strip("'\""))
     if path:
         data.update(tomllib.loads(path.read_text()))
     data.update({k: v for k, v in overrides.items() if v is not None})

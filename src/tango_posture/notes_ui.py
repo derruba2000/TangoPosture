@@ -4,6 +4,7 @@ import re
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
+from typing import Literal
 
 
 class NotesSidebar(ttk.Frame):
@@ -12,7 +13,13 @@ class NotesSidebar(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
         self.fonts = []
-        for size, weight in ((15, "bold"), (10, "normal"), (10, "bold"), (12, "normal")):
+        font_specs: tuple[tuple[int, Literal["normal", "bold"]], ...] = (
+            (15, "bold"),
+            (10, "normal"),
+            (10, "bold"),
+            (12, "normal"),
+        )
+        for size, weight in font_specs:
             font = tkfont.nametofont("TkDefaultFont").copy()
             font.configure(size=size, weight=weight)
             self.fonts.append(font)
@@ -66,8 +73,13 @@ class NotesSidebar(ttk.Frame):
             return
         self.previous = notes
         position = self.text.yview()[0]
-        groups = {"Alignment": [], "Session": [], "Reference": [], "Measurements": [],
-                  "Guidance": []}
+        groups: dict[str, list[str]] = {
+            "Alignment": [],
+            "Session": [],
+            "Reference": [],
+            "Measurements": [],
+            "Guidance": [],
+        }
         for line in notes[1:]:
             if re.match(r"[A-Z] \w.* / retry|[A-Z] calibrate", line):
                 continue

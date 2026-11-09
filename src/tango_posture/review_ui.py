@@ -47,11 +47,16 @@ from .reference_import import (
     YouTubeSourceLink,
     build_youtube_open_url,
     check_calibration_readiness,
+    coach_notes_for_frame,
     compare_clips,
+    download_youtube_video,
+    imports_directory,
+    load_report_coach_data,
     load_report_movement_data,
     parse_youtube_url,
     probe_import_video,
     relink_report_video,
+    render_coach_frame_overlay,
     validate_clip_range,
 )
 from .replay import ReplayPlayer, parse_time, time_label
@@ -303,6 +308,8 @@ class ReviewPanel(ttk.Frame):
         self.movement_state_by_key: dict[tuple[str, str, int], str] = {}
         self.show_pivots_var = tk.BooleanVar(value=False)
         self.show_steps_var = tk.BooleanVar(value=False)
+        self.show_coach_var = tk.BooleanVar(value=False)
+        self.coach_data: dict[str, Any] | None = None
         self.movement_status = tk.StringVar(value="Not analysed")
         self.closed = False
         self.events: queue.SimpleQueue = queue.SimpleQueue()
@@ -313,6 +320,8 @@ class ReviewPanel(ttk.Frame):
             lambda payload: self.events.put((payload[1], payload[0], payload[2:]))
         )
         self.import_estimator_factory: Callable[[], Any] | None = None
+        self.import_youtube_downloader: Callable[[str, Path], Path] | None = None
+        self._downloaded_youtube_file: tuple[Path, str] | None = None
         self.import_probe: VideoProbeInfo | None = None
         self.import_video_var = tk.StringVar()
         self.import_title_var = tk.StringVar()
@@ -323,7 +332,7 @@ class ReviewPanel(ttk.Frame):
         self.import_reference_var = tk.StringVar(value="latest")
         self.import_cal_in_var = tk.StringVar(value="")
         self.import_cal_out_var = tk.StringVar(value="")
-        self.import_soundtrack_var = tk.BooleanVar(value=False)
+        self.import_soundtrack_var = tk.BooleanVar(value=True)
         self.import_confirm_same_edit_var = tk.BooleanVar(value=False)
         self.import_align_local_var = tk.StringVar(value="0.0")
         self.import_align_youtube_var = tk.StringVar(value="0.0")
@@ -445,6 +454,13 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.cancel_movement_analysis),
         )
         self.movement_cancel_button.pack(side="left", padx=(4, 8))
+        self.show_coach_check = ttk.Checkbutton(
+            movement_bar,
+            text="Coach overlay (axis & posture)",
+            variable=self.show_coach_var,
+            command=lambda: self.guard(self.on_coach_toggle),
+        )
+        self.show_coach_check.pack(side="left", padx=(0, 6))
         self.show_pivots_check = ttk.Checkbutton(
             movement_bar,
             text="Show pivots",
@@ -646,6 +662,12 @@ class ReviewPanel(ttk.Frame):
             ttk.Checkbutton(self.compare_bar, text=label, variable=variable,
                             command=lambda: self.guard(self.update_comparison)).pack(side="left")
         self.report = record
+        self.coach_data = load_report_coach_data(record) if record.is_imported_reference else None
+        if record.is_imported_reference:
+            has_coach = self.coach_data is not None
+            self.show_coach_var.set(has_coach)
+            self.show_pivots_var.set(True)
+            self.show_steps_var.set(True)
         selected_path = record.archive_path or record.path
         self.selection.set(str(selected_path))
         self.report_paths[str(selected_path)] = selected_path
@@ -703,6 +725,16 @@ class ReviewPanel(ttk.Frame):
                                  if variable.get() and label != self.video_selection.get()])
 
     def show_video_notes(self, index):
+        coach_notes = (
+            coach_notes_for_frame(self.coach_data, index)
+            if self.coach_data is not None and self.video_selection.get() != "Opened video"
+            else None
+        )
+        if coach_notes is not None:
+            self.notes_sidebar.set_notes(
+                coach_notes, subtitle=f"Frame {index + 1} · Open practice coach · Synced"
+            )
+            return
         notes = self.frame_notes[index] if index < len(self.frame_notes) else [
             "No separate notes for this frame. Older recordings retain their original footer."
         ]
@@ -715,6 +747,7 @@ class ReviewPanel(ttk.Frame):
         if path:
             self.player.unload()
             self.frame_notes = []
+            self.coach_data = None
             self._clear_standalone_movement()
             resolved = Path(path).resolve()
             self.opened_video_path = resolved
@@ -956,25 +989,38 @@ class ReviewPanel(ttk.Frame):
     ) -> np.ndarray:
         show_pivots = bool(self.show_pivots_var.get())
         show_steps = bool(self.show_steps_var.get())
-        if (not show_pivots and not show_steps) or self.movement_data is None:
-            return image
         if self.video_selection.get() not in ("Raw video", "Source video", "Opened video"):
             return image
+        result = image
         if (
-            image.shape[1] != self.movement_data.get("width")
-            or image.shape[0] != self.movement_data.get("height")
+            (show_pivots or show_steps)
+            and self.movement_data is not None
+            and image.shape[1] == self.movement_data.get("width")
+            and image.shape[0] == self.movement_data.get("height")
         ):
-            return image
-        return render_movement_overlay(
-            image,
-            self.movement_data,
-            frame_index,
-            fps,
-            show_pivots=show_pivots,
-            show_steps=show_steps,
-            step_history_seconds=self._step_history_seconds(),
-            mirror=False,
-        )
+            result = render_movement_overlay(
+                image,
+                self.movement_data,
+                frame_index,
+                fps,
+                show_pivots=show_pivots,
+                show_steps=show_steps,
+                step_history_seconds=self._step_history_seconds(),
+                mirror=False,
+            )
+        if (
+            self.show_coach_var.get()
+            and self.coach_data is not None
+            and self.video_selection.get() != "Opened video"
+        ):
+            result = render_coach_frame_overlay(
+                result, self.coach_data, frame_index, self.config_provider()
+            )
+        return result
+
+    def on_coach_toggle(self):
+        if self.player.reader is not None:
+            self.player.refresh_frame()
 
     def request_movement_analysis(self):
         target, _, reason = self._resolve_movement_target()
@@ -1024,7 +1070,9 @@ class ReviewPanel(ttk.Frame):
                     "This report has no available video. Open its recording with Open video."
                 )
             if self.report and self.video_selection.get() in self.report.videos:
-                seconds_in_file = self.report.recording_seconds(seconds, self.player.reader.fps)
+                seconds_in_file = self.report.recording_seconds(
+                    seconds, self.player.reader.fps, self.video_selection.get()
+                )
             else:
                 seconds_in_file = seconds
             self.player.seek(seconds_in_file)
@@ -1215,6 +1263,10 @@ class ReviewPanel(ttk.Frame):
                 )
                 self.load_report(import_res.report_path)
                 self.tabs.select(self.video_page)
+            elif kind == "youtube_downloaded":
+                path, link = value
+                self.import_cancel_button.configure(state="disabled")
+                self.apply_downloaded_youtube_video(path, link)
             elif kind == "import_cancelled":
                 self.import_cancel_button.configure(state="disabled")
                 self._sync_import_form_state()
@@ -1296,7 +1348,7 @@ class ReviewPanel(ttk.Frame):
         row2.pack(fill="x", pady=2)
         ttk.Label(row2, text="Title:").pack(side="left")
         ttk.Entry(row2, textvariable=self.import_title_var, width=22).pack(side="left", padx=4)
-        ttk.Label(row2, text="YouTube link (optional):").pack(side="left", padx=(8, 0))
+        ttk.Label(row2, text="YouTube link:").pack(side="left", padx=(8, 0))
         yt_entry = ttk.Entry(row2, textvariable=self.import_youtube_var, width=32)
         yt_entry.pack(side="left", padx=4, fill="x", expand=True)
         yt_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
@@ -1306,6 +1358,13 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.open_import_youtube_link),
         )
         self.import_open_yt_button.pack(side="left", padx=3)
+        self.import_download_button = ttk.Button(
+            row2,
+            text="Download from YouTube",
+            state="disabled",
+            command=lambda: self.guard(self.download_youtube_to_local),
+        )
+        self.import_download_button.pack(side="left", padx=3)
 
         row3 = ttk.Frame(self.import_panel)
         row3.pack(fill="x", pady=2)
@@ -1449,6 +1508,7 @@ class ReviewPanel(ttk.Frame):
 
     def set_import_video_file(self, path: Path | str) -> VideoProbeInfo:
         probe = probe_import_video(Path(path))
+        self._downloaded_youtube_file = None
         self.import_probe = probe
         self.import_video_var.set(str(probe.path))
         if not self.import_title_var.get().strip():
@@ -1492,19 +1552,41 @@ class ReviewPanel(ttk.Frame):
         cfg = self.config_provider()
         raw_video = self.import_video_var.get().strip()
         raw_yt = self.import_youtube_var.get().strip()
+        yt_link: YouTubeSourceLink | None = None
         if raw_yt:
             try:
-                parse_youtube_url(raw_yt)
+                yt_link = parse_youtube_url(raw_yt)
             except ValueError as exc:
                 self.import_status.set(str(exc))
                 self.import_start_button.configure(state="disabled")
+                self.import_download_button.configure(state="disabled")
                 return
+        busy = self.import_worker.is_running()
+        self.import_download_button.configure(
+            state="normal" if yt_link is not None and not busy else "disabled"
+        )
 
         if not raw_video:
             self.import_probe = None
             self.import_file_info.set("No local file selected")
-            self.import_start_button.configure(state="disabled")
-            self.import_status.set("Choose a local video file to analyse")
+            if yt_link is not None:
+                try:
+                    in_sec, out_sec = self._youtube_clip_range(yt_link)
+                    self.import_range_status.set(
+                        f"Range [{time_label(in_sec)} - {time_label(out_sec)}] "
+                        f"({out_sec - in_sec:.1f}s / {MAX_IMPORT_RANGE_SECONDS:.0f}s max)"
+                    )
+                except ValueError as exc:
+                    self.import_start_button.configure(state="disabled")
+                    self.import_status.set(str(exc))
+                    return
+                self.import_start_button.configure(state="disabled" if busy else "normal")
+                self.import_status.set(
+                    "Ready: Analyse clip will download the video from YouTube, then analyse it."
+                )
+            else:
+                self.import_start_button.configure(state="disabled")
+                self.import_status.set("Choose a local video file or enter a YouTube link")
             return
 
         try:
@@ -1552,6 +1634,61 @@ class ReviewPanel(ttk.Frame):
             self.import_start_button.configure(state="disabled")
             self.import_status.set(str(exc))
 
+    def _youtube_clip_range(self, link: YouTubeSourceLink) -> tuple[float, float]:
+        """Requested `[in, out)` for a not-yet-downloaded YouTube video (duration unknown)."""
+        raw_in = self.import_in_var.get().strip()
+        in_sec = parse_time(raw_in) if raw_in else 0.0
+        if in_sec <= 0.0 and link.anchor_seconds is not None:
+            in_sec = float(link.anchor_seconds)
+        raw_out = self.import_out_var.get().strip()
+        out_sec = parse_time(raw_out) if raw_out else in_sec + MAX_IMPORT_RANGE_SECONDS
+        if out_sec <= in_sec:
+            raise ValueError("Clip Out must be greater than Clip In")
+        if out_sec - in_sec > MAX_IMPORT_RANGE_SECONDS + 1e-6:
+            raise ValueError(f"Selected range exceeds the {MAX_IMPORT_RANGE_SECONDS:.0f}s limit")
+        return in_sec, out_sec
+
+    def apply_downloaded_youtube_video(
+        self, path: Path | str, link: YouTubeSourceLink
+    ) -> VideoProbeInfo:
+        """Populate Local video and `[in, out)` after a YouTube download."""
+        probe = self.set_import_video_file(path)
+        self._downloaded_youtube_file = (probe.path.resolve(), link.video_id)
+        in_sec = 0.0
+        if link.anchor_seconds is not None and link.anchor_seconds < probe.duration_seconds:
+            in_sec = float(link.anchor_seconds)
+        out_sec = min(probe.duration_seconds, in_sec + MAX_IMPORT_RANGE_SECONDS)
+        self.import_in_var.set(f"{in_sec:.2f}")
+        self.import_out_var.set(f"{out_sec:.2f}")
+        self.import_confirm_same_edit_var.set(True)
+        self.import_align_local_var.set(f"{in_sec:.2f}")
+        self.import_align_youtube_var.set(f"{in_sec:.2f}")
+        self._sync_import_form_state()
+        self.import_status.set(
+            f"Downloaded {probe.path.name}. Adjust the range if needed, then click Analyse clip."
+        )
+        return probe
+
+    def download_youtube_to_local(self, *, synchronous: bool = False) -> Path | str:
+        raw_yt = self.import_youtube_var.get().strip()
+        link = parse_youtube_url(raw_yt)
+        if link is None:
+            raise ValueError("Enter a valid HTTPS YouTube URL first")
+        target_dir = imports_directory(self.config_provider().data_dir)
+        if synchronous:
+            path, _ = download_youtube_video(
+                link.canonical_url, target_dir, downloader=self.import_youtube_downloader
+            )
+            self.apply_downloaded_youtube_video(path, link)
+            return path
+        self.import_start_button.configure(state="disabled")
+        self.import_download_button.configure(state="disabled")
+        self.import_cancel_button.configure(state="normal")
+        self.import_status.set("Starting YouTube download…")
+        return self.import_worker.start_download(
+            link.canonical_url, target_dir, downloader=self.import_youtube_downloader
+        )
+
     def open_import_youtube_link(self) -> str:
         raw_yt = self.import_youtube_var.get().strip()
         link = parse_youtube_url(raw_yt)
@@ -1586,34 +1723,56 @@ class ReviewPanel(ttk.Frame):
     def start_reference_import(self, *, synchronous: bool = False) -> ImportedClipResult | str:
         self._sync_import_form_state()
         raw_video = self.import_video_var.get().strip()
-        if not raw_video:
-            raise ValueError("Choose a local video file to analyse")
+        raw_yt = self.import_youtube_var.get().strip() or None
+        yt_link = parse_youtube_url(raw_yt) if raw_yt else None
+        if not raw_video and yt_link is None:
+            raise ValueError("Choose a local video file or enter a YouTube link to analyse")
         cfg = self.config_provider()
-        probe = self.import_probe or probe_import_video(Path(raw_video))
-        in_sec = parse_time(self.import_in_var.get() or "0.0")
-        out_str = self.import_out_var.get().strip()
-        out_sec = parse_time(out_str) if out_str else min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS)
-        clip_in, clip_out = validate_clip_range(probe, in_sec, out_sec)
         mode = self.import_mode_var.get()
         cal_interval = self._resolve_import_calibration_interval()
         ref_obj = None if cal_interval is not None else self._resolve_selected_import_reference(cfg)
-        raw_yt = self.import_youtube_var.get().strip() or None
-        yt_link = parse_youtube_url(raw_yt) if raw_yt else None
-        alignment = (
-            self._build_pending_youtube_alignment(
-                source_sha256=file_sha256(probe.path),
-                youtube_video_id=yt_link.video_id,
+        alignment: YouTubeClockAlignment | None = None
+        video_arg: Path | str
+        if raw_video:
+            probe = self.import_probe or probe_import_video(Path(raw_video))
+            in_sec = parse_time(self.import_in_var.get() or "0.0")
+            out_str = self.import_out_var.get().strip()
+            out_sec = (
+                parse_time(out_str)
+                if out_str
+                else min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS)
             )
-            if yt_link is not None
-            else None
-        )
+            clip_in, clip_out = validate_clip_range(probe, in_sec, out_sec)
+            selected_out_arg: float | None = clip_out
+            video_arg = probe.path
+            if yt_link is not None:
+                if self._downloaded_youtube_file == (probe.path.resolve(), yt_link.video_id):
+                    alignment = YouTubeClockAlignment(
+                        local_source_seconds=clip_in,
+                        youtube_seconds=clip_in,
+                        confirmed_same_edit=True,
+                        source_sha256=file_sha256(probe.path),
+                        youtube_video_id=yt_link.video_id,
+                    )
+                else:
+                    alignment = self._build_pending_youtube_alignment(
+                        source_sha256=file_sha256(probe.path),
+                        youtube_video_id=yt_link.video_id,
+                    )
+        else:
+            assert yt_link is not None
+            # Downloaded inside the worker; analyse_imported_clip fetches then analyses.
+            clip_in, clip_out = self._youtube_clip_range(yt_link)
+            selected_out_arg = clip_out if self.import_out_var.get().strip() else None
+            video_arg = ""
         folder = report_directory(cfg.data_dir)
         kwargs: dict[str, Any] = {
-            "video_path": probe.path,
+            "video_path": video_arg,
             "cfg": cfg,
             "report_dir": folder,
             "selected_in": clip_in,
-            "selected_out": clip_out,
+            "selected_out": selected_out_arg,
+            "youtube_downloader": self.import_youtube_downloader,
             "title": self.import_title_var.get().strip(),
             "youtube_url": raw_yt,
             "youtube_alignment": alignment,
@@ -1825,6 +1984,9 @@ class ReviewPanel(ttk.Frame):
         left_anchor = parse_time(self.anchor_left_var.get() or "0.0")
         right_anchor = parse_time(self.anchor_right_var.get() or "0.0")
         other_mov = load_report_movement_data(other_record)
+        other_coach = (
+            load_report_coach_data(other_record) if other_record.is_imported_reference else None
+        )
         cmp_result = compare_clips(
             self.report,
             other_record,
@@ -1843,20 +2005,28 @@ class ReviewPanel(ttk.Frame):
             def _other_transform(img: np.ndarray, f_idx: int, f_fps: float) -> np.ndarray:
                 show_p = bool(self.show_pivots_var.get())
                 show_s = bool(self.show_steps_var.get())
-                if (not show_p and not show_s) or other_mov is None:
-                    return img
-                if img.shape[1] != other_mov.get("width") or img.shape[0] != other_mov.get("height"):
-                    return img
-                return render_movement_overlay(
-                    img,
-                    other_mov,
-                    f_idx,
-                    f_fps,
-                    show_pivots=show_p,
-                    show_steps=show_s,
-                    step_history_seconds=self._step_history_seconds(),
-                    mirror=False,
-                )
+                out_img = img
+                if (
+                    (show_p or show_s)
+                    and other_mov is not None
+                    and img.shape[1] == other_mov.get("width")
+                    and img.shape[0] == other_mov.get("height")
+                ):
+                    out_img = render_movement_overlay(
+                        img,
+                        other_mov,
+                        f_idx,
+                        f_fps,
+                        show_pivots=show_p,
+                        show_steps=show_s,
+                        step_history_seconds=self._step_history_seconds(),
+                        mirror=False,
+                    )
+                if self.show_coach_var.get() and other_coach is not None:
+                    out_img = render_coach_frame_overlay(
+                        out_img, other_coach, f_idx, self.config_provider()
+                    )
+                return out_img
 
             self.player.compare(
                 [other_video],
