@@ -325,6 +325,36 @@ def test_step_placements_detect_real_steps_and_debounce():
     assert math.isclose(steps[1]["x"], 0.72 * 640, rel_tol=0.05)
 
 
+def test_step_placements_detect_short_gliding_steps():
+    fps = 15.0
+    frames = []
+    for i in range(20):
+        if i <= 3:
+            left_x = 0.45
+        elif i <= 9:
+            left_x = 0.45 + (0.468 - 0.45) * ((i - 3) / 6.0)
+        else:
+            left_x = 0.468
+        frames.append(
+            (
+                i,
+                _make_pose_observation(
+                    i / fps,
+                    left_foot_2d=(left_x, 0.86),
+                    right_foot_2d=(0.56, 0.86),
+                ),
+            )
+        )
+
+    result = analyse_movement_observations(
+        frames, width=640, height=480, fps=fps, frame_count=len(frames), sample_stride=1
+    )
+
+    assert len(result["steps"]) == 1
+    assert result["steps"][0]["side"] == "left"
+    assert math.isclose(result["steps"][0]["x"], 0.468 * 640, rel_tol=0.03)
+
+
 def test_step_detector_rejects_swivel_airborne_and_post_occlusion():
     fps = 15.0
     # 1. In-place foot swivel: left heel stays fixed while toe rotates 75 deg and settles

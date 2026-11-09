@@ -1042,7 +1042,22 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     writer.release()
 
     panel.import_confirm_same_edit_var.set(False)
-    panel.set_import_video_file(teacher_vid)
+    monkeypatch.setattr(
+        "tango_posture.review_ui.filedialog.askopenfilename",
+        lambda **_: str(teacher_vid),
+    )
+    panel.open_video()
+    root.update()
+    assert panel.import_panel_visible is True
+    assert Path(panel.import_video_var.get()) == teacher_vid.resolve()
+    assert "Analyse clip" in panel.import_status.get()
+    assert panel._resolve_movement_target()[0] is not None
+    panel.cut_video_dialog()
+    assert panel.cut_dialog is not None
+    assert panel.cut_dialog.title() == "Cut video segment"
+    assert sum(widget.winfo_class() == "TEntry" for widget in panel.cut_dialog.winfo_children()) == 3
+    assert panel.cut_button is not None and panel.cut_button.cget("text") == "Cut video"
+    panel.cut_dialog.destroy()
     panel.import_title_var.set("Teacher Giro Clip")
     panel.import_in_var.set("0.2")
     panel.import_out_var.set("2.0")

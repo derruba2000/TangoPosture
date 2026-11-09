@@ -80,7 +80,7 @@ DETECTOR_CONFIG: dict[str, Any] = {
     "step_settle_speed_scale_s": 0.20,
     "step_settle_radius_scale": 0.045,
     "step_settle_min_duration_s": 0.10,
-    "step_min_center_travel_scale": 0.14,
+    "step_min_center_travel_scale": 0.075,
     "step_min_both_ends_travel_scale": 0.065,
     "step_swivel_override_travel_scale": 0.20,
     "step_min_leg_extension_ratio": 0.78,

@@ -59,7 +59,7 @@ from .reference_import import (
     render_coach_frame_overlay,
     validate_clip_range,
 )
-from .replay import ReplayPlayer, parse_time, time_label
+from .replay import ReplayPlayer, cut_video_segment, parse_time, time_label
 from .review import (
     ReportRecord,
     read_report,
@@ -319,6 +319,10 @@ class ReviewPanel(ttk.Frame):
         self.import_worker = ReferenceImportWorker(
             lambda payload: self.events.put((payload[1], payload[0], payload[2:]))
         )
+        self.cut_job = ""
+        self.cut_dialog: tk.Toplevel | None = None
+        self.cut_status_var: tk.StringVar | None = None
+        self.cut_button: ttk.Button | None = None
         self.import_estimator_factory: Callable[[], Any] | None = None
         self.import_youtube_downloader: Callable[[str, Path], Path] | None = None
         self._downloaded_youtube_file: tuple[Path, str] | None = None
@@ -409,6 +413,11 @@ class ReviewPanel(ttk.Frame):
         ttk.Button(chooser, text="Open video...", command=lambda: self.guard(self.open_video)).pack(
             side="left", padx=6
         )
+        ttk.Button(
+            chooser,
+            text="Cut video…",
+            command=lambda: self.guard(self.cut_video_dialog),
+        ).pack(side="left", padx=4)
         self.import_reference_button = ttk.Button(
             chooser,
             text="Import reference video…",
@@ -750,11 +759,112 @@ class ReviewPanel(ttk.Frame):
             self.coach_data = None
             self._clear_standalone_movement()
             resolved = Path(path).resolve()
+            self.set_import_video_file(resolved)
             self.opened_video_path = resolved
-            self.player.load(resolved)
+            if not self.import_panel_visible:
+                self.toggle_import_panel()
+            self.import_status.set(
+                "Choose a clip range, then click Analyse clip to generate coach and movement overlays."
+            )
             self.video_selection.set("Opened video")
             self._refresh_movement_state(redraw=True)
             self.tabs.select(self.video_page)
+
+    def cut_video_dialog(self) -> None:
+        if self.player.reader is None:
+            raise ValueError("Open a video in Video Replay first")
+        if self.cut_dialog is not None and self.cut_dialog.winfo_exists():
+            self.cut_dialog.lift()
+            return
+
+        source = self.player.reader.path
+        bounds = self.player.clip_range or (0.0, self.player.reader.duration)
+        dialog = tk.Toplevel(self)
+        dialog.title("Cut video segment")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(True, False)
+        dialog.columnconfigure(1, weight=1)
+        self.cut_dialog = dialog
+        start_var = tk.StringVar(dialog, value=time_label(bounds[0]))
+        end_var = tk.StringVar(dialog, value=time_label(bounds[1]))
+        output_var = tk.StringVar(
+            dialog, value=str(source.with_name(f"{source.stem}_clip.mp4"))
+        )
+        self.cut_status_var = tk.StringVar(dialog, value="")
+
+        ttk.Label(dialog, text="Start time").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(dialog, textvariable=start_var, width=18).grid(
+            row=0, column=1, sticky="ew", padx=10, pady=6
+        )
+        ttk.Label(dialog, text="End time").grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(dialog, textvariable=end_var, width=18).grid(
+            row=1, column=1, sticky="ew", padx=10, pady=6
+        )
+        ttk.Label(dialog, text="Output file").grid(row=2, column=0, sticky="w", padx=10, pady=6)
+        ttk.Entry(dialog, textvariable=output_var).grid(
+            row=2, column=1, sticky="ew", padx=(10, 4), pady=6
+        )
+
+        def browse_output() -> None:
+            selected = filedialog.asksaveasfilename(
+                parent=dialog,
+                title="Save sliced video",
+                initialdir=str(source.parent),
+                initialfile=Path(output_var.get()).name,
+                defaultextension=".mp4",
+                filetypes=(("MP4 video", "*.mp4"), ("AVI video", "*.avi")),
+            )
+            if selected:
+                output_var.set(selected)
+
+        ttk.Button(dialog, text="Browse…", command=lambda: self.guard(browse_output)).grid(
+            row=2, column=2, padx=(4, 10), pady=6
+        )
+        ttk.Label(dialog, textvariable=self.cut_status_var, wraplength=560).grid(
+            row=3, column=0, columnspan=3, sticky="w", padx=10, pady=6
+        )
+
+        def start_cut() -> None:
+            if self.cut_job:
+                return
+            status_var = self.cut_status_var
+            cut_button = self.cut_button
+            if status_var is None or cut_button is None:
+                return
+            try:
+                start = parse_time(start_var.get())
+                end = parse_time(end_var.get())
+                if not output_var.get().strip():
+                    raise ValueError("Choose an output file path")
+                output = Path(output_var.get()).expanduser()
+                if start < 0.0 or end <= start:
+                    raise ValueError("End time must be greater than a nonnegative start time")
+            except (ValueError, OSError) as error:
+                status_var.set(str(error))
+                return
+
+            self.cut_job = uuid4().hex
+            job_id = self.cut_job
+            status_var.set("Cutting video…")
+            cut_button.configure(state="disabled")
+
+            def work() -> None:
+                try:
+                    result = cut_video_segment(source, output, start, end)
+                except Exception as error:  # noqa: BLE001 - report worker errors to the UI
+                    self.events.put((job_id, "video_cut_error", (str(error),)))
+                else:
+                    self.events.put((job_id, "video_cut_done", (result,)))
+
+            threading.Thread(target=work, name="video-cut-worker", daemon=True).start()
+
+        self.cut_button = ttk.Button(
+            dialog, text="Cut video", command=lambda: self.guard(start_cut)
+        )
+        self.cut_button.grid(row=4, column=1, sticky="e", padx=10, pady=(4, 10))
+        ttk.Button(dialog, text="Close", command=dialog.destroy).grid(
+            row=4, column=2, sticky="e", padx=(4, 10), pady=(4, 10)
+        )
 
     def _clear_standalone_movement(self):
         if self.opened_video_path is not None:
@@ -1277,6 +1387,20 @@ class ReviewPanel(ttk.Frame):
                 self._sync_import_form_state()
                 self.import_status.set(f"Import failed: {err_msg}")
                 self.status.set(f"Reference import failed: {err_msg}")
+            elif kind in ("video_cut_done", "video_cut_error") and token == self.cut_job:
+                self.cut_job = ""
+                successful = kind == "video_cut_done"
+                message = (
+                    f"Saved sliced video: {value[0]}"
+                    if successful
+                    else f"Video cut failed: {value[0]}"
+                )
+                self.status.set(message)
+                if self.cut_dialog is not None and self.cut_dialog.winfo_exists():
+                    if self.cut_status_var is not None:
+                        self.cut_status_var.set(message)
+                    if self.cut_button is not None:
+                        self.cut_button.configure(state="normal")
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")
