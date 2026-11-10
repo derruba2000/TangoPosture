@@ -1,0 +1,119 @@
+name: Desktop CI and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff check src tests
+      - run: uv run --frozen mypy src
+      - run: uv run --frozen pytest -q
+
+  build:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos-arm64
+          - os: windows-2022
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --group packaging
+      - name: Check release tag matches package version
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uv run --frozen --group packaging python -c 'import os, tomllib; v = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]; tag = os.environ["RELEASE_TAG"]; assert tag == "v" + v, f"Release tag {tag!r} must match package version v{v}"'
+      - name: Download and verify pose model
+        run: uv run --frozen --group packaging tango-posture models fetch --output build/model/pose_landmarker_lite.task
+      - name: Prepare manual
+        run: uv run --frozen --group packaging python -c "from pathlib import Path; import shutil; p=Path('build/desktop-resources'); p.mkdir(parents=True, exist_ok=True); shutil.copyfile('docs/TANGO_POSTURE_GUIDE.md', p / 'TANGO_POSTURE_MANUAL.md')"
+      - name: Build application
+        run: uv run --frozen --group packaging pyinstaller --noconfirm packaging/TangoPosture.spec
+      - name: Build and verify macOS disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release build/dmg
+          cp -R dist/TangoPosture.app build/dmg/
+          ln -s /Applications build/dmg/Applications
+          hdiutil create -volname TangoPosture -srcfolder build/dmg -format UDZO release/TangoPosture-macOS-arm64.dmg
+          hdiutil verify release/TangoPosture-macOS-arm64.dmg
+          mkdir "$RUNNER_TEMP/tango-dmg"
+          hdiutil attach release/TangoPosture-macOS-arm64.dmg -mountpoint "$RUNNER_TEMP/tango-dmg" -nobrowse
+          trap 'hdiutil detach "$RUNNER_TEMP/tango-dmg"' EXIT
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/tango-dmg/TangoPosture.app/Contents/MacOS/TangoPosture" --smoke-test
+      - name: Build and verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = uv run --frozen --group packaging python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging/windows.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $target = Join-Path $env:RUNNER_TEMP "TangoPostureInstallerSmoke"
+          $installer = Start-Process -FilePath (Resolve-Path "release/TangoPosture-Windows-x64-Setup.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$target`"" -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          $app = Start-Process -FilePath (Join-Path $target "TangoPosture.exe") -ArgumentList "--smoke-test" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [checks, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: release
+          merge-multiple: true
+      - name: Generate checksums and attach release assets
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          sha256sum TangoPosture-macOS-arm64.dmg TangoPosture-Windows-x64-Setup.exe > SHA256SUMS.txt
+          gh release upload "$RELEASE_TAG" TangoPosture-macOS-arm64.dmg TangoPosture-Windows-x64-Setup.exe SHA256SUMS.txt

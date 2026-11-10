@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import logging
 import math
 import threading
 from collections import OrderedDict
@@ -1797,7 +1798,11 @@ class MovementAnalysisCoordinator:
                             source_sha256,
                             result,
                         )
-                    except PermissionError:
+                    except PermissionError as error:
+                        logging.getLogger(__name__).warning(
+                            "Could not persist movement analysis for %s segment %s: %s",
+                            job.target.path, job.target.segment_index, error,
+                        )
                         readonly_warning = True
                     except OSError as error:
                         # Distinguish read-only filesystem / permission errors from corrupt archive

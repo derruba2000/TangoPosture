@@ -7,7 +7,7 @@ from tango_posture.tutorial_ui import render_tutorial
 
 def test_manual_has_semantic_html_and_unique_setting_targets():
     manual = Path(__file__).resolve().parents[2] / "docs" / "TANGO_POSTURE_GUIDE.md"
-    page, headings, settings = render_tutorial(manual.read_text())
+    page, headings, settings = render_tutorial(manual.read_text(encoding="utf-8"))
     document = ElementTree.fromstring(page.removeprefix("<!DOCTYPE html>"))
     assert document.findall(".//table/thead/tr/th")
     assert document.findall(".//pre/code")

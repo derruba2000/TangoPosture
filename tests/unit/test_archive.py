@@ -1,9 +1,12 @@
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
+from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 
+from tango_posture import archive as archive_module
 from tango_posture.archive import (
     PracticeArchive,
     append_segment,
@@ -106,6 +109,47 @@ def test_concurrent_appends_do_not_replace_other_segments(tmp_path):
     assert len(read_manifest(archive)["segments"]) == 8
 
 
+def test_replay_extraction_blocks_archive_replacement(tmp_path, monkeypatch):
+    archive, report, raw = (tmp_path / name for name in ("practice.tp", "report.md", "raw.mp4"))
+    report.write_text("# First")
+    raw.write_bytes(b"raw")
+    append_segment(archive, report, raw, None, [0.0])
+    extracting = threading.Event()
+    release = threading.Event()
+    original_open = ZipFile.open
+    replay_thread = None
+
+    def extract_replay():
+        nonlocal replay_thread
+        replay_thread = threading.get_ident()
+        return PracticeArchive(archive)
+
+    def open_member(stored, name, mode="r", *args, **kwargs):
+        if (
+            str(stored.filename) == str(archive)
+            and getattr(name, "filename", name) == "video_00.mp4"
+            and threading.get_ident() == replay_thread
+        ):
+            extracting.set()
+            assert release.wait(5), "Replay extraction was not released"
+        return original_open(stored, name, mode, *args, **kwargs)
+
+    monkeypatch.setattr(ZipFile, "open", open_member)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        replay_job = workers.submit(extract_replay)
+        try:
+            assert extracting.wait(5), "Replay extraction did not start"
+            append_job = workers.submit(append_segment, archive, report, raw, None, [1.0])
+            with pytest.raises(TimeoutError):
+                append_job.result(timeout=0.1)
+        finally:
+            release.set()
+            replay = replay_job.result(timeout=5)
+            replay.close()
+        assert append_job.result(timeout=5) == 1
+    assert len(read_manifest(archive)["segments"]) == 2
+
+
 def test_calibration_archive_replaces_all_media_and_loads_its_reference(tmp_path, reference):
     archive = tmp_path / "My reference.tpc"
     raw, overlay = tmp_path / "raw.mp4", tmp_path / "overlay.mp4"
@@ -151,7 +195,8 @@ def test_latest_and_uuid_reference_loading_prefer_new_archives(tmp_path, referen
     assert load_calibration_file(current.id, tmp_path) == current
 
 
-def test_movement_analysis_roundtrip_and_hash_verification(tmp_path):
+@pytest.mark.parametrize("winerror", [None, 5, 32, 33])
+def test_movement_analysis_roundtrip_and_hash_verification(tmp_path, monkeypatch, winerror):
     archive = tmp_path / "Practice.tp"
     report = tmp_path / "report.md"
     raw0, raw1 = tmp_path / "raw0.mp4", tmp_path / "raw1.mp4"
@@ -170,6 +215,24 @@ def test_movement_analysis_roundtrip_and_hash_verification(tmp_path):
     assert sha0 == file_sha256(raw0)
     sha1 = file_sha256(raw1)
 
+    delays = []
+    if winerror is not None:
+        original_replace = Path.replace
+        denied = False
+
+        def replace_after_sharing_error(source, target):
+            nonlocal denied
+            if target == archive and not denied:
+                denied = True
+                error = PermissionError("Temporary Windows archive lock")
+                error.winerror = winerror
+                raise error
+            return original_replace(source, target)
+
+        monkeypatch.setattr(archive_module.sys, "platform", "win32")
+        monkeypatch.setattr(Path, "replace", replace_after_sharing_error)
+        monkeypatch.setattr(archive_module.time, "sleep", delays.append)
+
     store_movement_analysis(archive, 0, sha0, {"segment_index": 0, "pivots": [{"id": 0}]})
     store_movement_analysis(archive, 1, sha1, {"segment_index": 1, "pivots": [{"id": 1}]})
 
@@ -182,3 +245,35 @@ def test_movement_analysis_roundtrip_and_hash_verification(tmp_path):
     assert read_movement_analysis(archive, 0) == {"segment_index": 0, "pivots": [{"id": 0}]}
     assert read_movement_analysis(archive, 1) == {"segment_index": 1, "pivots": [{"id": 1}]}
     assert len(read_manifest(archive)["segments"]) == 2
+    assert delays == ([0.025] if winerror is not None else [])
+
+
+@pytest.mark.parametrize(
+    "platform,winerror,attempts",
+    [("win32", 5, 6), ("win32", 32, 6), ("win32", 33, 6), ("win32", 2, 1), ("darwin", 5, 1)],
+)
+def test_archive_replacement_failure_is_bounded_and_preserves_original(
+    tmp_path, monkeypatch, platform, winerror, attempts
+):
+    destination, temporary = tmp_path / "practice.tp", tmp_path / "new.tp.tmp"
+    destination.write_bytes(b"previous valid archive")
+    temporary.write_bytes(b"new archive")
+    calls = []
+    delays = []
+    error = PermissionError("Archive access denied")
+    error.winerror = winerror
+
+    def deny_replace(source, target):
+        calls.append((source, target))
+        raise error
+
+    monkeypatch.setattr(archive_module.sys, "platform", platform)
+    monkeypatch.setattr(Path, "replace", deny_replace)
+    monkeypatch.setattr(archive_module.time, "sleep", delays.append)
+    with pytest.raises(PermissionError) as raised:
+        archive_module._replace_archive(temporary, destination)
+    assert raised.value is error
+    assert len(calls) == attempts
+    assert sum(delays) <= 0.775
+    assert destination.read_bytes() == b"previous valid archive"
+    assert temporary.read_bytes() == b"new archive"

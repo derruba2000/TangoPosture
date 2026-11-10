@@ -19,8 +19,11 @@ import numpy as np
 
 from .archive import (
     append_segment,
+    calibration_directory,
+    calibration_path,
     practice_directory,
     practice_path,
+    save_calibration_archive,
 )
 from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
@@ -126,7 +129,7 @@ class Application:
                 practice_name
                 or f"Practice_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000000:06d}",
             )
-            if display is not None
+            if display is not None and not calibration_only
             else None
         )
         self.aborted = False
@@ -134,6 +137,13 @@ class Application:
         self.recording_finished = False
         self.recordings_started = 0
         self.stop_recording_requested = False
+        self.auto_recording_active = False
+        self.music_since: float | None = None
+        self.silence_since: float | None = None
+        self.raw_writer: cv2.VideoWriter | None = None
+        self.overlay_writer: cv2.VideoWriter | None = None
+        self.overlay_lines_writer: cv2.VideoWriter | None = None
+        self.recording_saved = False
         self.record_video = None if display is not None else _video_path(record_video)
         self.record_overlay = None if display is not None else _video_path(record_overlay)
         self.session: Session | None = None
@@ -148,6 +158,8 @@ class Application:
         self.last_beep_sec: int | None = None
         self.candidate: Calibration | None = None
         self.saved_calibration_path: Path | None = None
+        self.calibration_file: Path | None = None
+        self.calibration_timestamps: list[float] = []
         self.notice = "C: select reference; evaluation requires an accepted reference"
         self.latencies: list[float] = []
         self.inference_times: list[float] = []
@@ -220,12 +232,11 @@ class Application:
         self.inference_times.clear()
 
     def performance(self) -> dict:
+        mean_duration = float(np.mean(self.inference_times)) if self.inference_times else 0.0
         return {
             **self.versions,
             "resolution": [self.capture_profile.get("width"), self.capture_profile.get("height")],
-            "processed_fps": 1 / float(np.mean(self.inference_times))
-            if self.inference_times
-            else None,
+            "processed_fps": 1 / mean_duration if mean_duration > 0 else None,
             "capture_to_overlay_ms_median": float(np.median(self.latencies))
             if self.latencies
             else None,
@@ -259,7 +270,7 @@ class Application:
             print(f"Exports: {output}")
             self.notice = f"Saved {status}; active {summary['active_duration']:.1f}s. Exports printed in terminal."
             self.state = "FINISHED"
-        if self.frame_log and not self.report_written:
+        if self.frame_log and not self.report_written and not self.calibration_only:
             report_dir = (
                 self.workspace_path
                 if self.workspace_path is not None
@@ -297,8 +308,7 @@ class Application:
                     encoding="utf-8",
                 )
             if (
-                self.display is not None
-                and self.practice_file is not None
+                self.practice_file is not None
                 and (
                     self.recording_finished
                     or (
@@ -315,9 +325,12 @@ class Application:
                     self.record_overlay,
                     [float(row["timestamp"]) for row in self.frame_log],
                 )
-                self.display.report_ready(self.practice_file)
+                self.recording_saved = True
+                if self.display is not None:
+                    self.display.report_ready(self.practice_file)
                 if (
-                    not self.calibration_only
+                    self.display is not None
+                    and not self.calibration_only
                     and self.practice_file.suffix.lower() == ".tp"
                     and self.record_video is not None
                     and hasattr(self.display, "segment_saved")
@@ -356,13 +369,22 @@ class Application:
 
     def accept(self) -> None:
         if self.candidate:
+            cal_dir = calibration_directory(self.cfg.data_dir)
+            if self.calibration_only:
+                self.release_writers()
+                assert self.record_video is not None and self.record_overlay is not None
+                destination = calibration_path(cal_dir, self.candidate.name)
+                save_calibration_archive(
+                    destination, self.candidate, self.record_video, self.record_overlay,
+                    self.calibration_timestamps,
+                )
+                self.calibration_file = destination
+                self.saved_calibration_path = destination
+                self.recording_saved = True
+                self.record_video = self.record_overlay = None
+            else:
+                self.saved_calibration_path = save_calibration_file(self.candidate, cal_dir)
             self.storage.save_calibration(self.candidate)
-            cal_dir = (
-                Path("calibrations")
-                if self.cfg.data_dir == "data"
-                else Path(self.cfg.data_dir) / "calibrations"
-            )
-            self.saved_calibration_path = save_calibration_file(self.candidate, cal_dir)
             self.reference = self.candidate
             self.candidate = None
             print(
@@ -400,10 +422,15 @@ class Application:
         if key in (ord("c"), ord("r")) and (
             self.calibration_only or self.display is None
         ) and self.state not in ("RUNNING", "PAUSED"):
+            if self.calibration_only:
+                self.release_writers()
+                self.record_video = self.record_overlay = None
             self.samples.clear()
             self.cal_head_angles.clear()
             self.cal_shoulder_clearances.clear()
             self.cal_axis_offsets.clear()
+            self.calibration_timestamps.clear()
+            self.recording_saved = False
             self.candidate = None
             self.cal_start = timestamp + 3
             self.last_beep_sec = None
@@ -436,11 +463,12 @@ class Application:
         return True
 
     def start_recording(self) -> None:
-        if self.display is None or self.calibration_only or self.recording:
+        if self.workspace_path is None or self.calibration_only or self.recording:
             return
         if self.recordings_started >= self.cfg.max_recordings:
             self.notice = f"Recording limit reached ({self.cfg.max_recordings})"
-            self.display.recording_states.put("limit")
+            if self.display is not None:
+                self.display.recording_states.put("limit")
             return
         assert self.workspace_path is not None
         index = self.recordings_started
@@ -449,11 +477,73 @@ class Application:
         self.frame_log.clear()
         self.report_written = False
         self.recording_finished = False
+        self.recording_saved = False
         self.recording = True
         self.recordings_started += 1
-        self.display.recording.set()
-        self.display.recording_states.put("recording")
+        if self.beat_tracker is not None:
+            with self.beat_tracker.lock:
+                self.beat_tracker.recorded_chunks.clear()
+        if self.display is not None:
+            self.display.recording.set()
+            self.display.recording_states.put("recording")
         self.notice = "Recording video; E saves, Q saves and quits"
+
+    def release_writers(self) -> None:
+        for writer in (self.raw_writer, self.overlay_writer, self.overlay_lines_writer):
+            if writer is not None:
+                writer.release()
+        self.raw_writer = self.overlay_writer = self.overlay_lines_writer = None
+
+    def stop_recording(self, timestamp: float) -> None:
+        self.release_writers()
+        if self.beat_tracker is not None:
+            videos = [p for p in (self.record_video, self.record_overlay) if p is not None]
+            self.beat_tracker.mux_into_videos(videos)
+            with self.beat_tracker.lock:
+                self.beat_tracker.recorded_chunks.clear()
+        self.recording = False
+        self.recording_finished = True
+        self.auto_recording_active = False
+        if self.display is not None:
+            self.display.recording.clear()
+            self.display.recording_states.put("ready")
+        self.finish(timestamp, "completed")
+        self.record_video = self.record_overlay = None
+        self.recording_finished = False
+        self.frame_log.clear()
+
+    def update_auto_recording(self, playing: bool, timestamp: float) -> None:
+        enabled = (
+            self.display is not None
+            and self.display.auto_recording.is_set()
+            and self.beat_tracker is not None
+            and self.beat_tracker.using_live_stream
+            and not self.calibration_only
+        )
+        if not enabled:
+            self.music_since = self.silence_since = None
+            if self.auto_recording_active:
+                self.stop_recording(timestamp)
+            return
+        if playing:
+            self.silence_since = None
+            if self.music_since is None:
+                self.music_since = timestamp
+            if (
+                not self.recording
+                and timestamp - self.music_since + 1e-9 >= self.cfg.auto_record_start_delay
+            ):
+                self.start_recording()
+                self.auto_recording_active = self.recording
+        else:
+            self.music_since = None
+            if self.silence_since is None:
+                self.silence_since = timestamp
+            if (
+                self.auto_recording_active
+                and timestamp - self.silence_since + 1e-9 >= self.cfg.auto_record_stop_delay
+            ):
+                self.stop_recording(timestamp)
 
     def poll_key(self, quit_only: bool = False) -> int:
         if self.display is not None:
@@ -482,9 +572,6 @@ class Application:
 
     def run(self) -> list[Path]:
         status = "completed"
-        raw_writer: cv2.VideoWriter | None = None
-        overlay_writer: cv2.VideoWriter | None = None
-        overlay_lines_writer: cv2.VideoWriter | None = None
         if self.display is None:
             print(GUIDANCE)
         elif self.calibration_only:
@@ -495,6 +582,13 @@ class Application:
                 "To calibrate, use References > Open calibration camera."
             )
         try:
+            if self.workspace_path is None and (self.record_video or self.record_overlay):
+                self.workspace_path = Path(mkdtemp(prefix="tango-recording-"))
+                self.practice_file = practice_path(
+                    practice_directory(self.cfg.data_dir),
+                    self.practice_name or f"Practice_{time.time_ns()}",
+                )
+                self.start_recording()
             self.model_hash = verify(Path(self.cfg.model_path))
             self.versions = runtime_versions(self.model_hash)
             if self.estimator is None:
@@ -520,7 +614,7 @@ class Application:
                 self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose-inference")
             initialized = False
             while True:
-                tick = time.monotonic()
+                tick = time.perf_counter()
                 captured = self.capture.read()
                 if captured is None:
                     if self.video:
@@ -537,6 +631,8 @@ class Application:
                 timestamp = captured.timestamp
                 self.last_timestamp = timestamp
                 self.capture.last = timestamp
+                beat_state = self.beat_tracker.state_at(timestamp) if self.beat_tracker else None
+                self.update_auto_recording(bool(beat_state and beat_state["playing"]), timestamp)
                 if (
                     self.display is not None
                     and self.display.recording.is_set()
@@ -544,12 +640,22 @@ class Application:
                 ):
                     self.start_recording()
                 frame = self.estimate_responsively(captured.image, timestamp)
-                if self.record_video:
-                    if raw_writer is None:
-                        raw_writer = _open_writer(
+                calibration_frame = (
+                    self.calibration_only
+                    and self.cal_start is not None
+                    and self.cal_start <= timestamp < self.cal_start + self.cfg.calibration_duration
+                )
+                if calibration_frame:
+                    assert self.workspace_path is not None
+                    self.record_video = self.workspace_path / "video_00.mp4"
+                    self.record_overlay = self.workspace_path / "overlay_00.mp4"
+                    self.calibration_timestamps.append(timestamp)
+                if self.record_video and (not self.calibration_only or calibration_frame):
+                    if self.raw_writer is None:
+                        self.raw_writer = _open_writer(
                             self.record_video, frame.width, frame.height, self.capture.fps
                         )
-                    raw_writer.write(captured.image)
+                    self.raw_writer.write(captured.image)
                 current_profile = profile(
                     self.cfg,
                     frame.width,
@@ -571,7 +677,7 @@ class Application:
                 )
                 if self.cal_start is not None:
                     end = self.cal_start + self.cfg.calibration_duration
-                    if self.cal_start <= timestamp <= end:
+                    if self.cal_start <= timestamp < end:
                         self.samples.append(observation)
                         sec_idx = int(timestamp - self.cal_start)
                         if sec_idx != self.last_beep_sec and timestamp < end:
@@ -807,7 +913,6 @@ class Application:
                 quality_reason = next(
                     (q.reason for q in observation.quality.values() if not q.valid), ""
                 )
-                beat_state = self.beat_tracker.state_at(timestamp) if self.beat_tracker else None
                 has_counted_beat = bool(beat_state and beat_state["beat"] > 0)
                 active_bpm = (
                     float(beat_state["bpm"])
@@ -985,11 +1090,10 @@ class Application:
                         active = sum(b - a for a, b in self.session.spans)
                         if self.session.start is not None and not self.session.finished:
                             active += timestamp - self.session.start
-                    fps = (
-                        1 / float(np.mean(self.inference_times[-30:]))
-                        if self.inference_times
-                        else 0
+                    mean_duration = (
+                        float(np.mean(self.inference_times[-30:])) if self.inference_times else 0.0
                     )
+                    fps_label = f"{1 / mean_duration:.1f}" if mean_duration > 0 else "N/A"
                     head_str = "N/A" if head_angle is None else f"{head_angle:+.1f} deg"
                     sh_str = (
                         "N/A"
@@ -1054,7 +1158,7 @@ class Application:
                     )
                     lines = [
                         (
-                            f"{self.state} | active {active:.1f}s | processed {fps:.1f} FPS | "
+                            f"{self.state} | active {active:.1f}s | processed {fps_label} FPS | "
                             f"side {self.cfg.side}, facing {self.cfg.facing}"
                         ),
                         (
@@ -1139,15 +1243,15 @@ class Application:
                         show_vertical_axis=self.show_vertical_axis,
                         show_footer=self.display is None,
                     )
-                    if self.record_overlay:
-                        if overlay_writer is None:
-                            overlay_writer = _open_writer(
+                    if self.record_overlay and (not self.calibration_only or calibration_frame):
+                        if self.overlay_writer is None:
+                            self.overlay_writer = _open_writer(
                                 self.record_overlay,
                                 panel.shape[1],
                                 panel.shape[0],
                                 self.capture.fps,
                             )
-                        overlay_writer.write(panel)
+                        self.overlay_writer.write(panel)
                         if self.display is not None and self.recording:
                             lines_panel = draw(
                                 render_floor_guide(captured.image),
@@ -1160,17 +1264,17 @@ class Application:
                                 show_vertical_axis=True,
                                 show_footer=False,
                             )
-                            if overlay_lines_writer is None:
+                            if self.overlay_lines_writer is None:
                                 lines_path = self.record_overlay.with_name(
                                     self.record_overlay.stem + "_lines.mp4"
                                 )
-                                overlay_lines_writer = _open_writer(
+                                self.overlay_lines_writer = _open_writer(
                                     lines_path,
                                     lines_panel.shape[1],
                                     lines_panel.shape[0],
                                     self.capture.fps,
                                 )
-                            overlay_lines_writer.write(lines_panel)
+                            self.overlay_lines_writer.write(lines_panel)
                     if not self.headless:
                         if self.display is not None:
                             self.display.show(panel)
@@ -1187,21 +1291,9 @@ class Application:
                             break
                 if self.stop_recording_requested:
                     self.stop_recording_requested = False
-                    for writer in (raw_writer, overlay_writer, overlay_lines_writer):
-                        if writer is not None:
-                            writer.release()
-                    raw_writer = overlay_writer = overlay_lines_writer = None
-                    self.recording = False
-                    self.recording_finished = True
-                    if self.display is not None:
-                        self.display.recording.clear()
-                        self.display.recording_states.put("ready")
-                    self.finish(timestamp, "completed")
-                    self.record_video = self.record_overlay = None
-                    self.recording_finished = False
-                    self.frame_log.clear()
+                    self.stop_recording(timestamp)
                 self.latencies.append((time.monotonic() - captured.captured_at) * 1000)
-                self.inference_times.append(time.monotonic() - tick)
+                self.inference_times.append(time.perf_counter() - tick)
         except KeyboardInterrupt:
             status = "stopped"
         except Exception:
@@ -1214,17 +1306,7 @@ class Application:
                     end_time = max(end_time, time.monotonic() - self.capture.origin)
                 elif self.capture and self.video and status == "completed" and self.capture.fps > 0:
                     end_time += 1 / self.capture.fps
-                if raw_writer:
-                    raw_writer.release()
-                    print(f"Saved raw video: {self.record_video}")
-                    raw_writer = None
-                if overlay_writer:
-                    overlay_writer.release()
-                    print(f"Saved overlay video: {self.record_overlay}")
-                    overlay_writer = None
-                if overlay_lines_writer:
-                    overlay_lines_writer.release()
-                    overlay_lines_writer = None
+                self.release_writers()
                 if self.beat_tracker:
                     self.beat_tracker.close()
                     if not self.aborted:
@@ -1262,6 +1344,6 @@ class Application:
                             self.display.close()
                         elif not self.headless:
                             cv2.destroyAllWindows()
-                        if self.workspace_path is not None and (self.aborted or self.report_written):
+                        if self.workspace_path is not None and (self.aborted or self.recording_saved):
                             shutil.rmtree(self.workspace_path, ignore_errors=True)
         return self.outputs

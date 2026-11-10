@@ -10,6 +10,6 @@
   "upstream_guide": "https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker",
   "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
   "training_data": "The card describes consented AR and fitness images and GHUM-derived synthetic supervision. Individual source images, full provenance, and redistribution licences are not published here. No training data or GHUM body-model assets are distributed by this application.",
-  "distribution": "Weights are not bundled. Explicit fetch installs this identified upstream bundle; preserve Apache notices on redistribution.",
+  "distribution": "Source installations fetch weights explicitly. Desktop installers bundle this verified upstream model; preserve Apache notices on redistribution.",
   "reviewed_on": "2026-11-01"
 }

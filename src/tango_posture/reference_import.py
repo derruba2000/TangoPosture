@@ -2311,9 +2311,9 @@ def analyse_imported_clip(
                 cancel_check=cancel_check,
             )
         ):
-            t0 = time.monotonic()
+            t0 = time.perf_counter()
             obs = est.estimate(item.image, item.source_time)
-            infer_times.append(time.monotonic() - t0)
+            infer_times.append(time.perf_counter() - t0)
             decoded_frames.append((item.frame_index, item.source_time, item.clip_time, obs))
             frame_times.append((item.frame_index, item.source_time, item.clip_time))
             if progress_callback is not None and (idx % 5 == 0 or idx + 1 >= expected_frames):
@@ -2763,10 +2763,11 @@ def analyse_imported_clip(
         cfg=cfg,
     )
 
+    mean_duration = float(np.mean(infer_times)) if infer_times else 0.0
     performance = {
         "model_hash": model_hash,
         "resolution": [probe.width, probe.height],
-        "processed_fps": (1.0 / float(np.mean(infer_times))) if infer_times else probe.fps,
+        "processed_fps": 1.0 / mean_duration if mean_duration > 0 else None,
         "dropped_frames": 0,
         "timestamp_fallback": False,
     }

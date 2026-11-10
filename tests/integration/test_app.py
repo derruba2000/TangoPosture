@@ -53,6 +53,30 @@ class FakeEstimator:
         self.closed = True
 
 
+def test_zero_duration_processing_has_unavailable_fps(tmp_path, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    monkeypatch.setattr("tango_posture.app.time.perf_counter", lambda: 10.0)
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            self.request("r")
+
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(count=5),
+        estimator=FakeEstimator(), display=Buttons(),
+    )
+    try:
+        app.run()
+        assert app.inference_times == [0.0] * 5
+        assert app.performance()["processed_fps"] is None
+        assert app.recording_saved
+    finally:
+        storage.close()
+
+
 @pytest.mark.parametrize(
     "ending,status",
     [
@@ -354,7 +378,10 @@ def test_three_recordings_share_one_practice_archive(tmp_path, cfg, monkeypatch)
         storage.close()
 
 
-def test_archive_save_failure_preserves_recordings_and_closes_capture(tmp_path, cfg, monkeypatch):
+@pytest.mark.parametrize("native_display", [False, True])
+def test_archive_save_failure_preserves_recordings_and_closes_capture(
+    tmp_path, cfg, monkeypatch, native_display
+):
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     workspace = tmp_path / "recovery"
     workspace.mkdir()
@@ -363,14 +390,21 @@ def test_archive_save_failure_preserves_recordings_and_closes_capture(tmp_path, 
     def fail_save(*args):
         raise OSError("archive disk full")
 
-    monkeypatch.setattr("tango_posture.archive.append_segment", fail_save)
+    monkeypatch.setattr("tango_posture.app.append_segment", fail_save)
     cfg.data_dir = str(tmp_path)
     cfg.beat_tracking = False
     storage = Storage(tmp_path)
     capture, estimator = FakeCapture(count=3), FakeEstimator()
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            if not self.recording.is_set():
+                self.request("r")
+
     app = Application(
-        cfg, storage, video="fixture", headless=True, capture=capture,
+        cfg, storage, video="fixture", headless=not native_display, capture=capture,
         estimator=estimator, record_video=tmp_path / "raw.mp4",
+        display=Buttons() if native_display else None,
     )
     try:
         with pytest.raises(OSError, match="disk full"):
@@ -379,6 +413,7 @@ def test_archive_save_failure_preserves_recordings_and_closes_capture(tmp_path, 
         assert (workspace / "video_00.mp4").stat().st_size > 0
         assert (workspace / "overlay_00.mp4").stat().st_size > 0
         assert list(workspace.glob("report_*.md"))
+        assert not app.recording_saved
     finally:
         storage.close()
 
@@ -420,6 +455,10 @@ def test_calibration_window_capture_replaces_one_archive_on_retry(tmp_path, cfg,
         assert loaded.id == display.saved[-1]
         replay = PracticeArchive(app.calibration_file)
         try:
+            metadata = json.loads((replay.folder / "report_00.metadata.json").read_text())
+            timestamps = metadata["frame_timestamps"]
+            assert len(timestamps) == 120
+            assert np.diff(timestamps) == pytest.approx([0.1] * 119)
             for name in ("video_00.mp4", "overlay_00.mp4"):
                 video = cv2.VideoCapture(str(replay.folder / name))
                 assert video.isOpened()
@@ -541,6 +580,35 @@ def test_auto_recording_requires_live_microphone_and_stops_when_unchecked(tmp_pa
     finally:
         import shutil
 
+        shutil.rmtree(app.workspace_path)
+        storage.close()
+
+
+def test_auto_recording_does_not_stop_a_manual_recording(tmp_path, cfg, monkeypatch):
+    import shutil
+
+    from tango_posture.beat import BeatTracker
+
+    cfg.data_dir = str(tmp_path)
+    cfg.auto_record_start_delay = 0
+    cfg.auto_record_stop_delay = 0
+    storage = Storage(tmp_path)
+    display = GuiDisplay()
+    display.auto_recording.set()
+    app = Application(cfg, storage, display=display)
+    app.beat_tracker = BeatTracker(enable_audio=False)
+    app.beat_tracker.using_live_stream = True
+    monkeypatch.setattr(app, "finish", lambda *_: pytest.fail("Manual recording was stopped"))
+    try:
+        app.beat_tracker.recorded_chunks.append(np.ones(100, dtype=np.float32))
+        app.start_recording()
+        assert not app.beat_tracker.recorded_chunks
+        app.update_auto_recording(True, 0)
+        app.update_auto_recording(False, 1)
+        display.auto_recording.clear()
+        app.update_auto_recording(False, 2)
+        assert app.recording and not app.auto_recording_active
+    finally:
         shutil.rmtree(app.workspace_path)
         storage.close()
 
