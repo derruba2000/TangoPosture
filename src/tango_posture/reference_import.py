@@ -473,7 +473,7 @@ def _download_with_python_module(
     cancelled = False
     ca_bundle = _trusted_ca_bundle()
     if ca_bundle is not None:
-        os.environ.setdefault("SSL_CERT_FILE", str(ca_bundle))
+        os.environ["SSL_CERT_FILE"] = str(ca_bundle)
 
     def hook(status: dict[str, Any]) -> None:
         nonlocal cancelled
@@ -525,8 +525,6 @@ def _download_with_subprocess(
         str(target_mp4),
         link.canonical_url,
     ]
-    if ca_bundle is not None:
-        cmd[-1:-1] = ["--ca-certificate", str(ca_bundle)]
     log_path = target_mp4.parent / f".{cache_stem}.log"
     try:
         with log_path.open("w+b") as log:

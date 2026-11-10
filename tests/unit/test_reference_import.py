@@ -21,6 +21,8 @@ from tango_posture.reference_import import (
     SOUNDTRACK_SOURCE_LABEL,
     ImportCancelledError,
     YouTubeClockAlignment,
+    YouTubeSourceLink,
+    _download_with_subprocess,
     analyse_imported_clip,
     analyse_video_soundtrack,
     build_youtube_open_url,
@@ -657,6 +659,47 @@ def test_facebook_reel_download_uses_validated_cache_and_injected_downloader(tmp
     cached_path, _ = download_facebook_reel(url, output_dir, downloader=fake_downloader)
     assert cached_path == video_path
     assert len(calls) == 1
+
+
+def test_ytdlp_subprocess_uses_ssl_cert_file_not_unsupported_ca_option(tmp_path, monkeypatch):
+    from tango_posture import reference_import
+
+    ca_bundle = tmp_path / "ca-bundle.pem"
+    ca_bundle.write_text("trusted test certificate bundle")
+    monkeypatch.setattr(reference_import, "_trusted_ca_bundle", lambda: ca_bundle)
+    captured: dict = {}
+
+    class Process:
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return Process()
+
+    monkeypatch.setattr(reference_import.subprocess, "Popen", fake_popen)
+    link = YouTubeSourceLink(
+        canonical_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        video_id="dQw4w9WgXcQ",
+    )
+
+    _download_with_subprocess(
+        ["yt-dlp"],
+        link,
+        tmp_path / "youtube_dQw4w9WgXcQ.mp4",
+        None,
+        "youtube_dQw4w9WgXcQ",
+        "YouTube",
+    )
+
+    assert "--ca-certificate" not in captured["command"]
+    assert captured["env"]["SSL_CERT_FILE"] == str(ca_bundle)
 
 
 def test_facebook_reel_url_runs_import_pipeline_and_saves_provenance(tmp_path):
