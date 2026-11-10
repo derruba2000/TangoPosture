@@ -232,12 +232,11 @@ class Application:
         self.inference_times.clear()
 
     def performance(self) -> dict:
+        mean_duration = float(np.mean(self.inference_times)) if self.inference_times else 0.0
         return {
             **self.versions,
             "resolution": [self.capture_profile.get("width"), self.capture_profile.get("height")],
-            "processed_fps": 1 / float(np.mean(self.inference_times))
-            if self.inference_times
-            else None,
+            "processed_fps": 1 / mean_duration if mean_duration > 0 else None,
             "capture_to_overlay_ms_median": float(np.median(self.latencies))
             if self.latencies
             else None,
@@ -615,7 +614,7 @@ class Application:
                 self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose-inference")
             initialized = False
             while True:
-                tick = time.monotonic()
+                tick = time.perf_counter()
                 captured = self.capture.read()
                 if captured is None:
                     if self.video:
@@ -1091,11 +1090,10 @@ class Application:
                         active = sum(b - a for a, b in self.session.spans)
                         if self.session.start is not None and not self.session.finished:
                             active += timestamp - self.session.start
-                    fps = (
-                        1 / float(np.mean(self.inference_times[-30:]))
-                        if self.inference_times
-                        else 0
+                    mean_duration = (
+                        float(np.mean(self.inference_times[-30:])) if self.inference_times else 0.0
                     )
+                    fps_label = f"{1 / mean_duration:.1f}" if mean_duration > 0 else "N/A"
                     head_str = "N/A" if head_angle is None else f"{head_angle:+.1f} deg"
                     sh_str = (
                         "N/A"
@@ -1160,7 +1158,7 @@ class Application:
                     )
                     lines = [
                         (
-                            f"{self.state} | active {active:.1f}s | processed {fps:.1f} FPS | "
+                            f"{self.state} | active {active:.1f}s | processed {fps_label} FPS | "
                             f"side {self.cfg.side}, facing {self.cfg.facing}"
                         ),
                         (
@@ -1295,7 +1293,7 @@ class Application:
                     self.stop_recording_requested = False
                     self.stop_recording(timestamp)
                 self.latencies.append((time.monotonic() - captured.captured_at) * 1000)
-                self.inference_times.append(time.monotonic() - tick)
+                self.inference_times.append(time.perf_counter() - tick)
         except KeyboardInterrupt:
             status = "stopped"
         except Exception:

@@ -56,6 +56,11 @@ Ask a tango teacher to annotate the intended reference's suitability and visible
   `uv run --frozen mypy --platform win32 src` to check both platform-specific
   type paths locally. The latter is not a Windows runtime test; the CI Windows
   job remains necessary.
+- Windows portability regressions cover zero-duration timing samples (reported
+  as unavailable FPS, not a division error), non-cascade menu entries, explicit
+  UTF-8 manual decoding, and serialized replay extraction/archive replacement.
+  macOS chart copying is exercised with a mocked executable rather than assuming
+  a macOS system tool exists on every test runner.
 - Pure synthetic geometry/timing, simulated lifecycle and storage tests: see implementation report.
 - Verified model loaded with CPU delegate and processed blank generated frames and a short locally encoded blank video.
 - Blank-video run used blocked Python socket/URL calls. It produced UNKNOWN observations, completed exports, and released capture/detector resources.

@@ -53,6 +53,30 @@ class FakeEstimator:
         self.closed = True
 
 
+def test_zero_duration_processing_has_unavailable_fps(tmp_path, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    monkeypatch.setattr("tango_posture.app.time.perf_counter", lambda: 10.0)
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            self.request("r")
+
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(count=5),
+        estimator=FakeEstimator(), display=Buttons(),
+    )
+    try:
+        app.run()
+        assert app.inference_times == [0.0] * 5
+        assert app.performance()["processed_fps"] is None
+        assert app.recording_saved
+    finally:
+        storage.close()
+
+
 @pytest.mark.parametrize(
     "ending,status",
     [

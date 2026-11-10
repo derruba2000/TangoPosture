@@ -364,11 +364,11 @@ def _store_analysis(path: Path, analysis: Path) -> None:
 class PracticeArchive:
     def __init__(self, path: Path):
         self.path = path.expanduser().resolve()
-        self.manifest = read_manifest(self.path)
         self.temporary = TemporaryDirectory(prefix="tango-replay-")
         self.folder = Path(self.temporary.name)
         try:
-            with ZipFile(self.path) as archive:
+            with _archive_lock(self.path), ZipFile(self.path) as archive:
+                self.manifest = read_manifest(self.path)
                 names = set()
                 for member in archive.infolist():
                     name = PurePosixPath(member.filename)

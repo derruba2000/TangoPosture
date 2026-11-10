@@ -1,4 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
 from zipfile import ZipFile
 
@@ -104,6 +105,47 @@ def test_concurrent_appends_do_not_replace_other_segments(tmp_path):
                    for _ in range(8)]
         assert sorted(future.result() for future in futures) == list(range(8))
     assert len(read_manifest(archive)["segments"]) == 8
+
+
+def test_replay_extraction_blocks_archive_replacement(tmp_path, monkeypatch):
+    archive, report, raw = (tmp_path / name for name in ("practice.tp", "report.md", "raw.mp4"))
+    report.write_text("# First")
+    raw.write_bytes(b"raw")
+    append_segment(archive, report, raw, None, [0.0])
+    extracting = threading.Event()
+    release = threading.Event()
+    original_open = ZipFile.open
+    replay_thread = None
+
+    def extract_replay():
+        nonlocal replay_thread
+        replay_thread = threading.get_ident()
+        return PracticeArchive(archive)
+
+    def open_member(stored, name, mode="r", *args, **kwargs):
+        if (
+            str(stored.filename) == str(archive)
+            and getattr(name, "filename", name) == "video_00.mp4"
+            and threading.get_ident() == replay_thread
+        ):
+            extracting.set()
+            assert release.wait(5), "Replay extraction was not released"
+        return original_open(stored, name, mode, *args, **kwargs)
+
+    monkeypatch.setattr(ZipFile, "open", open_member)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        replay_job = workers.submit(extract_replay)
+        try:
+            assert extracting.wait(5), "Replay extraction did not start"
+            append_job = workers.submit(append_segment, archive, report, raw, None, [1.0])
+            with pytest.raises(TimeoutError):
+                append_job.result(timeout=0.1)
+        finally:
+            release.set()
+            replay = replay_job.result(timeout=5)
+            replay.close()
+        assert append_job.result(timeout=5) == 1
+    assert len(read_manifest(archive)["segments"]) == 2
 
 
 def test_calibration_archive_replaces_all_media_and_loads_its_reference(tmp_path, reference):

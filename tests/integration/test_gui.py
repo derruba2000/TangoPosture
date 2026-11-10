@@ -67,9 +67,10 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
     opened = []
     monkeypatch.setattr("tango_posture.gui.webbrowser.open", lambda url: opened.append(url))
     menu = root.nametowidget(root.cget("menu"))
+    menu.insert_separator(0)
     help_index = next(
         index for index in range(menu.index("end") + 1)
-        if menu.entrycget(index, "label") == "Help"
+        if menu.type(index) == "cascade" and menu.entrycget(index, "label") == "Help"
     )
     help_menu = root.nametowidget(menu.entrycget(help_index, "menu"))
     about_index = next(
@@ -304,7 +305,12 @@ def test_main_window_has_no_duplicate_coach_or_minimize_controls(studio):
     ]
     assert footer_labels == ["Open practice coach"]
     menu = root.nametowidget(root.cget("menu"))
-    files = root.nametowidget(menu.entrycget(0, "menu"))
+    menu.insert_separator(0)
+    files_index = next(
+        index for index in range(menu.index("end") + 1)
+        if menu.type(index) == "cascade" and menu.entrycget(index, "label") == "File"
+    )
+    files = root.nametowidget(menu.entrycget(files_index, "menu"))
     labels = [
         files.entrycget(index, "label")
         for index in range(files.index("end") + 1)
@@ -318,7 +324,11 @@ def test_help_menu_opens_searchable_manual_with_section_navigation(studio):
     assert gui.help_window is None
     assert gui.help_button.winfo_ismapped()
     menu = root.nametowidget(root.cget("menu"))
-    assert "Help" in [menu.entrycget(index, "label") for index in range(menu.index("end") + 1)]
+    menu.insert_separator(0)
+    assert "Help" in [
+        menu.entrycget(index, "label") for index in range(menu.index("end") + 1)
+        if menu.type(index) == "cascade"
+    ]
     gui.help_button.invoke()
     root.update()
     assert gui.help_window is not None
@@ -874,8 +884,8 @@ def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studi
 
     panel.pump()
     root.update()
-    assert read_movement_analysis(archive, 0) is not None
-    assert read_movement_analysis(archive, 1) is not None
+    assert read_movement_analysis(archive, 0) is not None, panel.movement_status.get()
+    assert read_movement_analysis(archive, 1) is not None, panel.movement_status.get()
 
     # Reopen the archive from scratch and verify both segments restore their movement analysis
     panel.load_report(archive)
@@ -1330,7 +1340,7 @@ def test_analytics_zoom_pan_and_copy_chart_image(studio, monkeypatch):
     assert zoomed_lines < initial_lines
 
     command_calls = []
-    monkeypatch.setattr("tango_posture.review_ui.shutil.which", lambda _: "/usr/bin/true")
+    monkeypatch.setattr("tango_posture.review_ui.shutil.which", lambda _: str(Path(__file__)))
     monkeypatch.setattr(
         "tango_posture.review_ui.subprocess.run",
         lambda command, **_: command_calls.append(command) or SimpleNamespace(returncode=0, stderr=""),
@@ -1404,7 +1414,7 @@ def test_analytics_can_analyze_practice_without_saved_metrics(studio, tmp_path):
         root.update()
         time.sleep(0.02)
     panel.pump()
-    assert panel.practice_analytics_data is not None
+    assert panel.practice_analytics_data is not None, panel.analytics_status.get()
     assert len(panel.practice_analytics_data["frames"]) == 36
     assert panel.coach_data is panel.practice_analytics_data
     assert "Practice analyzed" in panel.analytics_status.get()
@@ -1486,4 +1496,3 @@ def test_analytics_time_alignment_algorithm_and_manual_parameters(studio):
     reset_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
     assert reset_coords == before_coords
     panel.close_posture_analytics()
-

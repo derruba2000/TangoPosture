@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import shutil
 import wave
+from itertools import count
 from pathlib import Path
 
 import cv2
@@ -280,6 +281,25 @@ def test_youtube_independent_clock_alignment():
         )
         is None
     )
+
+
+@pytest.mark.parametrize("duration,fps_label", [(0.0, "N/A"), (0.002, "500.0 FPS")])
+def test_import_processing_fps_handles_timer_resolution(tmp_path, monkeypatch, duration, fps_label):
+    ticks = count(0.0, duration)
+    monkeypatch.setattr("tango_posture.reference_import.time.perf_counter", lambda: next(ticks))
+    video_path = _write_test_video(tmp_path / "short.avi", duration_seconds=1.0)
+    result = analyse_imported_clip(
+        video_path=video_path,
+        cfg=Config(data_dir=str(tmp_path / "data")),
+        report_dir=tmp_path / "reports",
+        selected_in=0.0,
+        selected_out=1.0,
+        analysis_mode="movement",
+        analyse_soundtrack=False,
+        estimator_factory=_SyntheticEstimator,
+    )
+    report = result.report_path.read_text(encoding="utf-8")
+    assert f"| Runtime Throughput & Latency | `{fps_label}`" in report
 
 
 def test_virtual_clip_range_decoding_and_limits(tmp_path):
@@ -727,4 +747,3 @@ def test_facebook_reel_url_runs_import_pipeline_and_saves_provenance(tmp_path):
     assert record.facebook_reel["canonical_url"] == result.facebook_reel.canonical_url
     assert record.youtube_link is None
     assert result.coach_data is not None and result.coach_data["frames"]
-
