@@ -1,5 +1,6 @@
 """Desktop controller. Headless and GUI use the same observation/session pipeline."""
 
+import json
 import platform
 import shutil
 import subprocess
@@ -286,6 +287,15 @@ class Application:
                 recorded_overlay=self.record_overlay,
             )
             self.report_written = True
+            if self.record_overlay is not None and self.frame_log:
+                notes_path = self.record_overlay.with_suffix(".notes.jsonl")
+                notes_path.write_text(
+                    "".join(
+                        json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n"
+                        for row in self.frame_log
+                    ),
+                    encoding="utf-8",
+                )
             if (
                 self.display is not None
                 and self.practice_file is not None
@@ -901,6 +911,16 @@ class Application:
                     else:
                         knee_straight_elapsed = 0.0
                 bad_knees = knee_straight_elapsed >= self.cfg.knee_straight_duration
+                if self.frame_log:
+                    self.frame_log[-1]["alerts"] = {
+                        "head": bool(bad_head),
+                        "shoulders": bool(bad_shoulders),
+                        "knees": bool(bad_knees),
+                        "axis": bool(bad_axis),
+                    }
+                    self.frame_log[-1]["clip_timestamp"] = float(
+                        timestamp - self.frame_log[0]["timestamp"]
+                    )
 
                 sh_disp_pct = (
                     shoulder_elev_pct

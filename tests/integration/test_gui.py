@@ -1201,3 +1201,161 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     assert panel.comparison_summary_var.get() != ""
 
 
+def test_analytics_charts_order_clip_frames_and_shade_practice_alerts(studio):
+    from tango_posture.review_ui import _analytics_points, _draw_analytics_chart
+
+    root, gui = studio
+    coach = {
+        "frames": {
+            "2": {
+                "clip_timestamp": 1.0,
+                "head_angle": -18.0,
+                "alerts": {"head": True},
+            },
+            "0": {
+                "clip_timestamp": 0.0,
+                "head_angle": -5.0,
+                "alerts": {"head": False},
+            },
+        }
+    }
+    points = _analytics_points(coach, "head_angle", alert_key="head")
+    assert points == [(0.0, -5.0, False), (1.0, -18.0, True)]
+
+    chart_frame = tk.Frame(root)
+    chart_frame.grid(row=10, column=0, sticky="nsew")
+    chart = tk.Canvas(chart_frame, width=600, height=280)
+    chart.pack()
+    root.update()
+    _draw_analytics_chart(
+        chart,
+        title="Head alignment",
+        unit="degrees",
+        practice=points,
+        reference=points,
+        threshold=-15.0,
+    )
+    fills = [chart.itemcget(item, "fill") for item in chart.find_all()]
+    assert "#fde2e2" in fills
+    assert "#c62828" in fills
+    chart.destroy()
+
+    panel = gui.review
+    panel.coach_data = coach
+    panel.reference_coach_data = coach
+    panel.open_posture_analytics()
+    root.update()
+    assert len(panel.analytics_canvases) == 4
+    assert "Practice: 2 analyzed frames" in panel.analytics_status.get()
+    assert "Reference: 2 analyzed frames" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+
+def test_practice_analytics_loads_saved_per_frame_metrics(studio, tmp_path):
+    _root, gui = studio
+    report = review_fixture(tmp_path)
+    overlay = tmp_path / "overlay.avi"
+    rows = [
+        {
+            "timestamp": 8.0,
+            "clip_timestamp": 0.0,
+            "head_angle": -2.0,
+            "shoulder_elev_pct": 1.0,
+            "knee_bend_deg": 14.0,
+            "axis_curve_ratio": 0.01,
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        },
+        {
+            "timestamp": 8.1,
+            "clip_timestamp": 0.1,
+            "head_angle": -20.0,
+            "shoulder_elev_pct": 12.0,
+            "knee_bend_deg": 4.0,
+            "axis_curve_ratio": 0.08,
+            "alerts": {"head": True, "shoulders": True, "knees": True, "axis": True},
+        },
+    ]
+    overlay.with_suffix(".notes.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    gui.review.load_report(report)
+    assert gui.review.coach_data is None
+    assert gui.review.practice_analytics_data is not None
+    assert len(gui.review.practice_analytics_data["frames"]) == 2
+    assert gui.review.practice_analytics_data["frames"]["1"]["alerts"]["axis"] is True
+    gui.review.show_video_notes(1)
+    assert "Head:" in gui.review.video_notes.get("1.0", "end")
+
+
+def test_analytics_zoom_pan_and_copy_chart_image(studio, monkeypatch):
+    from types import SimpleNamespace
+
+    root, gui = studio
+    panel = gui.review
+    panel.coach_data = {
+        "frames": {
+            str(index): {
+                "clip_timestamp": float(index),
+                "head_angle": float(index),
+                "alerts": {"head": index > 5},
+            }
+            for index in range(11)
+        }
+    }
+    panel.reference_coach_data = panel.coach_data
+    panel.open_posture_analytics()
+    root.update()
+    chart = panel.analytics_canvases["head"]
+    initial_lines = sum(chart.type(item) == "line" for item in chart.find_all())
+    panel.analytics_zoom_var.set(2.0)
+    panel.analytics_pan_var.set(0.5)
+    panel._refresh_posture_analytics()
+    zoomed_lines = sum(chart.type(item) == "line" for item in chart.find_all())
+    assert zoomed_lines < initial_lines
+
+    command_calls = []
+    monkeypatch.setattr("tango_posture.review_ui.shutil.which", lambda _: "/usr/bin/true")
+    monkeypatch.setattr(
+        "tango_posture.review_ui.subprocess.run",
+        lambda command, **_: command_calls.append(command) or SimpleNamespace(returncode=0, stderr=""),
+    )
+    panel.analytics_metric_var.set("Head alignment")
+    panel.copy_analytics_chart()
+    assert command_calls and command_calls[0][1:3] == ["-c", "-R"]
+    assert "Copied Head alignment chart image" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+
+def test_analytics_can_analyze_practice_without_saved_metrics(studio, tmp_path):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    video = tmp_path / "practice_for_analytics.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter.fourcc(*"mp4v"), 15, (160, 120))
+    assert writer.isOpened()
+    for frame_index in range(36):
+        writer.write(np.full((120, 160, 3), 35 + frame_index, np.uint8))
+    writer.release()
+    estimator = _make_synthetic_movement_estimator(1.0)
+    panel.import_estimator_factory = lambda: estimator(Path("models/pose_landmarker_lite.task"))
+    panel.set_import_video_file(video)
+    panel.opened_video_path = video.resolve()
+    panel.practice_analytics_data = None
+    panel.coach_data = None
+    panel.open_posture_analytics()
+    panel.analyse_practice_for_analytics()
+    deadline = time.monotonic() + 5.0
+    while panel.analytics_job and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    assert panel.practice_analytics_data is not None
+    assert len(panel.practice_analytics_data["frames"]) == 36
+    assert panel.coach_data is panel.practice_analytics_data
+    assert "Practice analyzed" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+

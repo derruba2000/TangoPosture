@@ -1,3 +1,4 @@
+import json
 import socket
 from pathlib import Path
 
@@ -288,6 +289,16 @@ def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cf
         assert len(floor_frames) == 3
         assert floor_frames[0][20, 20].tolist() == [63, 67, 70]
         assert floor_frames[0][470, 320].mean() > floor_frames[0][20, 20].mean()
+        assert app.practice_file is not None
+        archived = PracticeArchive(app.practice_file)
+        try:
+            notes_path = archived.folder / "overlay_00.notes.jsonl"
+            assert notes_path.is_file()
+            notes = [json.loads(line) for line in notes_path.read_text().splitlines()]
+            assert len(notes) == 3
+            assert "clip_timestamp" in notes[0] and "alerts" in notes[0]
+        finally:
+            archived.close()
         assert app.cal_start is None and app.session is None
         assert not app.recording
     finally:

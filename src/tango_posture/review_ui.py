@@ -1,15 +1,20 @@
 """In-app reports, local video replay and asynchronous Ollama review."""
 
 import json
+import math
 import queue
 import re
+import shutil
+import subprocess
 import threading
 import tkinter as tk
 import webbrowser
 from collections.abc import Callable
 from functools import partial
 from http.client import HTTPException
+from itertools import pairwise
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 from typing import Any
@@ -127,6 +132,148 @@ def _render_replay_overlay_frame(
         cv2.putText(result, pane_label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (20, 24, 28), 4, cv2.LINE_AA)
         cv2.putText(result, pane_label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.65, (245, 245, 245), 1, cv2.LINE_AA)
     return result
+
+
+def _analytics_points(
+    coach_data: dict[str, Any] | None,
+    metric: str,
+    *,
+    scale: float = 1.0,
+    alert_key: str,
+) -> list[tuple[float, float, bool]]:
+    frames = coach_data.get("frames") if isinstance(coach_data, dict) else None
+    if not isinstance(frames, dict):
+        return []
+    points: list[tuple[float, float, bool]] = []
+    for entry in frames.values():
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get(metric)
+        timestamp = entry.get("clip_timestamp", entry.get("timestamp"))
+        if not (
+            isinstance(value, int | float)
+            and math.isfinite(value)
+            and isinstance(timestamp, int | float)
+            and math.isfinite(timestamp)
+        ):
+            continue
+        alerts = entry.get("alerts")
+        is_bad = bool(alerts.get(alert_key, False)) if isinstance(alerts, dict) else False
+        points.append((float(timestamp), float(value) * scale, is_bad))
+    return sorted(points, key=lambda point: point[0])
+
+
+def _draw_analytics_chart(
+    canvas: tk.Canvas,
+    *,
+    title: str,
+    unit: str,
+    practice: list[tuple[float, float, bool]],
+    reference: list[tuple[float, float, bool]],
+    threshold: float,
+    zoom: float = 1.0,
+    pan: float = 0.0,
+) -> None:
+    canvas.delete("all")
+    width = max(1, canvas.winfo_width())
+    height = max(1, canvas.winfo_height())
+    canvas.configure(background="#ffffff", highlightthickness=1, highlightbackground="#d0d5d8")
+    canvas.create_text(12, 12, anchor="nw", text=title, font=("TkDefaultFont", 11, "bold"), fill="#263238")
+    if not practice and not reference:
+        canvas.create_text(
+            width / 2,
+            height / 2,
+            text="Coach analysis is not available for either video",
+            fill="#59636a",
+            width=max(100, width - 40),
+        )
+        return
+
+    plot_left, plot_top = 54, 38
+    plot_right, plot_bottom = max(plot_left + 1, width - 16), max(plot_top + 1, height - 34)
+    data_end = max((point[0] for point in (*practice, *reference)), default=1.0)
+    data_end = max(data_end, 1e-3)
+    view_span = data_end / max(1.0, zoom)
+    view_start = max(0.0, data_end - view_span) * min(1.0, max(0.0, pan))
+    view_end = min(data_end, view_start + view_span)
+    practice = [point for point in practice if view_start <= point[0] <= view_end]
+    reference = [point for point in reference if view_start <= point[0] <= view_end]
+    if not practice and not reference:
+        canvas.create_text(
+            width / 2,
+            height / 2,
+            text="No samples in this time window",
+            fill="#59636a",
+        )
+        return
+
+    values = [point[1] for point in (*practice, *reference)]
+    if math.isfinite(threshold):
+        values.append(threshold)
+    low, high = min(values), max(values)
+    spread = high - low
+    padding = max(spread * 0.10, 1.0 if spread == 0 else spread * 0.03)
+    low -= padding
+    high += padding
+    visible_duration = max(view_end - view_start, 1e-3)
+
+    def project(timestamp: float, value: float) -> tuple[float, float]:
+        x = plot_left + ((timestamp - view_start) / visible_duration) * (plot_right - plot_left)
+        y = plot_bottom - ((value - low) / (high - low)) * (plot_bottom - plot_top)
+        return x, y
+
+    for index in range(5):
+        value = low + (high - low) * index / 4.0
+        y = plot_bottom - (plot_bottom - plot_top) * index / 4.0
+        canvas.create_line(plot_left, y, plot_right, y, fill="#e6eaed")
+        canvas.create_text(plot_left - 6, y, anchor="e", text=f"{value:.1f}", fill="#59636a")
+    if math.isfinite(threshold):
+        _, threshold_y = project(0.0, threshold)
+        canvas.create_line(
+            plot_left, threshold_y, plot_right, threshold_y, fill="#d97706", dash=(5, 3)
+        )
+
+    for previous, current in pairwise(practice):
+        if previous[2] or current[2]:
+            x0, _ = project(previous[0], previous[1])
+            x1, _ = project(current[0], current[1])
+            canvas.create_rectangle(
+                x0, plot_top, max(x0 + 1, x1), plot_bottom, fill="#fde2e2", outline=""
+            )
+
+    def draw_series(points: list[tuple[float, float, bool]], base_color: str) -> None:
+        for previous, current in pairwise(points):
+            x0, y0 = project(previous[0], previous[1])
+            x1, y1 = project(current[0], current[1])
+            color = "#c62828" if base_color == "#18804b" and (previous[2] or current[2]) else base_color
+            canvas.create_line(x0, y0, x1, y1, fill=color, width=2)
+        for timestamp, value, is_bad in points:
+            x, y = project(timestamp, value)
+            color = "#c62828" if base_color == "#18804b" and is_bad else base_color
+            canvas.create_oval(x - 2, y - 2, x + 2, y + 2, fill=color, outline=color)
+
+    draw_series(reference, "#2563eb")
+    draw_series(practice, "#18804b")
+    canvas.create_text(
+        plot_left,
+        height - 17,
+        anchor="w",
+        text=f"{int(view_start // 60)}:{view_start % 60:04.1f}",
+        fill="#59636a",
+    )
+    canvas.create_text(
+        plot_right,
+        height - 17,
+        anchor="e",
+        text=f"{int(view_end // 60)}:{view_end % 60:04.1f}",
+        fill="#59636a",
+    )
+    legend_y = 14
+    canvas.create_line(max(plot_left + 8, width - 190), legend_y + 3, max(plot_left + 24, width - 174), legend_y + 3, fill="#18804b", width=2)
+    canvas.create_text(max(plot_left + 28, width - 168), legend_y + 3, anchor="w", text="Practice", fill="#263238")
+    canvas.create_line(max(plot_left + 95, width - 105), legend_y + 3, max(plot_left + 111, width - 89), legend_y + 3, fill="#2563eb", width=2)
+    canvas.create_text(max(plot_left + 115, width - 83), legend_y + 3, anchor="w", text="Reference", fill="#263238")
+    canvas.create_text(plot_left - 8, plot_top - 8, anchor="e", text=unit, fill="#59636a")
 
 
 class MarkdownView(ttk.Frame):
@@ -370,6 +517,7 @@ class ReviewPanel(ttk.Frame):
         self.floor_only_var = tk.BooleanVar(value=False)
         self.show_coach_var = tk.BooleanVar(value=False)
         self.coach_data: dict[str, Any] | None = None
+        self.practice_analytics_data: dict[str, Any] | None = None
         self.movement_status = tk.StringVar(value="Not analysed")
         self.closed = False
         self.events: queue.SimpleQueue = queue.SimpleQueue()
@@ -417,6 +565,15 @@ class ReviewPanel(ttk.Frame):
         self.reference_archive: PracticeArchive | None = None
         self.reference_movement_data: dict[str, Any] | None = None
         self.reference_coach_data: dict[str, Any] | None = None
+        self.analytics_window: tk.Toplevel | None = None
+        self.analytics_canvases: dict[str, tk.Canvas] = {}
+        self.analytics_status = tk.StringVar(value="")
+        self.analytics_job = ""
+        self.analytics_note = ""
+        self.analytics_analyse_button: ttk.Button | None = None
+        self.analytics_metric_var = tk.StringVar(value="Head alignment")
+        self.analytics_zoom_var = tk.DoubleVar(value=1.0)
+        self.analytics_pan_var = tk.DoubleVar(value=0.0)
         self.replay_controls_visible = False
         self.anchor_left_var = tk.StringVar(value="0.0")
         self.anchor_right_var = tk.StringVar(value="0.0")
@@ -496,6 +653,11 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.toggle_replay_controls(),
         )
         self.replay_controls_button.pack(side="left", padx=4)
+        ttk.Button(
+            chooser,
+            text="Analytics",
+            command=lambda: self.guard(self.open_posture_analytics),
+        ).pack(side="left", padx=4)
         ttk.Label(videos, textvariable=self.status, wraplength=1100).pack(
             anchor="w", padx=6, pady=(0, 2)
         )
@@ -819,6 +981,7 @@ class ReviewPanel(ttk.Frame):
             self.current_segment_index = None
         overlay = record.videos.get("Overlay")
         self.frame_notes = []
+        self.practice_analytics_data = None
         if overlay:
             skeleton = overlay.with_name(overlay.stem + "_lines.mp4")
             if skeleton.is_file():
@@ -829,6 +992,29 @@ class ReviewPanel(ttk.Frame):
                     self.frame_notes = [json.loads(line) for line in notes_path.read_text().splitlines()]
                 except (ValueError, OSError):
                     self.frame_notes = []
+        practice_frames: dict[str, dict[str, Any]] = {}
+        cfg = self.config_provider()
+        for index, note in enumerate(self.frame_notes):
+            if not isinstance(note, dict):
+                continue
+            row = dict(note)
+            row.setdefault("clip_timestamp", row.get("timestamp", float(index)))
+            alerts = row.get("alerts")
+            if not isinstance(alerts, dict):
+                hip_offset = row.get("axis_curve_ratio")
+                row["alerts"] = {
+                    "head": row.get("head_angle") is not None
+                    and float(row["head_angle"]) < cfg.head_down_angle,
+                    "shoulders": row.get("shoulder_elev_pct") is not None
+                    and float(row["shoulder_elev_pct"]) >= cfg.shoulder_raise_threshold,
+                    "knees": row.get("knee_bend_deg") is not None
+                    and float(row["knee_bend_deg"]) < cfg.closed_embrace_min_knee_bend,
+                    "axis": hip_offset is not None
+                    and float(hip_offset) > cfg.axis_curve_entry,
+                }
+            practice_frames[str(index)] = row
+        if practice_frames:
+            self.practice_analytics_data = {"version": 1, "frames": practice_frames}
         self.video_paths = {}
         self.video_stream_keys = {}
         original_key = next(
@@ -855,7 +1041,8 @@ class ReviewPanel(ttk.Frame):
                 self.video_paths[label] = practice_path
                 self.video_stream_keys[label] = dynamic_key
         self.report = record
-        self.coach_data = load_report_coach_data(record) if record.is_imported_reference else None
+        self.coach_data = load_report_coach_data(record)
+        self._refresh_posture_analytics()
         if record.is_imported_reference:
             has_coach = self.coach_data is not None
             self.show_coach_var.set(has_coach)
@@ -913,25 +1100,274 @@ class ReviewPanel(ttk.Frame):
 
     def update_comparison(self):
         if self.show_reference_var.get():
-            self.show_reference_video()
+            self.show_reference_video(show_pane=True)
         else:
             self.player.compare([], refresh=False)
-            self.reference_record = None
-            self.reference_movement_data = None
-            self.reference_coach_data = None
             if self.reference_archive is not None:
                 self.reference_archive.close()
                 self.reference_archive = None
+        self._refresh_posture_analytics()
 
     def on_reference_selection(self) -> None:
-        if self.show_reference_var.get():
-            self.show_reference_video()
+        self.show_reference_video(show_pane=self.show_reference_var.get())
+        self._refresh_posture_analytics()
 
     def on_reference_toggle(self) -> None:
         self.update_comparison()
 
-    def show_reference_video(self) -> None:
-        if self.player.reader is None:
+    def open_posture_analytics(self) -> None:
+        if self.analytics_window is not None and self.analytics_window.winfo_exists():
+            self.analytics_window.lift()
+            self._refresh_posture_analytics()
+            return
+
+        window = tk.Toplevel(self)
+        window.title("Practice and reference analytics")
+        window.geometry("1100x720")
+        window.minsize(760, 520)
+        window.transient(self.winfo_toplevel())
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(2, weight=1)
+        self.analytics_window = window
+        ttk.Label(
+            window,
+            textvariable=self.analytics_status,
+            wraplength=1040,
+            padding=(10, 8),
+        ).grid(row=0, column=0, sticky="ew")
+        controls = ttk.Frame(window, padding=(10, 0, 10, 6))
+        controls.grid(row=1, column=0, sticky="ew")
+        self.analytics_analyse_button = ttk.Button(
+            controls,
+            text="Analyze Practice",
+            command=lambda: self.guard(self.analyse_practice_for_analytics),
+        )
+        self.analytics_analyse_button.pack(side="left", padx=(0, 8))
+        ttk.Label(controls, text="Copy:").pack(side="left", padx=(0, 4))
+        metric_combo = ttk.Combobox(
+            controls,
+            textvariable=self.analytics_metric_var,
+            values=("Head alignment", "Shoulder height", "Knee bend", "Hip alignment / offset"),
+            state="readonly",
+            width=24,
+        )
+        metric_combo.pack(side="left", padx=(0, 6))
+        ttk.Button(controls, text="Copy chart image", command=self.copy_analytics_chart).pack(
+            side="left", padx=(0, 14)
+        )
+        ttk.Label(controls, text="Zoom").pack(side="left", padx=(0, 4))
+        ttk.Scale(
+            controls,
+            from_=1.0,
+            to=8.0,
+            variable=self.analytics_zoom_var,
+            command=lambda _value: self._refresh_posture_analytics(),
+            length=140,
+        ).pack(side="left", padx=(0, 14))
+        ttk.Label(controls, text="Pan").pack(side="left", padx=(0, 4))
+        ttk.Scale(
+            controls,
+            from_=0.0,
+            to=1.0,
+            variable=self.analytics_pan_var,
+            command=lambda _value: self._refresh_posture_analytics(),
+            length=160,
+        ).pack(side="left")
+        grid = ttk.Frame(window, padding=6)
+        grid.grid(row=2, column=0, sticky="nsew")
+        for column in range(2):
+            grid.columnconfigure(column, weight=1, uniform="metric")
+        for row in range(2):
+            grid.rowconfigure(row, weight=1, uniform="metric")
+
+        for index, key in enumerate(("head", "shoulders", "knees", "hips")):
+            canvas = tk.Canvas(grid, height=280, highlightthickness=0)
+            canvas.grid(row=index // 2, column=index % 2, sticky="nsew", padx=4, pady=4)
+
+            def redraw_chart(_event: tk.Event, metric_key: str = key) -> None:
+                self._draw_analytics_metric(metric_key)
+
+            canvas.bind("<Configure>", redraw_chart)
+            self.analytics_canvases[key] = canvas
+        window.protocol("WM_DELETE_WINDOW", self.close_posture_analytics)
+        window.update_idletasks()
+        self._refresh_posture_analytics()
+
+    def close_posture_analytics(self) -> None:
+        if self.analytics_window is not None:
+            self.analytics_window.destroy()
+        self.analytics_window = None
+        self.analytics_canvases = {}
+
+    def copy_analytics_chart(self) -> None:
+        labels = {
+            "Head alignment": "head",
+            "Shoulder height": "shoulders",
+            "Knee bend": "knees",
+            "Hip alignment / offset": "hips",
+        }
+        key = labels.get(self.analytics_metric_var.get())
+        canvas = self.analytics_canvases.get(key or "")
+        if canvas is None or not canvas.winfo_ismapped():
+            raise ValueError("Open Analytics and select a chart to copy")
+        executable = shutil.which("screencapture") or "/usr/sbin/screencapture"
+        if not Path(executable).is_file():
+            raise ValueError("Chart image copying is available on macOS only")
+        canvas.update_idletasks()
+        region = (
+            canvas.winfo_rootx(),
+            canvas.winfo_rooty(),
+            canvas.winfo_width(),
+            canvas.winfo_height(),
+        )
+        result = subprocess.run(
+            [executable, "-c", "-R", ",".join(str(value) for value in region)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(result.stderr.strip() or "Could not copy chart image to the clipboard")
+        self.analytics_status.set(f"Copied {self.analytics_metric_var.get()} chart image to clipboard")
+
+    def _refresh_posture_analytics(self) -> None:
+        if self.analytics_window is None or not self.analytics_window.winfo_exists():
+            return
+        practice_data = self.practice_analytics_data or self.coach_data
+        practice_count = len((practice_data or {}).get("frames", {}))
+        reference_count = len((self.reference_coach_data or {}).get("frames", {}))
+        status = (
+            f"Practice: {practice_count} analyzed frames. Reference: {reference_count} analyzed frames. "
+            "Red bands mark Practice alert intervals."
+        )
+        if not practice_count or not reference_count:
+            missing = []
+            if not practice_count:
+                missing.append("Practice coach data")
+            if not reference_count:
+                missing.append("Reference coach data")
+            status += f" Missing {', '.join(missing)}; analyze both videos as clips to compare them."
+        self.analytics_status.set(status)
+        for key in self.analytics_canvases:
+            self._draw_analytics_metric(key)
+
+    def _draw_analytics_metric(self, key: str) -> None:
+        canvas = self.analytics_canvases.get(key)
+        if canvas is None:
+            return
+        cfg = self.config_provider()
+        charts = {
+            "head": ("Head alignment", "head_angle", "degrees", cfg.head_down_angle, "head", 1.0),
+            "shoulders": (
+                "Shoulder height",
+                "shoulder_elev_pct",
+                "% raised",
+                cfg.shoulder_raise_threshold,
+                "shoulders",
+                1.0,
+            ),
+            "knees": (
+                "Knee bend",
+                "knee_bend_deg",
+                "degrees",
+                cfg.closed_embrace_min_knee_bend,
+                "knees",
+                1.0,
+            ),
+            "hips": (
+                "Hip alignment / offset",
+                "axis_curve_smoothed",
+                "% offset",
+                cfg.axis_curve_entry * 100.0,
+                "axis",
+                100.0,
+            ),
+        }
+        title, metric, unit, threshold, alert_key, scale = charts[key]
+        _draw_analytics_chart(
+            canvas,
+            title=title,
+            unit=unit,
+            practice=_analytics_points(
+                self.practice_analytics_data or self.coach_data,
+                metric,
+                scale=scale,
+                alert_key=alert_key,
+            ),
+            reference=_analytics_points(
+                self.reference_coach_data, metric, scale=scale, alert_key=alert_key
+            ),
+            threshold=threshold,
+            zoom=float(self.analytics_zoom_var.get()),
+            pan=float(self.analytics_pan_var.get()),
+        )
+
+    def analyse_practice_for_analytics(self) -> None:
+        if self.analytics_job:
+            return
+        reader = self.player.reader
+        if reader is None:
+            raise ValueError("Open a Practice video first")
+        source = self.video_paths.get("Practice video", reader.path)
+        if self.player.clip_range is not None:
+            selected_in, selected_out = self.player.clip_range
+        else:
+            selected_in = 0.0
+            selected_out = min(reader.duration, MAX_IMPORT_RANGE_SECONDS)
+        if selected_out - selected_in > MAX_IMPORT_RANGE_SECONDS:
+            selected_out = selected_in + MAX_IMPORT_RANGE_SECONDS
+        if selected_out <= selected_in:
+            raise ValueError("The Practice video has no analyzable duration")
+
+        from .reference_import import analyse_imported_clip
+        from .storage import Storage
+
+        if self.analytics_analyse_button is not None:
+            self.analytics_analyse_button.configure(state="disabled", text="Analyzing Practice…")
+        job_id = uuid4().hex
+        self.analytics_job = job_id
+        self.analytics_note = ""
+        self.analytics_status.set(
+            f"Analyzing Practice from {time_label(selected_in)} to {time_label(selected_out)}…"
+        )
+        cfg = self.config_provider()
+
+        def work() -> None:
+            try:
+                with TemporaryDirectory(prefix="tango-practice-analytics-") as temp_dir:
+                    temp_path = Path(temp_dir)
+                    storage = Storage(temp_path / "analytics.sqlite3")
+                    try:
+                        result = analyse_imported_clip(
+                            video_path=source,
+                            cfg=cfg,
+                            report_dir=temp_path / "reports",
+                            storage=storage,
+                            selected_in=selected_in,
+                            selected_out=selected_out,
+                            analysis_mode="movement",
+                            analyse_soundtrack=False,
+                            estimator_factory=self.import_estimator_factory,
+                            progress_callback=lambda current, total, message: self.events.put(
+                                (job_id, "analytics_progress", (current, total, message))
+                            ),
+                        )
+                    finally:
+                        storage.close()
+                    self.events.put(
+                        (
+                            job_id,
+                            "analytics_done",
+                            (result.coach_data, result.movement_data, selected_in, selected_out),
+                        )
+                    )
+            except Exception as error:  # noqa: BLE001 - report background analytics errors to UI
+                self.events.put((job_id, "analytics_error", (str(error),)))
+
+        threading.Thread(target=work, name="practice-analytics", daemon=True).start()
+
+    def show_reference_video(self, *, show_pane: bool = True) -> None:
+        if show_pane and self.player.reader is None:
             raise ValueError("Open a Practice video first")
         target = self.reference_paths.get(self.compare_target_var.get())
         if target is None:
@@ -967,7 +1403,7 @@ class ReviewPanel(ttk.Frame):
             "Raw video",
         )
         movement_data = load_report_movement_data(reference)
-        coach_data = load_report_coach_data(reference) if reference.is_imported_reference else None
+        coach_data = load_report_coach_data(reference)
         cfg = self.config_provider()
 
         def transform(image: np.ndarray, frame_index: int, fps: float) -> np.ndarray:
@@ -987,24 +1423,28 @@ class ReviewPanel(ttk.Frame):
                 pane_label="REFERENCE",
             )
 
-        primary_anchor = (
-            self.player.clip_range[0]
-            if self.player.clip_range is not None
-            else self.player.start_frame / self.player.reader.fps
-        )
-        reference_anchor = float(reference.clip_in or 0.0)
-        self.player.compare(
-            [reference_video],
-            refresh=True,
-            specs=[
-                {
-                    "clip_range": reference.clip_range,
-                    "primary_anchor_source_seconds": primary_anchor,
-                    "anchor_source_seconds": reference_anchor,
-                    "frame_transform": transform,
-                }
-            ],
-        )
+        if show_pane:
+            assert self.player.reader is not None
+            primary_anchor = (
+                self.player.clip_range[0]
+                if self.player.clip_range is not None
+                else self.player.start_frame / self.player.reader.fps
+            )
+            reference_anchor = float(reference.clip_in or 0.0)
+            self.player.compare(
+                [reference_video],
+                refresh=True,
+                specs=[
+                    {
+                        "clip_range": reference.clip_range,
+                        "primary_anchor_source_seconds": primary_anchor,
+                        "anchor_source_seconds": reference_anchor,
+                        "frame_transform": transform,
+                    }
+                ],
+            )
+        else:
+            self.player.compare([], refresh=False)
         previous_archive = self.reference_archive
         self.reference_archive = new_archive
         self.reference_record = reference
@@ -1012,6 +1452,7 @@ class ReviewPanel(ttk.Frame):
         self.reference_coach_data = coach_data
         if previous_archive is not None:
             previous_archive.close()
+        self._refresh_posture_analytics()
 
     def show_video_notes(self, index):
         coach_notes = (
@@ -1024,9 +1465,21 @@ class ReviewPanel(ttk.Frame):
                 coach_notes, subtitle=f"Frame {index + 1} · Open practice coach · Synced"
             )
             return
-        notes = self.frame_notes[index] if index < len(self.frame_notes) else [
-            "No separate notes for this frame. Older recordings retain their original footer."
-        ]
+        note_entry = self.frame_notes[index] if index < len(self.frame_notes) else None
+        if isinstance(note_entry, dict):
+            stored_notes = note_entry.get("notes")
+            if isinstance(stored_notes, list):
+                notes = [str(line) for line in stored_notes]
+            else:
+                notes = [
+                    f"Role: {note_entry.get('role', 'NONE')} | Embrace: {note_entry.get('embrace_type', 'N/A')}",
+                    f"Head: {note_entry.get('head_angle', 'N/A')} | Shoulders: {note_entry.get('shoulder_elev_pct', 'N/A')}% | Knees: {note_entry.get('knee_bend_deg', 'N/A')} deg",
+                    f"Hip offset: {note_entry.get('axis_curve_ratio', 'N/A')} | Feet: {note_entry.get('ankle_lift_ratio', 'N/A')}",
+                ]
+        elif isinstance(note_entry, list):
+            notes = [str(line) for line in note_entry]
+        else:
+            notes = ["No separate notes for this frame. Older recordings retain their original footer."]
         self.notes_sidebar.set_notes(notes, subtitle=f"Frame {index + 1} · Synced with playback")
 
     def open_video(self):
@@ -1785,6 +2238,32 @@ class ReviewPanel(ttk.Frame):
                     self.movement_status.set(f"Overlay export failed: {value[0]}")
                 if self.overlay_export_button is not None:
                     self.overlay_export_button.configure(state="normal")
+            elif kind == "analytics_progress" and token == self.analytics_job:
+                current, total, message = value
+                self.analytics_status.set(f"Practice analysis {current}/{total}% · {message}")
+            elif kind == "analytics_done" and token == self.analytics_job:
+                coach_data, movement_data, selected_in, selected_out = value
+                self.analytics_job = ""
+                self.practice_analytics_data = coach_data
+                self.coach_data = coach_data
+                self.movement_data = movement_data
+                self.show_coach_var.set(True)
+                if self.analytics_analyse_button is not None:
+                    self.analytics_analyse_button.configure(
+                        state="normal", text="Re-analyze Practice"
+                    )
+                self._refresh_posture_analytics()
+                self.analytics_status.set(
+                    self.analytics_status.get()
+                    + f" Practice analyzed: {time_label(selected_in)}–{time_label(selected_out)}."
+                )
+                if self.player.reader is not None:
+                    self.player.refresh_frame()
+            elif kind == "analytics_error" and token == self.analytics_job:
+                self.analytics_job = ""
+                if self.analytics_analyse_button is not None:
+                    self.analytics_analyse_button.configure(state="normal")
+                self.analytics_status.set(f"Practice analysis failed: {value[0]}")
             elif token == self.job:
                 if kind == "chunk":
                     self.analysis_status.set("Receiving analysis...")
@@ -2531,5 +3010,6 @@ class ReviewPanel(ttk.Frame):
             self.import_worker.close()
             self.movement_coordinator.close()
             self.player.close()
+            self.close_posture_analytics()
             if self.archive is not None:
                 self.archive.close()
