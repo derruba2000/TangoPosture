@@ -996,6 +996,21 @@ def test_movement_analysis_cancel_preserves_previous_result_and_handles_overlay_
     assert panel.movement_data is not None
 
 
+def test_replay_overlay_controls_remain_visible_with_import_form_on_small_window(studio):
+    root, gui = studio
+    panel = gui.review
+    root.geometry("840x600")
+    gui.tabs.select(panel)
+    panel.toggle_import_panel()
+    root.update()
+    assert panel.import_panel.winfo_ismapped()
+    for control in (
+        panel.floor_only_check, panel.show_coach_check,
+        panel.show_pivots_check, panel.show_steps_check,
+    ):
+        assert control.winfo_ismapped()
+
+
 def test_reference_video_import_youtube_relink_and_comparison_workflow(
     studio, tmp_path, monkeypatch
 ):
@@ -1471,6 +1486,4 @@ def test_analytics_time_alignment_algorithm_and_manual_parameters(studio):
     reset_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
     assert reset_coords == before_coords
     panel.close_posture_analytics()
-
-
 

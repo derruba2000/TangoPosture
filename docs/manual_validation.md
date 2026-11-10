@@ -47,6 +47,15 @@ Ask a tango teacher to annotate the intended reference's suitability and visible
 
 ## Executed evidence
 
+- Desktop CI checks include recording start/stop and song-delay transitions, recovery
+  files after archive-save failures, headless recording archives, calibration retry
+  archives with matching video frame counts, and replay overlay controls with the
+  import form open on a small window. Run `uv run --frozen pytest -q` for the
+  synthetic and GUI checks; a graphical display is needed for Tk tests.
+- Run `uv run --frozen mypy src` and
+  `uv run --frozen mypy --platform win32 src` to check both platform-specific
+  type paths locally. The latter is not a Windows runtime test; the CI Windows
+  job remains necessary.
 - Pure synthetic geometry/timing, simulated lifecycle and storage tests: see implementation report.
 - Verified model loaded with CPU delegate and processed blank generated frames and a short locally encoded blank video.
 - Blank-video run used blocked Python socket/URL calls. It produced UNKNOWN observations, completed exports, and released capture/detector resources.

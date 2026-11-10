@@ -1018,7 +1018,7 @@ class ReviewPanel(ttk.Frame):
         self.movement_status_label = ttk.Label(movement_bar, textvariable=self.movement_status)
         self.movement_status_label.pack(side="left", fill="x", expand=True)
         overlay_controls = ttk.Frame(self.replay_options, padding=(6, 0))
-        overlay_controls.pack(fill="x", pady=(0, 3))
+        overlay_controls.pack(fill="x", pady=(0, 3), before=self.reference_bar)
         self.floor_only_check = ttk.Checkbutton(
             overlay_controls,
             text="Hide video (gray floor)",

@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import stat
+import sys
 import threading
 from contextlib import contextmanager, suppress
 from dataclasses import asdict
@@ -12,9 +13,9 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
 
-try:
+if sys.platform != "win32":
     import fcntl
-except ImportError:  # pragma: no cover
+else:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from .domain import Calibration
