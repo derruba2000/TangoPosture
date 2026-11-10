@@ -1,3 +1,4 @@
+import runpy
 import sys
 from pathlib import Path
 
@@ -44,3 +45,47 @@ def test_macos_desktop_data_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert desktop.data_directory() == tmp_path / "Library" / "Application Support" / "TangoPosture"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_packaged_entry_logs_smoke_test_result(monkeypatch, tmp_path, fails):
+    log = tmp_path / "smoke.log"
+    monkeypatch.setenv("TANGOPOSTURE_SMOKE_LOG", str(log))
+    monkeypatch.setattr(sys, "argv", ["TangoPosture", "--smoke-test"])
+    stdout, stderr = sys.stdout, sys.stderr
+
+    def main():
+        print("Checking packaged dependencies")
+        if fails:
+            raise RuntimeError("Missing packaged native library")
+        print("Desktop smoke test passed")
+        return 0
+
+    monkeypatch.setattr(desktop, "main", main)
+    entry = Path(__file__).resolve().parents[2] / "scripts" / "desktop_entry.py"
+    namespace = runpy.run_path(str(entry))
+    assert namespace["run"]() == (1 if fails else 0)
+    content = log.read_text(encoding="utf-8")
+    assert "Checking packaged dependencies" in content
+    if fails:
+        assert "Traceback" in content and "Missing packaged native library" in content
+        assert "Desktop smoke test passed" not in content
+    else:
+        assert "Desktop smoke test passed" in content
+    assert sys.stdout is stdout and sys.stderr is stderr
+
+
+def test_packaged_entry_preserves_normal_launch_errors(monkeypatch, tmp_path):
+    log = tmp_path / "smoke.log"
+    monkeypatch.setenv("TANGOPOSTURE_SMOKE_LOG", str(log))
+    monkeypatch.setattr(sys, "argv", ["TangoPosture"])
+
+    def main():
+        raise RuntimeError("Normal launch failed")
+
+    monkeypatch.setattr(desktop, "main", main)
+    entry = Path(__file__).resolve().parents[2] / "scripts" / "desktop_entry.py"
+    namespace = runpy.run_path(str(entry))
+    with pytest.raises(RuntimeError, match="Normal launch failed"):
+        namespace["run"]()
+    assert not log.exists()

@@ -381,7 +381,7 @@ There is no language model in the runtime. The phrase “AI agent” in the impl
 
 The initial implementation does not need pandas, SciPy, a web framework, or a separately installed deep-learning framework. MediaPipe supplies the local inference runtime required by the selected model.
 
-The specific selected versions are recorded in [pyproject.toml](../pyproject.toml) and [uv.lock](../uv.lock). MediaPipe is pinned to 0.10.30 because the newer inspected releases introduced an `opencv-contrib-python` dependency that would overlap the requested `opencv-python` installation.
+The specific selected versions are recorded in [pyproject.toml](../pyproject.toml) and [uv.lock](../uv.lock). MediaPipe is pinned to 0.10.31 to fix Windows Tasks initialization (`function 'free' not found` in 0.10.30). This release does not require `opencv-contrib-python`, avoiding overlap with the requested `opencv-python` installation.
 
 ## 12. Components and responsibilities
 

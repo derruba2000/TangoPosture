@@ -19,6 +19,7 @@ def bundled_model() -> Path:
 
 
 def smoke_test() -> None:
+    print("Importing packaged dependencies", flush=True)
     import tkinter
     from importlib import import_module
     from importlib.metadata import version
@@ -30,18 +31,23 @@ def smoke_test() -> None:
     from .models import verify
     from .pose.mediapipe_backend import MediaPipeEstimator
 
+    print("Checking Tcl and GUI imports", flush=True)
     tkinter.Tcl().eval("info patchlevel")
     import_module("tango_posture.gui")
     version("tango-posture")
+    print("Verifying packaged resources and pose model", flush=True)
     for name in ("TangoPosture_logo_under_1MB.png", "TANGO_POSTURE_MANUAL.md"):
         if not files("tango_posture").joinpath(name).read_bytes():
             raise ValueError(f"Empty packaged resource: {name}")
     model = bundled_model()
     verify(model)
+    print("Creating MediaPipe estimator", flush=True)
     estimator = MediaPipeEstimator(model)
     try:
+        print("Running blank-frame inference", flush=True)
         estimator.estimate(np.zeros((64, 64, 3), dtype=np.uint8), 0.0)
     finally:
+        print("Closing MediaPipe estimator", flush=True)
         estimator.close()
     print(f"Desktop smoke test passed (OpenCV {cv2.__version__}, sounddevice {sounddevice.__version__})")
 

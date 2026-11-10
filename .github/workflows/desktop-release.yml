@@ -75,19 +75,66 @@ jobs:
           trap 'hdiutil detach "$RUNNER_TEMP/tango-dmg"' EXIT
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/tango-dmg/TangoPosture.app/Contents/MacOS/TangoPosture" --smoke-test
-      - name: Build and verify Windows installer
+      - name: Build Windows installer
         if: runner.os == 'Windows'
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $version = uv run --frozen --group packaging python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging/windows.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install Windows application
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/verification-logs | Out-Null
           $target = Join-Path $env:RUNNER_TEMP "TangoPostureInstallerSmoke"
-          $installer = Start-Process -FilePath (Resolve-Path "release/TangoPosture-Windows-x64-Setup.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$target`"" -Wait -PassThru
-          if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
-          $app = Start-Process -FilePath (Join-Path $target "TangoPosture.exe") -ArgumentList "--smoke-test" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
-          if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
+          $log = Join-Path $env:GITHUB_WORKSPACE "build/verification-logs/install.log"
+          Write-Host "Installing to $target (maximum 180 seconds)"
+          $installer = Start-Process -FilePath (Resolve-Path "release/TangoPosture-Windows-x64-Setup.exe") -ArgumentList "/SP-", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$log`"", "/DIR=`"$target`"" -PassThru
+          try {
+            if (-not $installer.WaitForExit(180000)) {
+              taskkill /PID $installer.Id /T /F
+              throw "Windows installation timed out after 180 seconds"
+            }
+            if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+            if (-not (Test-Path (Join-Path $target "TangoPosture.exe"))) { throw "Installed executable is missing" }
+            Write-Host "Windows installation completed"
+          } finally {
+            if (Test-Path $log) { Get-Content $log }
+          }
+      - name: Smoke-test installed Windows application
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "TangoPostureInstallerSmoke"
+          $env:TANGOPOSTURE_SMOKE_LOG = Join-Path $env:GITHUB_WORKSPACE "build/verification-logs/smoke.log"
+          Write-Host "Running installed application smoke test (maximum 120 seconds)"
+          $app = Start-Process -FilePath (Join-Path $target "TangoPosture.exe") -ArgumentList "--smoke-test" -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          try {
+            if (-not $app.WaitForExit(120000)) {
+              taskkill /PID $app.Id /T /F
+              throw "Installed application smoke test timed out after 120 seconds"
+            }
+            if ($app.ExitCode -ne 0) { throw "Installed application smoke test failed: $($app.ExitCode)" }
+            if (-not (Test-Path $env:TANGOPOSTURE_SMOKE_LOG)) { throw "Smoke test did not create its diagnostic log" }
+            if (-not (Select-String -Path $env:TANGOPOSTURE_SMOKE_LOG -SimpleMatch "Desktop smoke test passed")) {
+              throw "Smoke test exited without confirming successful inference"
+            }
+          } finally {
+            if (Test-Path $env:TANGOPOSTURE_SMOKE_LOG) { Get-Content $env:TANGOPOSTURE_SMOKE_LOG }
+          }
+      - name: Upload Windows verification logs
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-verification-logs
+          path: build/verification-logs/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}

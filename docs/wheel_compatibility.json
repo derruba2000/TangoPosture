@@ -3,11 +3,11 @@
   "platform": "macOS-26.6.2-arm64-arm-64bit",
   "wheels": {
     "mediapipe": {
-      "version": "0.10.30",
+      "version": "0.10.31",
       "matching_candidates": [
         {
-          "filename": "mediapipe-0.10.30-py3-none-macosx_11_0_arm64.whl",
-          "sha256": "dba4baff388629e4d80439782e9ef982e3b27640ccca2a68508e73bb1142286a"
+          "filename": "mediapipe-0.10.31-py3-none-macosx_11_0_arm64.whl",
+          "sha256": "efb1eb98da98fe7caea9c692b2f6bd27fd294fd5c680bbd07ddf5552961938f7"
         }
       ]
     },

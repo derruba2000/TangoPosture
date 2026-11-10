@@ -12,7 +12,7 @@ Inventory of the installed, locked Python 3.11 macOS arm64 environment. Original
 | flatbuffers | 25.12.19 | Apache-2.0 | [licence](https://github.com/google/flatbuffers/blob/master/LICENSE) |
 | iniconfig | 2.3.1 | MIT | [licence](https://github.com/pytest-dev/iniconfig/blob/main/LICENSE) |
 | librt | 0.16.0 | MIT | [licence](https://github.com/mypyc/librt/blob/master/LICENSE) |
-| mediapipe | 0.10.30 | Apache-2.0; bundled notices | [licence](https://github.com/google-ai-edge/mediapipe/blob/v0.10.30/LICENSE) |
+| mediapipe | 0.10.31 | Apache-2.0; bundled notices | [licence](https://github.com/google-ai-edge/mediapipe/blob/v0.10.31/LICENSE) |
 | mypy | 2.4.1 | MIT | [licence](https://github.com/python/mypy/blob/master/LICENSE) |
 | mypy-extensions | 1.1.0 | MIT | [licence](https://github.com/python/mypy_extensions/blob/master/LICENSE) |
 | numpy | 2.4.6 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | [licence](https://github.com/numpy/numpy/blob/main/LICENSE.txt) |
