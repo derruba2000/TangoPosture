@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tango-posture"
-version = "0.1.0"
+version = "0.2.2"
 description = "Local, reference-relative side-view movement observation"
 requires-python = ">=3.11,<3.12"
 license = "Apache-2.0"
