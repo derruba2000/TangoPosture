@@ -11,6 +11,7 @@ videos/
 data/
 
 dist/
+build/
 .env
 docs/licenses/
 reports/

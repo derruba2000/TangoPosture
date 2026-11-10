@@ -50,6 +50,30 @@ Visit the [TangoPosture community website](https://tangoposture-community.correi
 
 ## Install
 
+### Desktop installers (experimental)
+
+When available, download the macOS Apple Silicon `.dmg` or Windows x64 setup
+executable from the project's [GitHub Releases](https://github.com/derruba2000/TangoPosture/releases).
+The installers include Python and the verified pose model; a separate model
+download is not needed. On macOS, drag the app into Applications; on Windows,
+run the installer and open TangoPosture from the Start menu.
+
+These builds are **unsigned** and the macOS build is **not notarized**. Your
+operating system may warn or block installation. Only install artifacts you
+trust, and compare them with the release's `SHA256SUMS.txt`. macOS Intel,
+Windows ARM, and Linux installers are not provided. Camera, microphone, and
+recording functionality still require testing on the target machine; Windows
+support is experimental, and some media features depend on platform-specific
+tools or capabilities.
+
+Installed-app data and recordings are stored under
+`~/Library/Application Support/TangoPosture` on macOS and
+`%LOCALAPPDATA%\TangoPosture` on Windows. Uninstalling the app does not remove
+those files. Optional tools such as `ffmpeg`, `yt-dlp`, and Ollama are not
+included in the installers.
+
+### Source installation
+
 Tested on macOS (Apple Silicon arm64), Python 3.11. Install [uv](https://github.com/astral-sh/uv), then from this repository:
 
 ```bash
@@ -62,6 +86,25 @@ uv run tango-posture models fetch
 `models fetch` is an explicit setup operation. It downloads only the versioned model in `models/manifest.json`, verifies SHA-256, and atomically installs it. Runs never download models. For offline installation, transfer that exact verified file yourself and pass `--model-path /path/to/pose_landmarker_lite.task`. Every run verifies its checksum.
 
 The pinned MediaPipe 0.10.30 release supports the Tasks API without pulling in a second OpenCV package. See [wheel evidence](docs/wheel_compatibility.json), [third-party notices](THIRD_PARTY_NOTICES.md), and the [model manifest](models/manifest.json). Original application code is Apache-2.0; dependency and model terms remain separate.
+
+### Building release assets
+
+The [desktop workflow](.github/workflows/desktop-release.yml) runs checks on
+macOS and Windows. Run it manually through Actions to build installers as
+temporary workflow artifacts without publishing. To publish assets, set the
+package version in `pyproject.toml`, create a matching tag such as `v0.1.0`,
+and publish a GitHub Release for that tag. The workflow builds and smoke-tests
+both installers and, only if both builds and all checks pass, attaches them and
+`SHA256SUMS.txt` to the release. The release is visible before the builds
+finish; a failed check leaves it without new assets. Existing assets are not
+overwritten. A release must have been published after this workflow exists on
+the default branch, and repository Actions settings must permit the workflow's
+release write permission.
+
+The smoke tests exercise bundled resources, native dependencies, and a pose
+inference; they do not certify real camera, microphone, GUI interaction, or
+recording behavior. Validate those manually on clean target machines before
+recommending a release.
 
 ---
 

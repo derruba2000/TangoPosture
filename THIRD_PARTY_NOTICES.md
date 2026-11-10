@@ -1,6 +1,6 @@
 # Third-party notices
 
-Inventory of the installed, locked Python 3.11 macOS arm64 environment. Original application code is Apache-2.0. Exact transitive versions and distribution hashes are in `uv.lock`. Licence texts shipped in the installed wheels are preserved under `docs/licenses/`; those texts govern bundled native components as well as the Python wrappers. No weights or training data are bundled.
+Inventory of the installed, locked Python 3.11 macOS arm64 environment. Original application code is Apache-2.0. Exact transitive versions and distribution hashes are in `uv.lock`. Licence texts shipped in the installed wheels govern bundled native components as well as the Python wrappers. Source installations do not bundle weights; desktop installers include the verified model described below. No training data are bundled.
 
 | Distribution | Version | SPDX / licence | Upstream licence |
 | --- | --- | --- | --- |
@@ -41,6 +41,6 @@ Google BlazePose GHUM Lite, Pose Landmarker float16 bundle version 1: Apache-2.0
 
 ## Bundled native libraries and tools
 
-OpenCV wheels include FFmpeg (LGPL-2.1-or-later) and other third-party components; see the preserved `opencv-python` LICENSE-3RD-PARTY.txt for individual copyright notices and source references. Preserve these notices and satisfy native-library redistribution obligations if shipping binaries; this repository installs upstream wheels without repackaging them. NumPy includes numerical-library notices in its wheel licence. MediaPipe native runtime includes TensorFlow Lite and other upstream components under its supplied notices. Sounddevice is a MediaPipe dependency; this application never opens an audio stream.
+OpenCV wheels include FFmpeg (LGPL-2.1-or-later) and other third-party components; see the preserved `opencv-python` LICENSE-3RD-PARTY.txt for individual copyright notices and source references. Preserve these notices and satisfy native-library redistribution obligations if shipping binaries. NumPy includes numerical-library notices in its wheel licence. MediaPipe native runtime includes TensorFlow Lite and other upstream components under its supplied notices. Sounddevice provides optional microphone capture.
 
-Build tool: hatchling 1.33.0 (MIT), via https://github.com/pypa/hatch/blob/master/LICENSE.txt. Environment manager: uv 0.11.6 (MIT OR Apache-2.0), via https://github.com/astral-sh/uv. Python 3.11.15: PSF-2.0, https://docs.python.org/3.11/license.html. Tool executables are setup tooling, not bundled runtime assets. Wheel metadata is authoritative for the selected distributions; additional target platforms require their own native notice review.
+Build tools include Hatchling and PyInstaller; desktop installers contain PyInstaller's bootloader and the Python runtime. Environment manager: uv, via https://github.com/astral-sh/uv. Python 3.11: PSF-2.0, https://docs.python.org/3.11/license.html. Desktop builds collect installed wheel licence and notice files in the bundled `notices` directory. Wheel metadata is authoritative for the selected distributions; additional target platforms require their own native notice review.
