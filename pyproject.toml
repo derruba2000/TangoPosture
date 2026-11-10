@@ -9,7 +9,7 @@ description = "Local, reference-relative side-view movement observation"
 requires-python = ">=3.11,<3.12"
 license = "Apache-2.0"
 dependencies = [
-    "mediapipe==0.10.30",
+    "mediapipe==0.10.31",
     "opencv-python==5.0.0.93",
     "numpy==2.4.6",
     "pydantic==2.14.2",

@@ -169,7 +169,7 @@ wheels = [
 
 [[package]]
 name = "mediapipe"
-version = "0.10.30"
+version = "0.10.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -178,9 +178,9 @@ dependencies = [
     { name = "sounddevice" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/1b/b01cfe76b9e71ba84fb04f65bbe5c5e319b0683b9e7079aad0087ad5086b/mediapipe-0.10.30-py3-none-macosx_11_0_arm64.whl", hash = "sha256:dba4baff388629e4d80439782e9ef982e3b27640ccca2a68508e73bb1142286a", size = 19321946, upload-time = "2025-12-16T17:13:31.046Z" },
-    { url = "https://files.pythonhosted.org/packages/34/cf/fb95dfebccace031576dc4d7c91b257aec05f0dd33cf63de59275e314e3e/mediapipe-0.10.30-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:528d7bb13a5093fde18e771410637947ed232c12834cec8a41f8474a9bf20bf0", size = 10315911, upload-time = "2025-12-16T17:13:34.922Z" },
-    { url = "https://files.pythonhosted.org/packages/23/79/199daf6ca6a4919bdc7cc9b6cb8675460070b1cfb90eb949ff948562120e/mediapipe-0.10.30-py3-none-win_amd64.whl", hash = "sha256:1b6b67d32b6c15de7080debb58e33fb4b431643ec5a5c06c7d4de9d86bb18d02", size = 10402917, upload-time = "2025-12-16T17:13:37.256Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/ff/1b283d5fa6920e6a2556b1539c67999295bc5d527b89a8c57c2b052e760f/mediapipe-0.10.31-py3-none-macosx_11_0_arm64.whl", hash = "sha256:efb1eb98da98fe7caea9c692b2f6bd27fd294fd5c680bbd07ddf5552961938f7", size = 19328781, upload-time = "2025-12-18T04:25:55.465Z" },
+    { url = "https://files.pythonhosted.org/packages/07/ce/fe29a74c6af4dae88b0146b4a8c4a79b4ca3cf400ae08dd401a13f52305a/mediapipe-0.10.31-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:360de896205822419b14d7574c2812e08946769228f7548c31dd871b150d9bcc", size = 10316058, upload-time = "2025-12-18T04:26:07.468Z" },
+    { url = "https://files.pythonhosted.org/packages/51/ad/9df25bef1184611998a37938639f5e48960fd1ec0bf20b95bf4c3b26ffc0/mediapipe-0.10.31-py3-none-win_amd64.whl", hash = "sha256:2f0b97e85101d2d0e326f49fd9b490d6f649a33af4331b2d4873cf1c5a1c627e", size = 10407068, upload-time = "2025-12-18T04:26:28.321Z" },
 ]
 
 [[package]]
@@ -510,7 +510,7 @@ packaging = [
 [package.metadata]
 requires-dist = [
     { name = "markdown", specifier = "==3.10.2" },
-    { name = "mediapipe", specifier = "==0.10.30" },
+    { name = "mediapipe", specifier = "==0.10.31" },
     { name = "numpy", specifier = "==2.4.6" },
     { name = "opencv-python", specifier = "==5.0.0.93" },
     { name = "pydantic", specifier = "==2.14.2" },
