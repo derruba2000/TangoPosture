@@ -47,6 +47,7 @@ from .pose.mediapipe_backend import MediaPipeEstimator
 from .reference_import import (
     MAX_IMPORT_RANGE_SECONDS,
     ClipComparisonResult,
+    FacebookReelSourceLink,
     ImportedClipResult,
     ReferenceImportWorker,
     VideoProbeInfo,
@@ -56,10 +57,12 @@ from .reference_import import (
     check_calibration_readiness,
     coach_notes_for_frame,
     compare_clips,
+    download_facebook_reel,
     download_youtube_video,
     imports_directory,
     load_report_coach_data,
     load_report_movement_data,
+    parse_facebook_reel_url,
     parse_youtube_url,
     probe_import_video,
     relink_report_video,
@@ -535,11 +538,14 @@ class ReviewPanel(ttk.Frame):
         self.overlay_export_button: ttk.Button | None = None
         self.import_estimator_factory: Callable[[], Any] | None = None
         self.import_youtube_downloader: Callable[[str, Path], Path] | None = None
+        self.import_facebook_downloader: Callable[[str, Path], Path] | None = None
         self._downloaded_youtube_file: tuple[Path, str] | None = None
+        self._downloaded_facebook_file: tuple[Path, str] | None = None
         self.import_probe: VideoProbeInfo | None = None
         self.import_video_var = tk.StringVar()
         self.import_title_var = tk.StringVar()
         self.import_youtube_var = tk.StringVar()
+        self.import_facebook_var = tk.StringVar()
         self.import_in_var = tk.StringVar(value="0.0")
         self.import_out_var = tk.StringVar(value="")
         self.import_mode_var = tk.StringVar(value="movement")
@@ -558,6 +564,7 @@ class ReviewPanel(ttk.Frame):
         self.import_status = tk.StringVar(value="Choose a local video file to analyse")
         self.import_panel_visible = False
         self.last_opened_youtube_url: str = ""
+        self.last_opened_facebook_url: str = ""
         self.compare_target_var = tk.StringVar()
         self.show_reference_var = tk.BooleanVar(value=False)
         self.reference_paths: dict[str, Path] = {}
@@ -702,6 +709,13 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.open_current_moment_on_youtube),
         )
         self.open_moment_youtube_button.pack(side="left", padx=4)
+        self.open_facebook_button = ttk.Button(
+            replay_actions,
+            text="Open Facebook Reel",
+            state="disabled",
+            command=lambda: self.guard(self.open_current_facebook_reel),
+        )
+        self.open_facebook_button.pack(side="left", padx=4)
         self.reference_bar = ttk.Frame(self.replay_options, padding=(6, 2))
         self.reference_bar.pack(fill="x")
         ttk.Label(self.reference_bar, text="Reference video:").pack(side="left", padx=(0, 4))
@@ -2204,6 +2218,10 @@ class ReviewPanel(ttk.Frame):
                 path, link = value
                 self.import_cancel_button.configure(state="disabled")
                 self.apply_downloaded_youtube_video(path, link)
+            elif kind == "facebook_downloaded":
+                path, link = value
+                self.import_cancel_button.configure(state="disabled")
+                self.apply_downloaded_facebook_video(path, link)
             elif kind == "import_cancelled":
                 self.import_cancel_button.configure(state="disabled")
                 self._sync_import_form_state()
@@ -2338,6 +2356,7 @@ class ReviewPanel(ttk.Frame):
         ttk.Label(row2, text="YouTube link:").pack(side="left", padx=(8, 0))
         yt_entry = ttk.Entry(row2, textvariable=self.import_youtube_var, width=32)
         yt_entry.pack(side="left", padx=4, fill="x", expand=True)
+        yt_entry.bind("<KeyRelease>", lambda _: self.guard(self.on_youtube_url_edited))
         yt_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
         self.import_open_yt_button = ttk.Button(
             row2,
@@ -2352,6 +2371,23 @@ class ReviewPanel(ttk.Frame):
             command=lambda: self.guard(self.download_youtube_to_local),
         )
         self.import_download_button.pack(side="left", padx=3)
+
+        row_facebook = ttk.Frame(self.import_panel)
+        row_facebook.pack(fill="x", pady=2)
+        ttk.Label(row_facebook, text="Facebook Reel URL:").pack(side="left")
+        facebook_entry = ttk.Entry(
+            row_facebook, textvariable=self.import_facebook_var, width=52
+        )
+        facebook_entry.pack(side="left", padx=4, fill="x", expand=True)
+        facebook_entry.bind("<KeyRelease>", lambda _: self.guard(self.on_facebook_url_edited))
+        facebook_entry.bind("<FocusOut>", lambda _: self.guard(self._sync_import_form_state))
+        self.import_facebook_download_button = ttk.Button(
+            row_facebook,
+            text="Download Facebook Reel",
+            state="disabled",
+            command=lambda: self.guard(self.download_facebook_reel_to_local),
+        )
+        self.import_facebook_download_button.pack(side="left", padx=3)
 
         row3 = ttk.Frame(self.import_panel)
         row3.pack(fill="x", pady=2)
@@ -2452,6 +2488,7 @@ class ReviewPanel(ttk.Frame):
     def set_import_video_file(self, path: Path | str) -> VideoProbeInfo:
         probe = probe_import_video(Path(path))
         self._downloaded_youtube_file = None
+        self._downloaded_facebook_file = None
         self.import_probe = probe
         self.import_video_var.set(str(probe.path))
         if not self.import_title_var.get().strip():
@@ -2491,11 +2528,23 @@ class ReviewPanel(ttk.Frame):
             return None
         return (parse_time(raw_in), parse_time(raw_out))
 
+    def on_youtube_url_edited(self) -> None:
+        if self.import_youtube_var.get().strip():
+            self.import_facebook_var.set("")
+        self._sync_import_form_state()
+
+    def on_facebook_url_edited(self) -> None:
+        if self.import_facebook_var.get().strip():
+            self.import_youtube_var.set("")
+        self._sync_import_form_state()
+
     def _sync_import_form_state(self) -> None:
         cfg = self.config_provider()
         raw_video = self.import_video_var.get().strip()
         raw_yt = self.import_youtube_var.get().strip()
+        raw_facebook = self.import_facebook_var.get().strip()
         yt_link: YouTubeSourceLink | None = None
+        facebook_link: FacebookReelSourceLink | None = None
         if raw_yt:
             try:
                 yt_link = parse_youtube_url(raw_yt)
@@ -2503,10 +2552,29 @@ class ReviewPanel(ttk.Frame):
                 self.import_status.set(str(exc))
                 self.import_start_button.configure(state="disabled")
                 self.import_download_button.configure(state="disabled")
+                self.import_facebook_download_button.configure(state="disabled")
                 return
+        if raw_facebook:
+            try:
+                facebook_link = parse_facebook_reel_url(raw_facebook)
+            except ValueError as exc:
+                self.import_status.set(str(exc))
+                self.import_start_button.configure(state="disabled")
+                self.import_download_button.configure(state="disabled")
+                self.import_facebook_download_button.configure(state="disabled")
+                return
+        if yt_link is not None and facebook_link is not None:
+            self.import_start_button.configure(state="disabled")
+            self.import_download_button.configure(state="disabled")
+            self.import_facebook_download_button.configure(state="disabled")
+            self.import_status.set("Enter one video URL at a time")
+            return
         busy = self.import_worker.is_running()
         self.import_download_button.configure(
             state="normal" if yt_link is not None and not busy else "disabled"
+        )
+        self.import_facebook_download_button.configure(
+            state="normal" if facebook_link is not None and not busy else "disabled"
         )
 
         if not raw_video:
@@ -2527,9 +2595,32 @@ class ReviewPanel(ttk.Frame):
                 self.import_status.set(
                     "Ready: Analyse clip will download the video from YouTube, then analyse it."
                 )
+            elif facebook_link is not None:
+                try:
+                    in_sec = parse_time(self.import_in_var.get() or "0.0")
+                    out_str = self.import_out_var.get().strip()
+                    out_sec = parse_time(out_str) if out_str else in_sec + MAX_IMPORT_RANGE_SECONDS
+                    if out_sec <= in_sec or out_sec - in_sec > MAX_IMPORT_RANGE_SECONDS + 1e-6:
+                        raise ValueError(
+                            f"Select a range up to {MAX_IMPORT_RANGE_SECONDS:.0f} seconds"
+                        )
+                    self.import_range_status.set(
+                        f"Range [{time_label(in_sec)} - {time_label(out_sec)}] "
+                        f"({out_sec - in_sec:.1f}s / {MAX_IMPORT_RANGE_SECONDS:.0f}s max)"
+                    )
+                except ValueError as exc:
+                    self.import_start_button.configure(state="disabled")
+                    self.import_status.set(str(exc))
+                    return
+                self.import_start_button.configure(state="disabled" if busy else "normal")
+                self.import_status.set(
+                    "Ready: Analyse clip will download the Facebook Reel, then analyse it."
+                )
             else:
                 self.import_start_button.configure(state="disabled")
-                self.import_status.set("Choose a local video file or enter a YouTube link")
+                self.import_status.set(
+                    "Choose a local video file or enter a YouTube or Facebook Reel URL"
+                )
             return
 
         try:
@@ -2612,6 +2703,19 @@ class ReviewPanel(ttk.Frame):
         )
         return probe
 
+    def apply_downloaded_facebook_video(
+        self, path: Path | str, link: FacebookReelSourceLink
+    ) -> VideoProbeInfo:
+        probe = self.set_import_video_file(path)
+        self._downloaded_facebook_file = (probe.path.resolve(), link.reel_id)
+        self.import_in_var.set("0.0")
+        self.import_out_var.set(f"{min(probe.duration_seconds, MAX_IMPORT_RANGE_SECONDS):.2f}")
+        self._sync_import_form_state()
+        self.import_status.set(
+            f"Downloaded Facebook Reel {link.reel_id}. Adjust the range, then click Analyse clip."
+        )
+        return probe
+
     def download_youtube_to_local(self, *, synchronous: bool = False) -> Path | str:
         raw_yt = self.import_youtube_var.get().strip()
         link = parse_youtube_url(raw_yt)
@@ -2626,10 +2730,35 @@ class ReviewPanel(ttk.Frame):
             return path
         self.import_start_button.configure(state="disabled")
         self.import_download_button.configure(state="disabled")
+        self.import_facebook_download_button.configure(state="disabled")
         self.import_cancel_button.configure(state="normal")
         self.import_status.set("Starting YouTube download…")
         return self.import_worker.start_download(
             link.canonical_url, target_dir, downloader=self.import_youtube_downloader
+        )
+
+    def download_facebook_reel_to_local(self, *, synchronous: bool = False) -> Path | str:
+        link = parse_facebook_reel_url(self.import_facebook_var.get())
+        if link is None:
+            raise ValueError("Enter a valid HTTPS Facebook Reel URL first")
+        target_dir = imports_directory(self.config_provider().data_dir)
+        if synchronous:
+            path, _ = download_facebook_reel(
+                link.canonical_url,
+                target_dir,
+                downloader=self.import_facebook_downloader,
+            )
+            self.apply_downloaded_facebook_video(path, link)
+            return path
+        self.import_start_button.configure(state="disabled")
+        self.import_download_button.configure(state="disabled")
+        self.import_facebook_download_button.configure(state="disabled")
+        self.import_cancel_button.configure(state="normal")
+        self.import_status.set("Starting Facebook Reel download…")
+        return self.import_worker.start_facebook_download(
+            link.canonical_url,
+            target_dir,
+            downloader=self.import_facebook_downloader,
         )
 
     def open_import_youtube_link(self) -> str:
@@ -2667,9 +2796,13 @@ class ReviewPanel(ttk.Frame):
         self._sync_import_form_state()
         raw_video = self.import_video_var.get().strip()
         raw_yt = self.import_youtube_var.get().strip() or None
+        raw_facebook = self.import_facebook_var.get().strip() or None
         yt_link = parse_youtube_url(raw_yt) if raw_yt else None
-        if not raw_video and yt_link is None:
-            raise ValueError("Choose a local video file or enter a YouTube link to analyse")
+        facebook_link = parse_facebook_reel_url(raw_facebook) if raw_facebook else None
+        if yt_link is not None and facebook_link is not None:
+            raise ValueError("Enter only one video URL at a time")
+        if not raw_video and yt_link is None and facebook_link is None:
+            raise ValueError("Choose a local video file or enter a YouTube or Facebook Reel URL")
         cfg = self.config_provider()
         mode = self.import_mode_var.get()
         cal_interval = self._resolve_import_calibration_interval()
@@ -2703,10 +2836,19 @@ class ReviewPanel(ttk.Frame):
                         youtube_video_id=yt_link.video_id,
                     )
         else:
-            assert yt_link is not None
-            # Downloaded inside the worker; analyse_imported_clip fetches then analyses.
-            clip_in, clip_out = self._youtube_clip_range(yt_link)
-            selected_out_arg = clip_out if self.import_out_var.get().strip() else None
+            if yt_link is not None:
+                # Downloaded inside the worker; analyse_imported_clip fetches then analyses.
+                clip_in, clip_out = self._youtube_clip_range(yt_link)
+                selected_out_arg = clip_out if self.import_out_var.get().strip() else None
+            else:
+                clip_in = parse_time(self.import_in_var.get() or "0.0")
+                out_str = self.import_out_var.get().strip()
+                clip_out = parse_time(out_str) if out_str else clip_in + MAX_IMPORT_RANGE_SECONDS
+                if clip_out <= clip_in or clip_out - clip_in > MAX_IMPORT_RANGE_SECONDS + 1e-6:
+                    raise ValueError(
+                        f"Select a range up to {MAX_IMPORT_RANGE_SECONDS:.0f} seconds"
+                    )
+                selected_out_arg = clip_out if out_str else None
             video_arg = ""
         folder = report_directory(cfg.data_dir)
         kwargs: dict[str, Any] = {
@@ -2719,11 +2861,13 @@ class ReviewPanel(ttk.Frame):
             "title": self.import_title_var.get().strip(),
             "youtube_url": raw_yt,
             "youtube_alignment": alignment,
+            "facebook_url": raw_facebook,
             "analysis_mode": mode,
             "reference": ref_obj,
             "calibration_interval": cal_interval,
             "analyse_soundtrack": bool(self.import_soundtrack_var.get()),
             "estimator_factory": self.import_estimator_factory,
+            "facebook_downloader": self.import_facebook_downloader,
         }
         if synchronous:
             from .reference_import import analyse_imported_clip
@@ -2749,12 +2893,17 @@ class ReviewPanel(ttk.Frame):
             self.relink_video_button.configure(state="disabled")
             self.open_youtube_button.configure(state="disabled")
             self.open_moment_youtube_button.configure(state="disabled")
+            self.open_facebook_button.configure(state="disabled")
             return
 
         self.relink_video_button.configure(
             state="normal" if (self.report.is_imported_reference or self.report.videos) else "disabled"
         )
         yt_link = YouTubeSourceLink.from_dict(self.report.youtube_link)
+        facebook_link = FacebookReelSourceLink.from_dict(self.report.facebook_reel)
+        self.open_facebook_button.configure(
+            state="normal" if facebook_link is not None else "disabled"
+        )
         if yt_link is None:
             self.open_youtube_button.configure(state="disabled")
             self.open_moment_youtube_button.configure(state="disabled")
@@ -2849,6 +2998,16 @@ class ReviewPanel(ttk.Frame):
         self.last_opened_youtube_url = url
         webbrowser.open(url)
         return url
+
+    def open_current_facebook_reel(self) -> str:
+        if self.report is None:
+            raise ValueError("Open a report with a Facebook Reel source first")
+        reel = FacebookReelSourceLink.from_dict(self.report.facebook_reel)
+        if reel is None:
+            raise ValueError("This report has no saved Facebook Reel source link")
+        self.last_opened_facebook_url = reel.canonical_url
+        webbrowser.open(reel.canonical_url)
+        return reel.canonical_url
 
     def open_current_moment_on_youtube(self) -> str:
         if self.report is None:

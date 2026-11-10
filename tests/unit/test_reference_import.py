@@ -26,11 +26,13 @@ from tango_posture.reference_import import (
     build_youtube_open_url,
     coach_notes_for_frame,
     compare_clips,
+    download_facebook_reel,
     download_youtube_video,
     imports_directory,
     iter_virtual_clip_frames,
     load_report_coach_data,
     load_report_movement_data,
+    parse_facebook_reel_url,
     parse_youtube_url,
     probe_import_video,
     relink_report_video,
@@ -200,6 +202,32 @@ def test_youtube_url_validation_and_canonicalisation():
     ):
         with pytest.raises(ValueError):
             parse_youtube_url(invalid)
+
+
+def test_facebook_reel_url_validation_and_canonicalisation():
+    reel = parse_facebook_reel_url("https://www.facebook.com/reel/123456789012345/")
+    assert reel is not None
+    assert reel.reel_id == "123456789012345"
+    assert reel.canonical_url == "https://www.facebook.com/reel/123456789012345/"
+
+    reels = parse_facebook_reel_url("https://m.facebook.com/reels/987654321?mibextid=share")
+    assert reels is not None
+    assert reels.canonical_url == "https://www.facebook.com/reel/987654321/"
+
+    shared = parse_facebook_reel_url("https://www.facebook.com/share/r/AbCdEf_123/?mibextid=share")
+    assert shared is not None
+    assert shared.canonical_url == "https://www.facebook.com/share/r/AbCdEf_123/"
+
+    for invalid in (
+        "http://www.facebook.com/reel/123456789012345/",
+        "https://facebook.com.evil.example/reel/123456789012345/",
+        "https://user:pass@www.facebook.com/reel/123456789012345/",
+        "https://www.facebook.com/watch/?v=123456789012345",
+        "https://www.facebook.com/reel/not-a-number/",
+        "https://www.facebook.com:8443/reel/123456789012345/",
+    ):
+        with pytest.raises(ValueError):
+            parse_facebook_reel_url(invalid)
 
 
 def test_youtube_independent_clock_alignment():
@@ -609,4 +637,51 @@ def test_direct_youtube_download_caching_and_full_open_coach_analysis(tmp_path, 
     assert notes is not None and len(notes) >= 4
     joined = "\n".join(notes)
     assert "Role:" in joined and "Torso axis:" in joined and "Clip Movement Totals:" in joined
+
+
+def test_facebook_reel_download_uses_validated_cache_and_injected_downloader(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"))
+    calls: list[tuple[str, Path]] = []
+
+    def fake_downloader(canonical_url: str, target_path: Path) -> Path:
+        calls.append((canonical_url, target_path))
+        return _write_test_video(target_path, fps=10, duration_seconds=2.0)
+
+    output_dir = imports_directory(cfg.data_dir)
+    url = "https://m.facebook.com/reels/123456789012345?mibextid=share"
+    video_path, link = download_facebook_reel(url, output_dir, downloader=fake_downloader)
+    assert video_path.name == "facebook_reel_123456789012345.mp4"
+    assert link.reel_id == "123456789012345"
+    assert calls[0][0] == "https://www.facebook.com/reel/123456789012345/"
+
+    cached_path, _ = download_facebook_reel(url, output_dir, downloader=fake_downloader)
+    assert cached_path == video_path
+    assert len(calls) == 1
+
+
+def test_facebook_reel_url_runs_import_pipeline_and_saves_provenance(tmp_path):
+    cfg = Config(data_dir=str(tmp_path / "data"), allow_all_angles=True)
+
+    def fake_downloader(_url: str, target_path: Path) -> Path:
+        return _write_test_video(target_path, fps=15, duration_seconds=4.0)
+
+    result = analyse_imported_clip(
+        video_path="",
+        facebook_url="https://www.facebook.com/reel/123456789012345/",
+        cfg=cfg,
+        report_dir=tmp_path / "reports",
+        analysis_mode="movement",
+        analyse_soundtrack=False,
+        estimator_factory=_SyntheticEstimator,
+        facebook_downloader=fake_downloader,
+    )
+
+    assert result.video_path.name == "facebook_reel_123456789012345.mp4"
+    assert result.facebook_reel is not None
+    assert result.facebook_reel.reel_id == "123456789012345"
+    record = read_report(result.report_path)
+    assert record.facebook_reel is not None
+    assert record.facebook_reel["canonical_url"] == result.facebook_reel.canonical_url
+    assert record.youtube_link is None
+    assert result.coach_data is not None and result.coach_data["frames"]
 

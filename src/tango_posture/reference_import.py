@@ -8,8 +8,10 @@ import hashlib
 import itertools
 import json
 import math
+import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import threading
@@ -76,6 +78,8 @@ SUPPORTED_VIDEO_EXTENSIONS: tuple[str, ...] = (".mp4", ".mov", ".m4v", ".avi", "
 
 _YOUTUBE_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
 _YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_FACEBOOK_HOSTS = frozenset({"facebook.com", "www.facebook.com", "m.facebook.com"})
+_FACEBOOK_REEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{5,64}$")
 _TIME_TOKEN_RE = re.compile(
     r"^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?(?:(?P<seconds>\d+(?:\.\d+)?)s?)?$",
     re.IGNORECASE,
@@ -121,6 +125,36 @@ class YouTubeSourceLink:
             canonical_url=f"https://www.youtube.com/watch?v={video_id}",
             video_id=video_id,
             anchor_seconds=anchor,
+        )
+
+
+@dataclass(frozen=True)
+class FacebookReelSourceLink:
+    """Validated Facebook Reel URL and stable reel identifier."""
+
+    canonical_url: str
+    reel_id: str
+
+    @property
+    def video_id(self) -> str:
+        return self.reel_id
+
+    def to_dict(self) -> dict[str, str]:
+        return {"canonical_url": self.canonical_url, "reel_id": self.reel_id}
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> FacebookReelSourceLink | None:
+        if not isinstance(payload, dict):
+            return None
+        reel_id = str(payload.get("reel_id") or "").strip()
+        if not _FACEBOOK_REEL_ID_RE.fullmatch(reel_id):
+            return None
+        parsed = parse_facebook_reel_url(str(payload.get("canonical_url") or ""))
+        if parsed is None or parsed.reel_id != reel_id:
+            return None
+        return cls(
+            canonical_url=parsed.canonical_url,
+            reel_id=reel_id,
         )
 
 
@@ -312,6 +346,41 @@ def parse_youtube_url(raw_url: str | None) -> YouTubeSourceLink | None:
     )
 
 
+def parse_facebook_reel_url(raw_url: str | None) -> FacebookReelSourceLink | None:
+    """Validate and canonicalize a Facebook Reel URL without network access."""
+    if raw_url is None or not raw_url.strip():
+        return None
+    text = raw_url.strip()
+    parts = urlsplit(text)
+    if parts.scheme.lower() != "https":
+        raise ValueError("Facebook Reel link must use https://")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("Facebook Reel link must not contain embedded credentials")
+    host = (parts.hostname or "").lower()
+    if host not in _FACEBOOK_HOSTS:
+        raise ValueError("Use a Facebook Reel URL from facebook.com")
+    if parts.port not in (None, 443):
+        raise ValueError("Facebook Reel link must not specify a custom port")
+
+    segments = [segment for segment in parts.path.split("/") if segment]
+    if len(segments) == 2 and segments[0].lower() in ("reel", "reels"):
+        reel_id = segments[1]
+        if not reel_id.isdigit() or not (5 <= len(reel_id) <= 32):
+            raise ValueError("Facebook Reel ID must be numeric")
+        canonical_path = f"/reel/{reel_id}/"
+    elif len(segments) == 3 and segments[:2] == ["share", "r"]:
+        reel_id = segments[2]
+        canonical_path = f"/share/r/{reel_id}/"
+    else:
+        raise ValueError("Facebook link must use /reel/<id> or /share/r/<token>")
+    if not _FACEBOOK_REEL_ID_RE.fullmatch(reel_id):
+        raise ValueError("Facebook Reel ID or share token is malformed")
+    return FacebookReelSourceLink(
+        canonical_url=f"https://www.facebook.com{canonical_path}",
+        reel_id=reel_id,
+    )
+
+
 def build_youtube_open_url(
     link: YouTubeSourceLink,
     *,
@@ -340,6 +409,20 @@ _YTDLP_MISSING_MESSAGE = (
 _YTDLP_TIMEOUT_SECONDS: float = 1800.0
 
 
+def _trusted_ca_bundle() -> Path | None:
+    for variable in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        value = os.environ.get(variable)
+        if value and Path(value).is_file():
+            return Path(value).resolve()
+    defaults = ssl.get_default_verify_paths()
+    candidates = (
+        Path("/opt/homebrew/etc/openssl@3/cert.pem"),
+        Path("/usr/local/etc/openssl@3/cert.pem"),
+        Path(defaults.cafile) if defaults.cafile else None,
+    )
+    return next((path.resolve() for path in candidates if path is not None and path.is_file()), None)
+
+
 def _find_ytdlp_command() -> list[str] | None:
     """Locate a `yt-dlp` binary, then `uv tool run yt-dlp`, without any shell execution."""
     candidates = [
@@ -364,16 +447,16 @@ def _find_ytdlp_command() -> list[str] | None:
     return None
 
 
-def _partial_download_bytes(folder: Path, video_id: str) -> int:
+def _partial_download_bytes(folder: Path, cache_stem: str) -> int:
     total = 0
-    for p in folder.glob(f"youtube_{video_id}.*"):
+    for p in folder.glob(f"{cache_stem}.*"):
         with suppress(OSError):
             total += p.stat().st_size
     return total
 
 
-def _discard_partial_downloads(folder: Path, video_id: str, keep: Path | None = None) -> None:
-    for p in folder.glob(f"youtube_{video_id}.*"):
+def _discard_partial_downloads(folder: Path, cache_stem: str, keep: Path | None = None) -> None:
+    for p in folder.glob(f"{cache_stem}.*"):
         if keep is not None and p == keep:
             continue
         with suppress(OSError):
@@ -382,20 +465,24 @@ def _discard_partial_downloads(folder: Path, video_id: str, keep: Path | None = 
 
 def _download_with_python_module(
     yt_dlp_module: Any,
-    link: YouTubeSourceLink,
+    link: YouTubeSourceLink | FacebookReelSourceLink,
     target_mp4: Path,
     cancel_check: Callable[[], bool] | None,
+    provider_label: str,
 ) -> None:
     cancelled = False
+    ca_bundle = _trusted_ca_bundle()
+    if ca_bundle is not None:
+        os.environ.setdefault("SSL_CERT_FILE", str(ca_bundle))
 
     def hook(status: dict[str, Any]) -> None:
         nonlocal cancelled
         if cancel_check is not None and cancel_check():
             cancelled = True
-            raise ImportCancelledError("YouTube video download was cancelled")
+            raise ImportCancelledError(f"{provider_label} download was cancelled")
         downloaded = status.get("downloaded_bytes")
         if isinstance(downloaded, int | float) and downloaded > MAX_IMPORT_VIDEO_BYTES:
-            raise ValueError("YouTube video exceeds the 2 GB import limit")
+            raise ValueError(f"{provider_label} video exceeds the 2 GB import limit")
 
     opts: dict[str, Any] = {
         "format": _YTDLP_FORMAT,
@@ -413,16 +500,19 @@ def _download_with_python_module(
         raise
     except Exception as exc:
         if cancelled:
-            raise ImportCancelledError("YouTube video download was cancelled") from exc
-        raise ValueError(f"YouTube download failed: {exc}") from exc
+            raise ImportCancelledError(f"{provider_label} download was cancelled") from exc
+        raise ValueError(f"{provider_label} download failed: {exc}") from exc
 
 
 def _download_with_subprocess(
     cmd_prefix: list[str],
-    link: YouTubeSourceLink,
+    link: YouTubeSourceLink | FacebookReelSourceLink,
     target_mp4: Path,
     cancel_check: Callable[[], bool] | None,
+    cache_stem: str,
+    provider_label: str,
 ) -> None:
+    ca_bundle = _trusted_ca_bundle()
     cmd = [
         *cmd_prefix,
         "--no-playlist",
@@ -435,7 +525,9 @@ def _download_with_subprocess(
         str(target_mp4),
         link.canonical_url,
     ]
-    log_path = target_mp4.parent / f".youtube_{link.video_id}.log"
+    if ca_bundle is not None:
+        cmd[-1:-1] = ["--ca-certificate", str(ca_bundle)]
+    log_path = target_mp4.parent / f".{cache_stem}.log"
     try:
         with log_path.open("w+b") as log:
             try:
@@ -445,9 +537,14 @@ def _download_with_subprocess(
                     stdin=subprocess.DEVNULL,
                     stdout=log,
                     stderr=subprocess.STDOUT,
+                    env=(
+                        {**os.environ, "SSL_CERT_FILE": str(ca_bundle)}
+                        if ca_bundle is not None
+                        else None
+                    ),
                 )
             except (OSError, subprocess.SubprocessError) as exc:
-                raise ValueError(f"Failed to launch YouTube downloader: {exc}") from exc
+                raise ValueError(f"Failed to launch {provider_label} downloader: {exc}") from exc
             started = time.monotonic()
             try:
                 while True:
@@ -457,13 +554,13 @@ def _download_with_subprocess(
                     except subprocess.TimeoutExpired:
                         pass
                     if cancel_check is not None and cancel_check():
-                        raise ImportCancelledError("YouTube video download was cancelled")
-                    if _partial_download_bytes(target_mp4.parent, link.video_id) > (
+                        raise ImportCancelledError(f"{provider_label} download was cancelled")
+                    if _partial_download_bytes(target_mp4.parent, cache_stem) > (
                         MAX_IMPORT_VIDEO_BYTES
                     ):
-                        raise ValueError("YouTube video exceeds the 2 GB import limit")
+                        raise ValueError(f"{provider_label} video exceeds the 2 GB import limit")
                     if time.monotonic() - started > _YTDLP_TIMEOUT_SECONDS:
-                        raise ValueError("YouTube video download timed out")
+                        raise ValueError(f"{provider_label} video download timed out")
             except BaseException:
                 if proc.poll() is None:
                     proc.terminate()
@@ -472,17 +569,99 @@ def _download_with_subprocess(
                     except subprocess.TimeoutExpired:
                         proc.kill()
                         proc.wait()
-                _discard_partial_downloads(target_mp4.parent, link.video_id)
+                _discard_partial_downloads(target_mp4.parent, cache_stem)
                 raise
             if proc.returncode != 0:
                 log.seek(0)
                 text = log.read().decode("utf-8", errors="replace")
                 err_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
                 detail = err_lines[-1] if err_lines else f"exit code {proc.returncode}"
-                raise ValueError(f"YouTube download failed: {detail}")
+                raise ValueError(f"{provider_label} download failed: {detail}")
     finally:
         with suppress(OSError):
             log_path.unlink()
+
+
+def _download_source_video(
+    link: YouTubeSourceLink | FacebookReelSourceLink,
+    output_dir: Path | str,
+    *,
+    cache_stem: str,
+    provider_label: str,
+    missing_message: str,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    downloader: Callable[[str, Path], Path] | None = None,
+) -> Path:
+    out_folder = Path(output_dir)
+    out_folder.mkdir(parents=True, exist_ok=True)
+    target_mp4 = out_folder / f"{cache_stem}.mp4"
+
+    if target_mp4.is_file() and target_mp4.stat().st_size > 0:
+        with suppress(ValueError):
+            probe_import_video(target_mp4)
+            return target_mp4.resolve()
+
+    if cancel_check is not None and cancel_check():
+        raise ImportCancelledError(f"{provider_label} video download was cancelled")
+
+    if progress_callback is not None:
+        progress_callback(2, 100, f"Downloading {provider_label} video…")
+
+    if downloader is not None:
+        downloaded = Path(downloader(link.canonical_url, target_mp4))
+        if downloaded.is_file() and downloaded.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
+            raise ValueError(f"{provider_label} video exceeds the 2 GB import limit")
+        probe_import_video(downloaded)
+        return downloaded.resolve()
+
+    yt_dlp_module: Any = None
+    try:
+        import yt_dlp as yt_dlp_module  # type: ignore[import-not-found,no-redef]
+    except ImportError:
+        yt_dlp_module = None
+
+    if yt_dlp_module is not None:
+        _download_with_python_module(
+            yt_dlp_module, link, target_mp4, cancel_check, provider_label
+        )
+    else:
+        cmd_prefix = _find_ytdlp_command()
+        if cmd_prefix is None:
+            raise ValueError(missing_message)
+        _download_with_subprocess(
+            cmd_prefix,
+            link,
+            target_mp4,
+            cancel_check,
+            cache_stem,
+            provider_label,
+        )
+
+    if cancel_check is not None and cancel_check():
+        raise ImportCancelledError(f"{provider_label} video download was cancelled")
+
+    result: Path | None = target_mp4 if target_mp4.is_file() else None
+    if result is None:
+        matches = sorted(
+            (
+                p
+                for p in out_folder.glob(f"{cache_stem}.*")
+                if p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+            ),
+            key=lambda p: p.stat().st_mtime_ns,
+            reverse=True,
+        )
+        result = matches[0] if matches else None
+    if result is None:
+        raise ValueError(
+            f"{provider_label} download completed, but no playable local video file was produced"
+        )
+    if result.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
+        result.unlink(missing_ok=True)
+        raise ValueError(f"{provider_label} video exceeds the 2 GB import limit")
+    probe_import_video(result)
+    return result.resolve()
 
 
 def download_youtube_video(
@@ -493,74 +672,49 @@ def download_youtube_video(
     cancel_check: Callable[[], bool] | None = None,
     downloader: Callable[[str, Path], Path] | None = None,
 ) -> tuple[Path, YouTubeSourceLink]:
-    """Validate `youtube_url` and download the video locally into `output_dir`.
-
-    - Always validates `youtube_url` with `parse_youtube_url` first.
-    - Reuses `<output_dir>/youtube_<video_id>.mp4` if an already-downloaded valid video exists.
-    - Resolution order: injectable `downloader(canonical_url, target_path) -> Path`, Python
-      `yt_dlp`, a local `yt-dlp` binary, then `uv tool run yt-dlp`.
-    """
+    """Validate and download a YouTube video, reusing a validated local cache."""
     link = parse_youtube_url(youtube_url)
     if link is None:
         raise ValueError("Enter a valid HTTPS YouTube URL to import")
-    out_folder = Path(output_dir)
-    out_folder.mkdir(parents=True, exist_ok=True)
-    target_mp4 = out_folder / f"youtube_{link.video_id}.mp4"
+    path = _download_source_video(
+        link,
+        output_dir,
+        cache_stem=f"youtube_{link.video_id}",
+        provider_label="YouTube",
+        missing_message=_YTDLP_MISSING_MESSAGE,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+        downloader=downloader,
+    )
+    return path, link
 
-    if target_mp4.is_file() and target_mp4.stat().st_size > 0:
-        with suppress(ValueError):
-            probe_import_video(target_mp4)
-            return (target_mp4.resolve(), link)
 
-    if cancel_check is not None and cancel_check():
-        raise ImportCancelledError("YouTube video download was cancelled")
-
-    if progress_callback is not None:
-        progress_callback(2, 100, f"Downloading YouTube video ({link.video_id})…")
-
-    if downloader is not None:
-        downloaded = Path(downloader(link.canonical_url, target_mp4))
-        if downloaded.is_file() and downloaded.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
-            raise ValueError("YouTube video exceeds the 2 GB import limit")
-        probe_import_video(downloaded)
-        return (downloaded.resolve(), link)
-
-    yt_dlp_module: Any = None
-    try:
-        import yt_dlp as yt_dlp_module  # type: ignore[import-not-found,no-redef]
-    except ImportError:
-        yt_dlp_module = None
-
-    if yt_dlp_module is not None:
-        _download_with_python_module(yt_dlp_module, link, target_mp4, cancel_check)
-    else:
-        cmd_prefix = _find_ytdlp_command()
-        if cmd_prefix is None:
-            raise ValueError(_YTDLP_MISSING_MESSAGE)
-        _download_with_subprocess(cmd_prefix, link, target_mp4, cancel_check)
-
-    if cancel_check is not None and cancel_check():
-        raise ImportCancelledError("YouTube video download was cancelled")
-
-    result: Path | None = target_mp4 if target_mp4.is_file() else None
-    if result is None:
-        matches = sorted(
-            (
-                p
-                for p in out_folder.glob(f"youtube_{link.video_id}.*")
-                if p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
-            ),
-            key=lambda p: p.stat().st_mtime_ns,
-            reverse=True,
-        )
-        result = matches[0] if matches else None
-    if result is None:
-        raise ValueError("YouTube download completed, but no playable local video file was produced")
-    if result.stat().st_size > MAX_IMPORT_VIDEO_BYTES:
-        result.unlink(missing_ok=True)
-        raise ValueError("YouTube video exceeds the 2 GB import limit")
-    probe_import_video(result)
-    return (result.resolve(), link)
+def download_facebook_reel(
+    facebook_url: str,
+    output_dir: Path | str,
+    *,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    downloader: Callable[[str, Path], Path] | None = None,
+) -> tuple[Path, FacebookReelSourceLink]:
+    """Validate and download a Facebook Reel, reusing its validated local cache."""
+    link = parse_facebook_reel_url(facebook_url)
+    if link is None:
+        raise ValueError("Enter a valid HTTPS Facebook Reel URL to import")
+    path = _download_source_video(
+        link,
+        output_dir,
+        cache_stem=f"facebook_reel_{link.reel_id}",
+        provider_label="Facebook Reel",
+        missing_message=(
+            "Cannot download from Facebook: 'yt-dlp' is not installed. Install it with "
+            "'brew install yt-dlp' or 'uv tool install yt-dlp', or download the video locally."
+        ),
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+        downloader=downloader,
+    )
+    return path, link
 
 
 @dataclass(frozen=True)
@@ -1502,6 +1656,7 @@ class ImportedClipResult:
     coverage: dict[str, FamilyCoverage]
     youtube_link: YouTubeSourceLink | None = None
     youtube_alignment: YouTubeClockAlignment | None = None
+    facebook_reel: FacebookReelSourceLink | None = None
     coach_path: Path | None = None
     coach_data: dict[str, Any] | None = None
 
@@ -2003,6 +2158,7 @@ def analyse_imported_clip(
     title: str = "",
     youtube_url: str | None = None,
     youtube_alignment: YouTubeClockAlignment | None = None,
+    facebook_url: str | None = None,
     analysis_mode: str = "movement",
     reference: Calibration | None = None,
     calibration_interval: tuple[float, float] | None = None,
@@ -2011,6 +2167,7 @@ def analyse_imported_clip(
     progress_callback: Callable[[int, int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     youtube_downloader: Callable[[str, Path], Path] | None = None,
+    facebook_downloader: Callable[[str, Path], Path] | None = None,
 ) -> ImportedClipResult:
     """Import and analyse a selected range `[selected_in, selected_out)` of a local video file.
 
@@ -2025,19 +2182,38 @@ def analyse_imported_clip(
     - Writes a Markdown report, companion `.metadata.json`, and `.movement.v1.json`.
     """
     yt_link = parse_youtube_url(youtube_url) if youtube_url and youtube_url.strip() else None
+    facebook_link = (
+        parse_facebook_reel_url(facebook_url)
+        if facebook_url and facebook_url.strip()
+        else None
+    )
+    if yt_link is not None and facebook_link is not None:
+        raise ValueError("Import from only one video URL at a time")
     downloaded_from_youtube = False
+    downloaded_from_facebook = False
     if not video_path or not str(video_path).strip():
-        if yt_link is None:
-            raise ValueError("Choose a local video file or enter a YouTube link to analyse")
-        downloaded_path, _ = download_youtube_video(
-            yt_link.canonical_url,
-            imports_directory(cfg.data_dir),
-            progress_callback=progress_callback,
-            cancel_check=cancel_check,
-            downloader=youtube_downloader,
-        )
+        if yt_link is None and facebook_link is None:
+            raise ValueError("Choose a local video file or enter a YouTube or Facebook Reel URL")
+        if yt_link is not None:
+            downloaded_path, _ = download_youtube_video(
+                yt_link.canonical_url,
+                imports_directory(cfg.data_dir),
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                downloader=youtube_downloader,
+            )
+            downloaded_from_youtube = True
+        else:
+            assert facebook_link is not None
+            downloaded_path, _ = download_facebook_reel(
+                facebook_link.canonical_url,
+                imports_directory(cfg.data_dir),
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+                downloader=facebook_downloader,
+            )
+            downloaded_from_facebook = True
         video_path = downloaded_path
-        downloaded_from_youtube = True
 
     probe = probe_import_video(Path(video_path))
     if (
@@ -2047,6 +2223,13 @@ def analyse_imported_clip(
         and probe.path.parent.resolve() == imports_directory(cfg.data_dir).resolve()
     ):
         downloaded_from_youtube = True
+    if (
+        facebook_link is not None
+        and not downloaded_from_facebook
+        and probe.path.name == f"facebook_reel_{facebook_link.reel_id}.mp4"
+        and probe.path.parent.resolve() == imports_directory(cfg.data_dir).resolve()
+    ):
+        downloaded_from_facebook = True
     effective_in = float(selected_in)
     if downloaded_from_youtube and yt_link is not None and yt_link.anchor_seconds is not None:
         if effective_in == 0.0 and 0.0 < yt_link.anchor_seconds < probe.duration_seconds:
@@ -2058,7 +2241,7 @@ def analyse_imported_clip(
             effective_in = 0.0
     if selected_out is not None:
         raw_out = float(selected_out)
-    elif downloaded_from_youtube:
+    elif downloaded_from_youtube or downloaded_from_facebook:
         raw_out = min(probe.duration_seconds, effective_in + MAX_IMPORT_RANGE_SECONDS)
     else:
         raw_out = probe.duration_seconds
@@ -2615,6 +2798,7 @@ def analyse_imported_clip(
         "analysis_mode": analysis_mode,
         "readiness": readiness.to_dict(),
         "youtube_link": yt_link.to_dict() if yt_link is not None else None,
+        "facebook_reel": facebook_link.to_dict() if facebook_link is not None else None,
         "youtube_alignment": (
             validated_alignment.to_dict() if validated_alignment is not None else None
         ),
@@ -2674,6 +2858,7 @@ def analyse_imported_clip(
                 else None
             ),
             "youtube_link": yt_link.to_dict() if yt_link is not None else None,
+            "facebook_reel": facebook_link.to_dict() if facebook_link is not None else None,
             "youtube_alignment": (
                 validated_alignment.to_dict() if validated_alignment is not None else None
             ),
@@ -2705,6 +2890,7 @@ def analyse_imported_clip(
         coverage=coverage,
         youtube_link=yt_link,
         youtube_alignment=validated_alignment,
+        facebook_reel=facebook_link,
         coach_path=companion_coach_path,
         coach_data=coach_data,
     )
@@ -3158,6 +3344,50 @@ class ReferenceImportWorker:
                         self.event_sink(("import_error", job_id, str(exc)))
 
             thread = threading.Thread(target=_run, name="youtube-download-worker", daemon=True)
+            self._thread = thread
+            thread.start()
+            return job_id
+
+    def start_facebook_download(
+        self,
+        facebook_url: str,
+        output_dir: Path,
+        *,
+        downloader: Callable[[str, Path], Path] | None = None,
+    ) -> str:
+        """Download a Facebook Reel in the background without analysing it."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("A reference video import is already running")
+            job_id = uuid4().hex
+            cancel_ev = threading.Event()
+            self._cancel = cancel_ev
+            self._active_job_id = job_id
+
+            def _run() -> None:
+                try:
+                    path, link = download_facebook_reel(
+                        facebook_url,
+                        output_dir,
+                        progress_callback=lambda cur, tot, msg: self.event_sink(
+                            ("import_progress", job_id, cur, tot, msg)
+                        ),
+                        cancel_check=cancel_ev.is_set,
+                        downloader=downloader,
+                    )
+                    if cancel_ev.is_set():
+                        self.event_sink(("import_cancelled", job_id))
+                    else:
+                        self.event_sink(("facebook_downloaded", job_id, path, link))
+                except ImportCancelledError:
+                    self.event_sink(("import_cancelled", job_id))
+                except Exception as exc:  # noqa: BLE001 - worker boundary reports error to UI
+                    if cancel_ev.is_set():
+                        self.event_sink(("import_cancelled", job_id))
+                    else:
+                        self.event_sink(("import_error", job_id, str(exc)))
+
+            thread = threading.Thread(target=_run, name="facebook-download-worker", daemon=True)
             self._thread = thread
             thread.start()
             return job_id

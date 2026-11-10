@@ -99,6 +99,7 @@ class ReportRecord:
     readiness: dict[str, Any] = field(default_factory=dict)
     reference_summary: dict[str, Any] | None = None
     youtube_link: dict[str, Any] | None = None
+    facebook_reel: dict[str, Any] | None = None
     youtube_alignment: dict[str, Any] | None = None
     movement_analysis_file: str | None = None
     coach_overlay_file: str | None = None
@@ -179,6 +180,7 @@ def read_report(path: Path) -> ReportRecord:
     readiness: dict[str, Any] = {}
     reference_summary: dict[str, Any] | None = None
     youtube_link: dict[str, Any] | None = None
+    facebook_reel: dict[str, Any] | None = None
     youtube_alignment: dict[str, Any] | None = None
     movement_analysis_file: str | None = None
     coach_overlay_file: str | None = None
@@ -241,6 +243,8 @@ def read_report(path: Path) -> ReportRecord:
                 reference_summary = data["reference_summary"]
             if isinstance(data.get("youtube_link"), dict):
                 youtube_link = data["youtube_link"]
+            if isinstance(data.get("facebook_reel"), dict):
+                facebook_reel = data["facebook_reel"]
             if isinstance(data.get("youtube_alignment"), dict):
                 youtube_alignment = data["youtube_alignment"]
             if isinstance(data.get("movement_analysis_file"), str):
@@ -302,6 +306,7 @@ def read_report(path: Path) -> ReportRecord:
         readiness=readiness,
         reference_summary=reference_summary,
         youtube_link=youtube_link,
+        facebook_reel=facebook_reel,
         youtube_alignment=youtube_alignment,
         movement_analysis_file=movement_analysis_file,
         coach_overlay_file=coach_overlay_file,

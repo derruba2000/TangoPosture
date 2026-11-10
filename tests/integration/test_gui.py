@@ -1327,6 +1327,43 @@ def test_analytics_zoom_pan_and_copy_chart_image(studio, monkeypatch):
     panel.close_posture_analytics()
 
 
+def test_facebook_reel_import_ui_enables_download_and_analysis(studio, tmp_path):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    panel.toggle_import_panel()
+    panel.import_youtube_var.set("incomplete YouTube text")
+    panel.import_facebook_var.set("https://www.facebook.com/reel/123456789012345/")
+    panel.on_facebook_url_edited()
+    assert panel.import_youtube_var.get() == ""
+    assert panel.import_facebook_download_button.instate(["!disabled"])
+    assert panel.import_start_button.instate(["!disabled"])
+    assert panel.import_download_button.instate(["disabled"])
+
+    def fake_downloader(_url: str, target_path: Path) -> Path:
+        writer = cv2.VideoWriter(
+            str(target_path), cv2.VideoWriter.fourcc(*"mp4v"), 15, (160, 120)
+        )
+        assert writer.isOpened()
+        for frame_index in range(36):
+            writer.write(np.full((120, 160, 3), 30 + frame_index, np.uint8))
+        writer.release()
+        return target_path
+
+    estimator_cls = _make_synthetic_movement_estimator(1.0)
+    panel.import_facebook_downloader = fake_downloader
+    panel.import_estimator_factory = lambda: estimator_cls(Path("models/pose_landmarker_lite.task"))
+    result = panel.start_reference_import(synchronous=True)
+    root.update()
+
+    assert result.facebook_reel is not None
+    assert result.facebook_reel.reel_id == "123456789012345"
+    assert result.video_path.name == "facebook_reel_123456789012345.mp4"
+    assert panel.report is not None
+    assert panel.report.facebook_reel is not None
+
+
 def test_analytics_can_analyze_practice_without_saved_metrics(studio, tmp_path):
     import cv2
 

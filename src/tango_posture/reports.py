@@ -317,6 +317,12 @@ def write_markdown_report(
             anchor_val = yt_info.get("anchor_seconds")
             anchor_suffix = f" (saved anchor `{anchor_val:.1f}s`)" if isinstance(anchor_val, (int, float)) else ""
             yt_str = f"[{yt_info['canonical_url']}]({yt_info['canonical_url']}){anchor_suffix}"
+        facebook_info = import_context.get("facebook_reel")
+        facebook_str = (
+            f"[{facebook_info['canonical_url']}]({facebook_info['canonical_url']})"
+            if isinstance(facebook_info, dict) and facebook_info.get("canonical_url")
+            else "None"
+        )
         readiness_info = import_context.get("readiness") or {}
         mode_lbl = (
             "Movement review (uncalibrated)"
@@ -334,6 +340,7 @@ def write_markdown_report(
                 f"| Selected Source Range `[in, out)` | `{_fmt_time(float(import_context.get('clip_in', 0.0)))}` to `{_fmt_time(float(import_context.get('clip_out', total_duration)))}` (`{float(import_context.get('clip_duration', total_duration)):.2f}s`) |",
                 f"| Analysis Mode | {mode_lbl} |",
                 f"| YouTube Source Link | {yt_str} |",
+                f"| Facebook Reel Source | {facebook_str} |",
                 f"| Detected Pivots / Steps | `{import_context.get('pivot_count', 0)}` pivots, `{import_context.get('step_count', 0)}` steps |",
                 "",
             ]
