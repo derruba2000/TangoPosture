@@ -884,8 +884,15 @@ def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studi
 
     panel.pump()
     root.update()
-    assert read_movement_analysis(archive, 0) is not None, panel.movement_status.get()
-    assert read_movement_analysis(archive, 1) is not None, panel.movement_status.get()
+    diagnostics = {
+        "status": panel.movement_status.get(),
+        "segment_states": panel.movement_state_by_key,
+        "session_only": {
+            key: readonly for key, (_, readonly) in panel.session_movement_results.items()
+        },
+    }
+    assert read_movement_analysis(archive, 0) is not None, diagnostics
+    assert read_movement_analysis(archive, 1) is not None, diagnostics
 
     # Reopen the archive from scratch and verify both segments restore their movement analysis
     panel.load_report(archive)
