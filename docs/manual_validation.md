@@ -61,6 +61,10 @@ Ask a tango teacher to annotate the intended reference's suitability and visible
   UTF-8 manual decoding, and serialized replay extraction/archive replacement.
   macOS chart copying is exercised with a mocked executable rather than assuming
   a macOS system tool exists on every test runner.
+- Archive writes retry Windows access/sharing errors for at most 0.775 seconds
+  before surfacing a save failure. Regression tests inject transient and
+  persistent failures, check that both segments retain their analysis, and verify
+  that a failed replacement preserves the previous archive.
 - Pure synthetic geometry/timing, simulated lifecycle and storage tests: see implementation report.
 - Verified model loaded with CPU delegate and processed blank generated frames and a short locally encoded blank video.
 - Blank-video run used blocked Python socket/URL calls. It produced UNKNOWN observations, completed exports, and released capture/detector resources.

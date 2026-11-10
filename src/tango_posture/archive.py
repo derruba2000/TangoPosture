@@ -6,6 +6,7 @@ import shutil
 import stat
 import sys
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,18 @@ from .domain import Calibration
 
 _locks: dict[Path, threading.RLock] = {}
 _locks_guard = threading.Lock()
+
+def _replace_archive(temporary: Path, destination: Path) -> None:
+    # Windows readers and file scanners may briefly deny an otherwise valid replacement.
+    for delay in (0.025, 0.05, 0.1, 0.2, 0.4):
+        try:
+            temporary.replace(destination)
+            return
+        except PermissionError as error:
+            if sys.platform != "win32" or getattr(error, "winerror", None) not in (5, 32, 33):
+                raise
+            time.sleep(delay)
+    temporary.replace(destination)
 
 
 @contextmanager
@@ -190,7 +203,7 @@ def store_movement_analysis(
                     with previous.open(member) as source, output.open(member, "w") as target:
                         shutil.copyfileobj(source, target)
                 output.writestr(member_name, content)
-            temporary.replace(path)
+            _replace_archive(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
     return member_name
@@ -279,7 +292,7 @@ def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path 
             output.writestr(report_name, markdown)
             output.writestr(metadata_name, json.dumps(metadata, allow_nan=False))
             output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
-        temporary.replace(path)
+        _replace_archive(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
     return index
@@ -325,7 +338,7 @@ def save_calibration_archive(path: Path, reference: Calibration, video: Path,
                 output.writestr(report_name, report)
                 output.writestr(metadata_name, json.dumps(metadata, allow_nan=False))
                 output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
-            temporary.replace(path)
+            _replace_archive(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -356,7 +369,7 @@ def _store_analysis(path: Path, analysis: Path) -> None:
                 with previous.open(member) as source, output.open(member, "w") as target:
                     shutil.copyfileobj(source, target)
             output.write(analysis, analysis.name)
-        temporary.replace(path)
+        _replace_archive(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

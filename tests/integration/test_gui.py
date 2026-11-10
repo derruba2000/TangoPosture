@@ -663,6 +663,7 @@ def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypat
     monkeypatch.setattr("tango_posture.review_ui.OllamaClient.analyze", analyze)
     panel.request_analysis()
     assert emitted.wait(2)
+    panel.pump()
     root.update()
     assert panel.analysis_status_label.winfo_ismapped()
     assert panel.analysis_status.get() == "Receiving analysis..."
