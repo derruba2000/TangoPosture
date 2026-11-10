@@ -106,6 +106,12 @@ inference; they do not certify real camera, microphone, GUI interaction, or
 recording behavior. Validate those manually on clean target machines before
 recommending a release.
 
+Windows compilation, installation, and smoke testing appear as separate workflow
+steps. Installation is limited to 180 seconds and smoke testing to 120 seconds.
+The `windows-verification-logs` workflow artifact includes the installer log and
+the packaged application's Python traceback if verification fails. A hung or
+failed verification prevents installer publication.
+
 ---
 
 ## Webcam Practice Workflow
