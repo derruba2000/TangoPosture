@@ -1194,6 +1194,9 @@ def test_reference_video_import_youtube_relink_and_comparison_workflow(
     # 4. Move local file, reopen report, and relink with SHA-256 verification
     teacher_report_path = panel.report.path
     moved_vid = tmp_path / "relocated_teacher.mp4"
+    reader = panel.player.reader
+    panel.player.unload()
+    assert panel.player.reader is None and not reader.cap.isOpened()
     shutil.move(str(teacher_vid), str(moved_vid))
     panel.load_report(teacher_report_path)
     root.update()
