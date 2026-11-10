@@ -1,3 +1,4 @@
+import json
 import socket
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from tango_posture.archive import PracticeArchive, read_manifest
 from tango_posture.calibration import load_calibration_file, profile
 from tango_posture.capture import Captured
 from tango_posture.models import MANIFEST, fetch, verify
+from tango_posture.movement import render_floor_guide
 from tango_posture.practice import GuiDisplay
 from tango_posture.storage import Storage
 
@@ -233,6 +235,13 @@ def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cf
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     written = {}
     released = []
+    floor_frames = []
+    def capture_floor(image):
+        result = render_floor_guide(image)
+        floor_frames.append(result.copy())
+        return result
+
+    monkeypatch.setattr("tango_posture.app.render_floor_guide", capture_floor)
 
     class Writer:
         def __init__(self, path):
@@ -277,6 +286,19 @@ def test_record_key_starts_video_and_stop_saves_without_calibrating(tmp_path, cf
         app.run()
         assert written == {"video_00.mp4": 3, "overlay_00.mp4": 3, "overlay_00_lines.mp4": 3}
         assert sorted(released) == ["overlay_00.mp4", "overlay_00_lines.mp4", "video_00.mp4"]
+        assert len(floor_frames) == 3
+        assert floor_frames[0][20, 20].tolist() == [63, 67, 70]
+        assert floor_frames[0][470, 320].mean() > floor_frames[0][20, 20].mean()
+        assert app.practice_file is not None
+        archived = PracticeArchive(app.practice_file)
+        try:
+            notes_path = archived.folder / "overlay_00.notes.jsonl"
+            assert notes_path.is_file()
+            notes = [json.loads(line) for line in notes_path.read_text().splitlines()]
+            assert len(notes) == 3
+            assert "clip_timestamp" in notes[0] and "alerts" in notes[0]
+        finally:
+            archived.close()
         assert app.cal_start is None and app.session is None
         assert not app.recording
     finally:

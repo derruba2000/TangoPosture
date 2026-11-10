@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import Config
 from .domain import METRICS, UNITS, Calibration, SessionSummary
+from .review import write_metadata
 
 
 def _fmt_time(seconds: float) -> str:
@@ -89,9 +90,11 @@ def summary_dict(*args, **kwargs) -> dict:
     return asdict(summarize(*args, **kwargs))
 
 
-def _format_video_ref(path: Path | None) -> str:
+def _format_video_ref(path: Path | None, *, omit_absolute_path: bool = False) -> str:
     if path is None:
         return "`None (not recorded)`"
+    if omit_absolute_path:
+        return f"`{path.name}`"
     resolved = path.resolve()
     return f"[`{path}`](file://{resolved})"
 
@@ -109,13 +112,20 @@ def write_markdown_report(
     session_events: list[dict[str, Any]] | None = None,
     recorded_video: Path | None = None,
     recorded_overlay: Path | None = None,
+    import_context: dict[str, Any] | None = None,
+    movement_data: dict[str, Any] | None = None,
 ) -> Path:
     report_dir.mkdir(parents=True, exist_ok=True)
     now_utc = datetime.now(UTC)
     stamp = now_utc.strftime("%Y%m%d_%H%M%S")
     suffix = f"_{session_id[:8]}" if session_id else ""
     report_path = report_dir / f"report_{stamp}{suffix}.md"
+    counter = 1
+    while report_path.exists():
+        report_path = report_dir / f"report_{stamp}{suffix}_{counter:02d}.md"
+        counter += 1
     latest_path = report_dir / "latest_report.md"
+    is_imported = bool(import_context and import_context.get("is_imported_reference"))
 
     total_frames = len(frame_log)
     start_t = frame_log[0]["timestamp"] if frame_log else 0.0
@@ -276,8 +286,8 @@ def write_markdown_report(
         "| --- | --- |",
         f"| Generated (UTC) | `{now_utc.isoformat()}` |",
         f"| Source | `{source}` |",
-        f"| Saved Raw Video | {_format_video_ref(recorded_video)} |",
-        f"| Saved Annotated Overlay Video | {_format_video_ref(recorded_overlay)} |",
+        f"| Saved Raw Video | {_format_video_ref(recorded_video, omit_absolute_path=is_imported)} |",
+        f"| Saved Annotated Overlay Video | {_format_video_ref(recorded_overlay, omit_absolute_path=is_imported)} |",
         f"| Run / Session Status | `{status}` |",
         f"| Session ID | `{session_id or 'uncalibrated-observation-run'}` |",
         f"| Observed Timeline | `{_fmt_time(start_t)}` to `{_fmt_time(end_t)}` (`{total_duration:.2f}s`, `{total_frames}` frames) |",
@@ -295,12 +305,106 @@ def write_markdown_report(
         "",
         "### Saved Video & Overlay Files (For Consultation & Analysis)",
         "",
-        f"- **Raw Practice Video**: {_format_video_ref(recorded_video)}",
-        f"- **Annotated Overlay Video**: {_format_video_ref(recorded_overlay)}",
-        "",
-        "### Detected Leader / Follower Embrace Intervals",
+        f"- **Raw Practice Video**: {_format_video_ref(recorded_video, omit_absolute_path=is_imported)}",
+        f"- **Annotated Overlay Video**: {_format_video_ref(recorded_overlay, omit_absolute_path=is_imported)}",
         "",
     ]
+
+    if is_imported and import_context:
+        yt_info = import_context.get("youtube_link")
+        yt_str = "None"
+        if isinstance(yt_info, dict) and yt_info.get("canonical_url"):
+            anchor_val = yt_info.get("anchor_seconds")
+            anchor_suffix = f" (saved anchor `{anchor_val:.1f}s`)" if isinstance(anchor_val, (int, float)) else ""
+            yt_str = f"[{yt_info['canonical_url']}]({yt_info['canonical_url']}){anchor_suffix}"
+        facebook_info = import_context.get("facebook_reel")
+        facebook_str = (
+            f"[{facebook_info['canonical_url']}]({facebook_info['canonical_url']})"
+            if isinstance(facebook_info, dict) and facebook_info.get("canonical_url")
+            else "None"
+        )
+        readiness_info = import_context.get("readiness") or {}
+        mode_lbl = (
+            "Movement review (uncalibrated)"
+            if import_context.get("analysis_mode") == "movement"
+            else f"Reference-relative posture review ({readiness_info.get('summary') or 'calibrated'})"
+        )
+        lines.extend(
+            [
+                "### Imported Reference Video Provenance & Coverage",
+                "",
+                "| Field | Value |",
+                "| --- | --- |",
+                f"| Clip Title | **{import_context.get('title') or (recorded_video.stem if recorded_video else 'Reference clip')}** |",
+                f"| Source Filename | `{import_context.get('source_filename') or (recorded_video.name if recorded_video else 'unknown')}` |",
+                f"| Selected Source Range `[in, out)` | `{_fmt_time(float(import_context.get('clip_in', 0.0)))}` to `{_fmt_time(float(import_context.get('clip_out', total_duration)))}` (`{float(import_context.get('clip_duration', total_duration)):.2f}s`) |",
+                f"| Analysis Mode | {mode_lbl} |",
+                f"| YouTube Source Link | {yt_str} |",
+                f"| Facebook Reel Source | {facebook_str} |",
+                f"| Detected Pivots / Steps | `{import_context.get('pivot_count', 0)}` pivots, `{import_context.get('step_count', 0)}` steps |",
+                "",
+            ]
+        )
+        cov_map = import_context.get("coverage")
+        if isinstance(cov_map, dict) and cov_map:
+            lines.extend(
+                [
+                    "#### Analysis Family Valid Coverage & Evidence Status",
+                    "",
+                    "| Analysis Family | Valid Duration | Coverage | Events | Outcome Status | Detail |",
+                    "| --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            status_labels = {
+                "detected": "Events detected",
+                "no_events_detected": "No events detected",
+                "not_enough_evidence": "Not enough evidence",
+                "disabled": "Disabled",
+                "unavailable": "Unavailable",
+            }
+            for fam_key in ("posture", "pivots", "steps", "soundtrack"):
+                fc = cov_map.get(fam_key)
+                if not isinstance(fc, dict):
+                    continue
+                vd = float(fc.get("valid_duration", 0.0))
+                td = float(fc.get("total_duration", 0.0))
+                ratio_pct = float(fc.get("coverage_ratio", 0.0)) * 100.0
+                ev_cnt = int(fc.get("event_count", 0))
+                st_raw = str(fc.get("status", ""))
+                st_lbl = status_labels.get(st_raw, st_raw)
+                detail = str(fc.get("reason") or "Sufficient valid observations")
+                lines.append(
+                    f"| `{fam_key}` | `{vd:.2f}s / {td:.2f}s` | `{ratio_pct:.1f}%` | `{ev_cnt}` | **{st_lbl}** | {detail} |"
+                )
+            lines.append("")
+
+        st_meta = import_context.get("soundtrack")
+        if isinstance(st_meta, dict) and st_meta.get("enabled"):
+            bpm_val = st_meta.get("estimated_bpm")
+            bpm_txt = f"`{float(bpm_val):.1f} BPM`" if isinstance(bpm_val, (int, float)) else "`N/A`"
+            phrase_txt = (
+                f"`{st_meta.get('phrase_count', 0)} phrases` (supported)"
+                if st_meta.get("phrase_supported")
+                else "Withheld (insufficient phrase evidence)"
+            )
+            lines.extend(
+                [
+                    "#### Video Soundtrack Beat & Phrase Summary",
+                    "",
+                    f"- **Timing Source**: `{st_meta.get('source', 'Video soundtrack')}`",
+                    f"- **Status**: `{st_meta.get('status', 'unavailable')}` ({st_meta.get('reason') or 'active beat tracking'})",
+                    f"- **Estimated Tempo & Counted Beats**: {bpm_txt}, `{st_meta.get('counted_beats', 0)}` beat transitions over `{float(st_meta.get('beat_active_duration_seconds', 0.0)):.2f}s`",
+                    f"- **8-Beat Phrase Estimate**: {phrase_txt}",
+                    "",
+                ]
+            )
+
+    lines.extend(
+        [
+            "### Detected Leader / Follower Embrace Intervals",
+            "",
+        ]
+    )
 
     if not leader_spans and not follower_spans:
         lines.append(
@@ -440,6 +544,59 @@ def write_markdown_report(
                 f"| `{m}` | `{data['valid_duration']:.2f}s` | `{data['unknown_duration']:.2f}s` | "
                 f"`{med_d}` | `{peak_d}` | `{data['event_count']}` | `{pct}` |"
             )
+
+    pivots_list = list((movement_data or {}).get("pivots") or [])
+    steps_list = list((movement_data or {}).get("steps") or [])
+    if movement_data is not None and (pivots_list or steps_list):
+        lines.extend(
+            [
+                "",
+                "### 3.4 Movement Analysis (Pivots & Step Placements Timeline)",
+                "",
+                f"Detected `{len(pivots_list)}` pivots and `{len(steps_list)}` step placements.",
+                "",
+            ]
+        )
+        if pivots_list:
+            lines.extend(
+                [
+                    "#### Pivots",
+                    "",
+                    "| # | Start Time | End Time | Duration | Direction | Net Rotation | Peak Rate | Quality |",
+                    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+                ]
+            )
+            for idx, p in enumerate(pivots_list, 1):
+                st = float(p.get("start_time", 0.0))
+                en = float(p.get("end_time", st))
+                rate = p.get("peak_rate_deg_s", p.get("mean_rate_deg_s"))
+                rate_txt = f"{abs(float(rate)):.0f} deg/s" if rate is not None else "N/A"
+                qual = p.get("quality")
+                qual_txt = f"{float(qual) * 100.0:.0f}%" if qual is not None else "N/A"
+                lines.append(
+                    f"| {idx} | {_fmt_time(st)} | {_fmt_time(en)} | `{max(0.0, en - st):.2f}s` | "
+                    f"`{str(p.get('direction', '')).upper()}` | "
+                    f"`{float(p.get('net_rotation_deg', 0.0)):+.1f} deg` | `{rate_txt}` | `{qual_txt}` |"
+                )
+            lines.append("")
+        if steps_list:
+            lines.extend(
+                [
+                    "#### Step Placements",
+                    "",
+                    "| # | Landing Time | Foot Side | Travel Distance | Confidence |",
+                    "| --- | --- | --- | --- | --- |",
+                ]
+            )
+            for idx, s in enumerate(steps_list, 1):
+                conf = s.get("confidence")
+                conf_txt = f"{float(conf) * 100.0:.0f}%" if conf is not None else "N/A"
+                lines.append(
+                    f"| {idx} | {_fmt_time(float(s.get('time', 0.0)))} | "
+                    f"`{str(s.get('side', '')).upper()}` | "
+                    f"`{float(s.get('travel_px', 0.0)):.0f} px` | `{conf_txt}` |"
+                )
+            lines.append("")
 
     lines.extend(
         [
@@ -638,4 +795,10 @@ def write_markdown_report(
     content = "\n".join(lines).rstrip() + "\n"
     report_path.write_text(content, encoding="utf-8")
     latest_path.write_text(content, encoding="utf-8")
+    timestamps = [
+        float(f["timestamp"])
+        for f in frame_log
+        if isinstance(f.get("timestamp"), (int, float))
+    ]
+    write_metadata(report_path, source, recorded_video, recorded_overlay, timestamps)
     return report_path

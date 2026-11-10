@@ -848,7 +848,44 @@ These are code-assigned labels for visible arm patterns. They do not establish a
 
 `reports.py` includes a Markdown report writer that summarises per-frame head-angle, arm-label, and beat information alongside session information where available. It writes a timestamped report and a `latest_report.md` copy. The report is an additional human-readable output, distinct from the SQLite-backed Stage 1 JSON and CSV exports.
 
-The extra report can describe preview or other frame-log information rather than only confidence-qualified active session time. Do not assume its counts or spans use the same denominators as the core per-metric summaries. It also receives the input video path, which can appear in the report; inspect that metadata before sharing it.
+The extra report can describe preview or other frame-log information than only confidence-qualified active session time. Do not assume its counts or spans use the same denominators as the core per-metric summaries. It also receives the input video path, which can appear in the report; inspect that metadata before sharing it.
+
+### Replay movement analysis (estimated pivots and observed step placements)
+
+In the desktop GUI (`Review → Video replay`), an offline **Movement analysis** layer can inspect the unmirrored **Raw video** stream of a single dancer filmed from a fixed, approximately level camera:
+
+- **Controls**:
+  - **Analyse movement / Re-run movement analysis**: Runs (or re-runs) the offline pose pass on the selected recording. Use **Cancel** to stop a queued or running job; cancelling a re-run preserves any previous valid result.
+  - **Show pivots**: Draws a perspective ellipse ring centered on the hip midpoint and aligned with the projected hip line only during an observed pivot interval, with a tangent directional arrow indicating **clockwise** or **anticlockwise** top-down rotation.
+  - **Show recent steps**: Draws left and right heel-to-toe footprint markers at their observed floor positions. Each marker fades in over a short ramp (`min(0.15s, 0.15 × T)`) and fades linearly to zero at `T = replay_step_history_seconds` (default `5.0s`) of replay media time. Pausing playback pauses the fade.
+  - Enabling either toggle while viewing a baked overlay (`Overlay` or `Full lines + messages`) automatically switches the replay stream to `Raw video` at the current playhead time when available.
+  - Standalone clips opened via **Open video...** can be analysed manually for the active replay session. Saved `.tp` practice archives persist each segment's analysis as `movement_XX.v1.json`.
+- **Scope and filming guidance**:
+  - Outputs represent **estimated pivots** and **observed step placements**, not biomechanical weight-transfer measurements.
+  - Keep the camera fixed and level with the dancer's full body (including both feet and ankles) clearly visible against the floor. Pair tracking, moving-camera compensation, and live coaching cues are outside this feature's scope.
+
+### Reference video import, YouTube provenance, soundtrack analysis, and comparison
+
+In `Review → Video replay`, click **Import reference video…** to import and analyse a local teacher or study clip without modifying or copying the source file:
+
+- **Entry point and file limits**:
+  - Choose a local video file (`.mp4`, `.mov`, `.m4v`, `.avi`, `.mkv`, `.webm`) up to **2 GB** and select a half-open range `[in, out)` up to **120 seconds**.
+  - Playback and analysis seek and decode forward over the selected virtual clip range `[in, out)` while keeping three coordinates explicit: **decoded frame index**, **source media time**, and **clip-relative time** (`source_time - in`).
+- **Analysis modes and calibration readiness**:
+  - **Movement review**: Produces confidence-qualified posture observations plus pivot and step overlays without requiring a reference calibration.
+  - **Reference-relative posture review**: Uses either a compatible saved reference or a user-marked stable calibration interval inside the imported clip (validated with the configured duration, sample count, and MAD stability gates, and excluded from scored practice statistics).
+- **YouTube source link and independent clock alignment**:
+  - An optional HTTPS YouTube link (`https://www.youtube.com/watch?v=...`, `https://youtu.be/...`, or `https://www.youtube.com/shorts/...`) is validated locally without network requests, canonicalised to `https://www.youtube.com/watch?v=<id>`, and stripped of tracking/playlist parameters while retaining an optional nonnegative time anchor (`t` / `start`).
+  - Entering a YouTube link without a local file enables **Open on YouTube**, while **Analyse clip** remains disabled with `"Choose a local video file to analyse"`.
+  - **Open this moment on YouTube** is enabled only after confirming that the local file and YouTube video are the same edit and saving a valid local-to-YouTube timestamp alignment. Changing the file or YouTube link invalidates prior alignments.
+- **Storage, reopening, and relinking**:
+  - Analysis writes a Markdown report (omitting full local paths in exported text), a `.metadata.json` file with the clip bounds and SHA-256 content digest, and a `.movement.v1.json` companion.
+  - If the local video file is moved, **Relink video…** verifies the SHA-256 digest before reattaching saved movement overlays, frame timestamps, and YouTube alignments.
+- **Optional video soundtrack analysis**:
+  - Enable **Analyse video soundtrack** (off by default) to decode the selected clip range's audio locally via `ffmpeg` (or a local `.wav` sidecar) into 16 kHz mono samples and feed them into an offline `BeatTracker` labelled **Video soundtrack** (never opening the live microphone or inventing nominal clock beats on silence).
+  - If `ffmpeg` or an audio stream is absent, soundtrack status is reported as unavailable with a clear reason while visual analysis proceeds normally.
+- **Teacher vs practice comparison**:
+  - Select a second clip in the **Compare with clip** bar, set one manual anchor in each clip (for example, the start of a pivot), and click **Compare clips** to play and seek around the anchors synchronously. Each pane stays on its own timeline, reference, and overlay, holding at its clip boundary rather than extrapolating, while displaying observable pivot/step differences and comparability warnings when camera setup or coverage differ.
 
 ### Architecture additions
 
@@ -976,6 +1013,13 @@ Settings are editable in the desktop app and can be imported from or exported to
 | `auto_record_start_delay` | Continuous detected music required before automatic recording starts. |
 | `auto_record_stop_delay` | Continuous detected silence required before automatic recording stops. |
 | `max_recordings` | Maximum number of recording starts in one coach run. |
+
+### Replay movement
+
+| Setting | Meaning |
+| --- | --- |
+| `replay_auto_analyse_movement` | Automatically queues offline movement analysis after each saved practice recording. |
+| `replay_step_history_seconds` | Replay media-time window (0.5 to 30 seconds) over which observed step footprints fade out. |
 
 ### Review & Ollama
 

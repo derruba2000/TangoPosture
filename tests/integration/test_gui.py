@@ -107,10 +107,13 @@ def test_help_about_menu_opens_single_branded_dialog(studio, monkeypatch):
 def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path):
     root, gui = studio
     archive = tmp_path / "practice" / "Evening.tp"
-    video, overlay, report = (tmp_path / name for name in ("raw.mp4", "overlay.mp4", "report.md"))
+    video, overlay, lines, report = (
+        tmp_path / name
+        for name in ("raw.mp4", "overlay.mp4", "overlay_lines.mp4", "report.md")
+    )
     import cv2
 
-    for path in (video, overlay):
+    for path in (video, overlay, lines):
         writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
         assert writer.isOpened()
         writer.write(np.zeros((64, 64, 3), np.uint8))
@@ -122,15 +125,25 @@ def test_review_can_select_each_recording_in_a_practice_archive(studio, tmp_path
     root.update()
     assert list(gui.review.segment_paths) == ["Recording 00", "Recording 01", "Recording 02"]
     assert gui.review.report.markdown == "# Recording 2"
+    assert tuple(gui.review.video_combo["values"]) == (
+        "Practice video",
+        "Overlay video",
+        "Overlay with lines",
+    )
     for index in range(3):
         gui.review.segment_selection.set(f"Recording {index:02d}")
         gui.review.segment_combo.event_generate("<<ComboboxSelected>>")
         root.update()
         assert gui.review.report.markdown == f"# Recording {index}"
-        assert gui.review.player.reader.path.name == f"overlay_{index:02d}.mp4"
-        gui.review.video_selection.set("Raw video")
+        assert gui.review.player.reader.path.name == f"video_{index:02d}.mp4"
+        gui.review.video_selection.set("Practice video")
         gui.review.switch_video()
         assert gui.review.player.reader.path.name == f"video_{index:02d}.mp4"
+    gui.review.archive.path.unlink()
+    target, raw_path, reason = gui.review._resolve_movement_target()
+    assert target is not None and target.kind == "standalone"
+    assert raw_path is not None and raw_path.is_file()
+    assert reason == ""
     extracted = gui.review.archive.folder
     gui.review.close()
     assert not extracted.exists()
@@ -153,8 +166,8 @@ def test_review_opens_calibration_reference_and_its_videos(studio, tmp_path, ref
     root.update()
     assert list(gui.review.segment_paths) == ["Calibration"]
     assert reference.id in gui.review.report.markdown
-    assert gui.review.player.reader.path.name == "overlay_00.mp4"
-    gui.review.video_selection.set("Raw video")
+    assert gui.review.player.reader.path.name == "video_00.mp4"
+    gui.review.video_selection.set("Practice video")
     gui.review.switch_video()
     assert gui.review.player.reader.path.name == "video_00.mp4"
     gui.refresh_references()
@@ -502,7 +515,7 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
     root.update()
     assert "tracking was UNKNOWN" in panel.report_view.text.get("1.0", "end")
     assert len([tag for tag in panel.report_view.text.tag_names() if tag.startswith("time-")]) == 1
-    assert panel.video_selection.get() == "Overlay"
+    assert panel.video_selection.get() == "Practice video"
     panel.seek_report_time(1.2)
     root.geometry("840x640")
     root.update()
@@ -512,11 +525,8 @@ def test_report_and_raw_overlay_replay_are_readable_in_the_app(studio, tmp_path)
             button.winfo_rooty() + button.winfo_height() <= root.winfo_rooty() + root.winfo_height()
         )
     assert panel.player.reader.index == 2
-    overlay_mean = panel.player.last_image.mean()
-    panel.video_selection.set("Raw video")
-    panel.switch_video()
     assert panel.player.reader.index == 2
-    assert panel.player.last_image.mean() < overlay_mean
+    assert panel.player.reader.path == (tmp_path / "raw.avi").resolve()
     panel.player.step(1)
     assert panel.player.reader.index == 3
     panel.player.toggle()
@@ -714,18 +724,19 @@ def test_review_compares_three_views_and_seeks_sidebar_notes(studio, tmp_path):
     gui.review.tabs.select(gui.review.video_page)
     root.update()
     assert "Full lines + messages" in gui.review.report.videos
-    for name in ("Raw video", "Full lines + messages"):
-        gui.review.compare_vars[name].set(True)
-    gui.review.update_comparison()
+    gui.review.reference_paths["Reference practice"] = archive
+    gui.review.reference_combo.configure(values=("Reference practice",))
+    gui.review.compare_target_var.set("Reference practice")
+    gui.review.show_reference_var.set(True)
+    gui.review.on_reference_toggle()
     gui.review.player.seek(0.2)
-    assert [reader.index for reader, _ in gui.review.player.comparisons] == [2, 2]
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [2]
     assert "Frame 2 notes" in gui.review.video_notes.get("1.0", "end")
     gui.review.player.step(-1)
-    assert [reader.index for reader, _ in gui.review.player.comparisons] == [1, 1]
+    assert [reader.index for reader, _ in gui.review.player.comparisons] == [1]
     assert "Frame 1 notes" in gui.review.video_notes.get("1.0", "end")
-    for variable in gui.review.compare_vars.values():
-        variable.set(False)
-    gui.review.update_comparison()
+    gui.review.show_reference_var.set(False)
+    gui.review.on_reference_toggle()
     assert not gui.review.player.comparisons
 
 
@@ -758,3 +769,708 @@ def test_setting_labels_open_their_specific_manual_explanation(studio):
             assert highlighted
             assert field in gui.help_view.text.get(*highlighted)
             assert gui.help_view.text.dlineinfo(highlighted[0]) is not None
+
+
+def _make_synthetic_movement_estimator(direction_sign: float = 1.0):
+    from tango_posture.domain import FrameObservation, Landmark
+
+    class SyntheticEstimator:
+        model_hash = "synthetic-gui-test"
+
+        def __init__(self, _model_path):
+            self.idx = 0
+
+        def estimate(self, frame_bgr, timestamp: float) -> FrameObservation:
+            import math
+
+            h, w = frame_bgr.shape[:2]
+            i = self.idx
+            self.idx += 1
+            yaw = direction_sign * (5.0 * (i - 3) if 3 <= i <= 15 else (0.0 if i < 3 else 60.0))
+            rad = math.radians(yaw)
+            # Step left foot from x=0.36 to x=0.52 between frames 4..9 and settle 10..24
+            if i <= 3:
+                lx = 0.36
+            elif i <= 9:
+                lx = 0.36 + (0.52 - 0.36) * ((i - 3) / 6.0)
+            else:
+                lx = 0.52
+
+            def lm(x, y, z=0.0):
+                return Landmark(x=x, y=y, z=z, visibility=0.95, presence=0.95)
+
+            pose = {
+                "nose": lm(0.5, 0.18),
+                "left_shoulder": lm(0.43, 0.28),
+                "right_shoulder": lm(0.57, 0.28),
+                "left_hip": lm(0.44, 0.50),
+                "right_hip": lm(0.56, 0.50),
+                "left_ankle": lm(lx, 0.84),
+                "right_ankle": lm(0.56, 0.84),
+                "left_heel": lm(lx, 0.85),
+                "right_heel": lm(0.56, 0.85),
+                "left_foot_index": lm(lx, 0.89),
+                "right_foot_index": lm(0.56, 0.89),
+            }
+            world = {
+                "left_hip": lm(-0.07 * math.cos(rad), 0.0, -0.07 * math.sin(rad)),
+                "right_hip": lm(0.07 * math.cos(rad), 0.0, 0.07 * math.sin(rad)),
+            }
+            return FrameObservation(timestamp=timestamp, width=w, height=h, poses=[pose], world_poses=[world])
+
+        def close(self):
+            pass
+
+    return SyntheticEstimator
+
+
+def test_movement_analysis_two_segments_save_reopen_toggle_switch_and_fade(studio, tmp_path):
+    import cv2
+
+    from tango_posture.archive import read_movement_analysis
+
+    root, gui = studio
+    panel = gui.review
+    panel.movement_coordinator.estimator_factory = _make_synthetic_movement_estimator(1.0)
+
+    archive = tmp_path / "practice" / "DoubleTake.tp"
+    raw0, raw1, overlay, report = (
+        tmp_path / name for name in ("raw0.mp4", "raw1.mp4", "overlay.mp4", "report.md")
+    )
+    for path, fill_val in ((raw0, 30), (raw1, 45), (overlay, 120)):
+        writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+        assert writer.isOpened()
+        for _ in range(25):
+            writer.write(np.full((120, 160, 3), fill_val, np.uint8))
+        writer.release()
+
+    report.write_text("# Segment 0")
+    idx0 = append_segment(archive, report, raw0, overlay, [i / 15.0 for i in range(25)])
+    report.write_text("# Segment 1")
+    idx1 = append_segment(archive, report, raw1, overlay, [i / 15.0 for i in range(25)])
+    assert (idx0, idx1) == (0, 1)
+
+    # Simulate two segments saved in a single coach run; both saved_segments events must be processed
+    gui.display = GuiDisplay()
+    gui.display.segment_saved(archive, 0)
+    gui.display.segment_saved(archive, 1)
+    gui.display.report_ready(archive)
+    # Calibration archive should be ignored by movement analysis
+    cal_archive = tmp_path / "cal.tpc"
+    cal_archive.write_bytes(b"cal")
+    gui.display.segment_saved(cal_archive, 0)
+    gui.pump()
+
+    deadline = time.monotonic() + 5.0
+    while (
+        read_movement_analysis(archive, 0) is None
+        or read_movement_analysis(archive, 1) is None
+        or panel.movement_coordinator.is_busy(("archive", str(archive.resolve()), 0))
+        or panel.movement_coordinator.is_busy(("archive", str(archive.resolve()), 1))
+    ) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+
+    panel.pump()
+    root.update()
+    assert read_movement_analysis(archive, 0) is not None
+    assert read_movement_analysis(archive, 1) is not None
+
+    # Reopen the archive from scratch and verify both segments restore their movement analysis
+    panel.load_report(archive)
+    root.update()
+    assert panel.segment_selection.get() == "Recording 01"
+    assert panel.video_selection.get() == "Practice video"
+    assert panel.movement_status.get() == "Ready"
+    assert panel.movement_button.cget("text") == "Re-run movement analysis"
+
+    # Seek to frame 12 (0.8s, inside pivot & step history) on the Practice video
+    panel.player.seek(0.8)
+    assert panel.player.reader.index == 12
+    # Movement overlays render directly over the Practice video.
+    panel.show_pivots_var.set(True)
+    panel.show_steps_var.set(True)
+    panel.on_movement_toggle()
+    root.update()
+    assert panel.video_selection.get() == "Practice video"
+    assert panel.player.reader.index == 12
+    assert not np.array_equal(panel.player.last_image, panel.player.raw_frame)
+
+    # Seek to 1.4s (frame 21, ~0.8s after step at frame 9): with default 5.0s window step is visible;
+    # changing replay_step_history_seconds to 0.5s immediately fades out the step without re-analysis
+    panel.show_pivots_var.set(False)
+    panel.on_movement_toggle()
+    panel.player.seek(1.4)
+    img_5s = panel.player.last_image.copy()
+    assert not np.array_equal(img_5s, panel.player.raw_frame)
+    gui.settings["replay_step_history_seconds"].set("0.5")
+    root.update()
+    img_05s = panel.player.last_image.copy()
+    panel.show_steps_var.set(False)
+    panel.player.refresh_frame()
+    without_steps = panel.player.last_image.copy()
+    panel.show_steps_var.set(True)
+    panel.player.refresh_frame()
+    assert np.array_equal(img_05s, without_steps)
+
+
+def test_movement_analysis_cancel_preserves_previous_result_and_handles_overlay_only_and_standalone(
+    studio, tmp_path, monkeypatch
+):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    panel.movement_coordinator.estimator_factory = _make_synthetic_movement_estimator(1.0)
+
+    # 1. Archive with only Overlay (no Raw video) reports "Raw video required"
+    overlay_only_archive = tmp_path / "OverlayOnly.tp"
+    overlay, report = tmp_path / "overlay.mp4", tmp_path / "report.md"
+    writer = cv2.VideoWriter(str(overlay), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for _ in range(10):
+        writer.write(np.zeros((120, 160, 3), np.uint8))
+    writer.release()
+    report.write_text("# Overlay only")
+    append_segment(overlay_only_archive, report, None, overlay, [0.1 * i for i in range(10)])
+    panel.load_report(overlay_only_archive)
+    root.update()
+    assert panel.movement_status.get() == "Raw video required"
+    assert panel.movement_button.instate(["disabled"])
+
+    # 2. Standalone clip via Open video supports session-only manual analysis and clears on source change
+    standalone = tmp_path / "clip.mp4"
+    writer = cv2.VideoWriter(str(standalone), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for _ in range(25):
+        writer.write(np.full((120, 160, 3), 20, np.uint8))
+    writer.release()
+    monkeypatch.setattr("tango_posture.review_ui.filedialog.askopenfilename", lambda **_: str(standalone))
+    panel.open_video()
+    root.update()
+    assert panel.movement_status.get() == "Not analysed"
+    assert panel.movement_button.instate(["!disabled"])
+    panel.request_movement_analysis()
+    deadline = time.monotonic() + 4.0
+    while panel.movement_coordinator.is_busy(("standalone", str(standalone.resolve()), 0)) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert panel.movement_status.get() == "Ready (session only)"
+    assert panel.movement_data is not None
+
+    # Re-run and cancel while slow estimator is running -> previous valid result is preserved
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowEstimator:
+        model_hash = "synthetic-gui-test"
+
+        def __init__(self, _model_path):
+            pass
+
+        def estimate(self, frame_bgr, timestamp: float):
+            started.set()
+            release.wait(2.0)
+            from tango_posture.domain import FrameObservation
+
+            return FrameObservation(timestamp=timestamp, width=160, height=120, poses=[], world_poses=[])
+
+        def close(self):
+            pass
+
+    panel.movement_coordinator.estimator_factory = SlowEstimator
+    panel.request_movement_analysis()
+    assert started.wait(2.0)
+    panel.cancel_movement_analysis()
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while panel.movement_coordinator.is_busy(("standalone", str(standalone.resolve()), 0)) and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert "Cancelled" in panel.movement_status.get()
+    assert panel.movement_data is not None
+
+
+def test_reference_video_import_youtube_relink_and_comparison_workflow(
+    studio, tmp_path, monkeypatch
+):
+    import shutil
+
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    est_cls = _make_synthetic_movement_estimator(1.0)
+    panel.import_estimator_factory = lambda: est_cls(Path("models/pose_landmarker_lite.task"))
+
+    opened_urls: list[str] = []
+    monkeypatch.setattr("tango_posture.review_ui.webbrowser.open", lambda u: opened_urls.append(u))
+
+    # 1. Open Import Reference Video panel; verify URL-only enables Open on YouTube,
+    #    Download from YouTube, and Analyse clip
+    assert panel.replay_controls_visible is False
+    assert panel.replay_options.winfo_manager() == ""
+    panel.toggle_import_panel()
+    root.update()
+    assert panel.replay_controls_visible is True
+    assert panel.import_panel_visible is True
+    assert panel.import_soundtrack_var.get() is True
+    panel.import_youtube_var.set("https://youtu.be/dQw4w9WgXcQ?t=15")
+    panel._sync_import_form_state()
+    assert panel.import_download_button.instate(["!disabled"])
+    assert panel.import_start_button.instate(["!disabled"])
+    assert "YouTube" in panel.import_status.get()
+    panel.open_import_youtube_link()
+    assert opened_urls[-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=15s"
+
+    # 1b. Test direct YouTube import with blank Local video using injectable downloader
+    def _mock_yt_downloader(canonical_url: str, target_path: Path) -> Path:
+        w = cv2.VideoWriter(str(target_path), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+        for idx in range(36):
+            w.write(np.full((120, 160, 3), 30 + idx * 2, np.uint8))
+        w.release()
+        return target_path
+
+    panel.import_youtube_downloader = _mock_yt_downloader
+    panel.import_title_var.set("Direct YouTube Clip")
+    yt_direct_res = panel.start_reference_import(synchronous=True)
+    root.update()
+    assert yt_direct_res.video_path.name == "youtube_dQw4w9WgXcQ.mp4"
+    assert panel.report is not None and panel.report.title == "Direct YouTube Clip"
+    assert tuple(panel.video_combo["values"]) == (
+        "Practice video",
+        "Overlay video",
+        "Overlay with lines",
+    )
+    missing_reference = tmp_path / "missing_reference.tp"
+    panel.reference_paths["Missing reference"] = missing_reference
+    panel.reference_combo.configure(values=("Missing reference",))
+    panel.compare_target_var.set("Missing reference")
+    panel.guard(panel.show_reference_video)
+    assert "Reference file is missing" in panel.status.get()
+    assert panel.open_youtube_button.instate(["!disabled"])
+    assert panel.open_moment_youtube_button.instate(["!disabled"])
+    assert panel.show_coach_var.get() is True
+    assert panel.show_pivots_var.get() is True
+    assert panel.show_steps_var.get() is True
+    assert panel.floor_only_check.cget("text") == "Hide video (gray floor)"
+    gui.tabs.select(panel)
+    panel.tabs.select(panel.video_page)
+    root.update()
+    assert panel.floor_only_check.winfo_ismapped()
+    assert panel.coach_data is not None
+    sidebar_text = panel.video_notes.get("1.0", "end")
+    assert "No separate notes for this frame" not in sidebar_text
+    assert "Torso axis" in sidebar_text and "Clip Movement Totals" in sidebar_text
+    assert panel.player.reader is not None and panel.player.raw_frame is not None
+    panel.floor_only_var.set(True)
+    panel.video_selection.set("Overlay with lines")
+    panel.switch_video()
+    assert panel.player.reader.path == yt_direct_res.video_path
+    floor_frame = panel._transform_replay_frame(
+        panel.player.raw_frame.copy(), panel.player.reader.index, panel.player.reader.fps
+    )
+    assert not np.array_equal(floor_frame, panel.player.raw_frame)
+    assert floor_frame[2, 2].tolist() == [63, 67, 70]
+    panel.video_selection.set("Practice video")
+    panel.switch_video()
+    overlay_path = tmp_path / "direct_youtube_overlay.mp4"
+    monkeypatch.setattr(
+        "tango_posture.review_ui.filedialog.asksaveasfilename",
+        lambda **_: str(overlay_path),
+    )
+    panel.save_overlay_video_dialog()
+    deadline = time.monotonic() + 5.0
+    while panel.overlay_export_job and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert overlay_path.is_file(), panel.movement_status.get()
+    assert "Saved overlay video" in panel.movement_status.get()
+    panel.floor_only_var.set(False)
+
+    # 2. Select local teacher video file (not downloaded from YouTube) and set sub-range [0.2, 2.0)
+    teacher_vid = tmp_path / "teacher_demo.mp4"
+    writer = cv2.VideoWriter(str(teacher_vid), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for i in range(36):
+        writer.write(np.full((120, 160, 3), 25 + i * 2, np.uint8))
+    writer.release()
+
+    panel.import_confirm_same_edit_var.set(False)
+    monkeypatch.setattr(
+        "tango_posture.review_ui.filedialog.askopenfilename",
+        lambda **_: str(teacher_vid),
+    )
+    panel.open_video()
+    root.update()
+    assert panel.import_panel_visible is True
+    assert Path(panel.import_video_var.get()) == teacher_vid.resolve()
+    deadline = time.monotonic() + 5.0
+    while panel.import_worker.is_running() and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+    assert panel.coach_data is not None
+    assert panel._resolve_movement_target()[0] is not None
+    assert panel.show_pivots_var.get() is True
+    assert panel.show_steps_var.get() is True
+    panel.cut_video_dialog()
+    assert panel.cut_dialog is not None
+    assert panel.cut_dialog.title() == "Cut video segment"
+    assert sum(widget.winfo_class() == "TEntry" for widget in panel.cut_dialog.winfo_children()) == 3
+    assert panel.cut_button is not None and panel.cut_button.cget("text") == "Cut video"
+    panel.cut_dialog.destroy()
+    panel.import_title_var.set("Teacher Giro Clip")
+    panel.import_in_var.set("0.2")
+    panel.import_out_var.set("2.0")
+    panel._sync_import_form_state()
+    assert panel.import_start_button.instate(["!disabled"])
+
+    # Run import via background worker and pump until complete
+    panel.start_reference_import()
+    deadline = time.monotonic() + 5.0
+    while panel.import_worker.is_running() and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    root.update()
+
+    assert panel.report is not None
+    assert panel.report.is_imported_reference is True
+    assert panel.report.title == "Teacher Giro Clip"
+    assert panel.report.clip_range == pytest.approx((0.2, 2.0))
+    assert panel.player.clip_range == pytest.approx((0.2, 2.0))
+    assert panel.movement_data is not None
+    assert panel.open_youtube_button.instate(["!disabled"])
+    # Without confirmed alignment, Open this moment on YouTube is disabled
+    assert panel.open_moment_youtube_button.instate(["disabled"])
+
+    # 3. Confirm same edit and save YouTube alignment at local 0.5s -> YouTube 30.0s
+    panel.import_confirm_same_edit_var.set(True)
+    panel.import_align_local_var.set("0.5")
+    panel.import_align_youtube_var.set("30.0")
+    panel.save_current_youtube_alignment()
+    panel.player.seek(1.5)
+    panel._sync_import_and_youtube_controls()
+    assert panel.open_moment_youtube_button.instate(["!disabled"])
+    moment_url = panel.open_current_moment_on_youtube()
+    assert moment_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=31s"
+
+    # 4. Move local file, reopen report, and relink with SHA-256 verification
+    teacher_report_path = panel.report.path
+    moved_vid = tmp_path / "relocated_teacher.mp4"
+    shutil.move(str(teacher_vid), str(moved_vid))
+    panel.load_report(teacher_report_path)
+    root.update()
+    assert "Relink video" in panel.status.get()
+    outcome = panel.relink_current_video(moved_vid)
+    assert outcome.exact_match is True
+    assert panel.movement_data is not None
+
+    # 5. Import a second clip (Practice) and run anchored Teacher-vs-Practice comparison
+    practice_vid = tmp_path / "student_practice.mp4"
+    writer2 = cv2.VideoWriter(str(practice_vid), cv2.VideoWriter_fourcc(*"mp4v"), 15, (160, 120))
+    for i in range(36):
+        writer2.write(np.full((120, 160, 3), 40 + i * 2, np.uint8))
+    writer2.release()
+    panel.set_import_video_file(practice_vid)
+    panel.import_title_var.set("Student Practice Clip")
+    panel.import_in_var.set("0.0")
+    panel.import_out_var.set("2.0")
+    practice_res = panel.start_reference_import(synchronous=True)
+
+    # Load teacher report and compare against practice report at manual anchors
+    panel.load_report(teacher_report_path)
+    panel.anchor_left_var.set("0.5")
+    panel.anchor_right_var.set("0.6")
+    cmp_res = panel.run_clip_comparison(practice_res.report_path)
+    root.update()
+    assert len(panel.player.comparisons) == 1
+    assert cmp_res.left_title == "Teacher Giro Clip"
+    assert cmp_res.right_title == "Student Practice Clip"
+    assert panel.comparison_summary_var.get() != ""
+
+
+def test_analytics_charts_order_clip_frames_and_shade_practice_alerts(studio):
+    from tango_posture.review_ui import _analytics_points, _draw_analytics_chart
+
+    root, gui = studio
+    coach = {
+        "frames": {
+            "2": {
+                "clip_timestamp": 1.0,
+                "head_angle": -18.0,
+                "alerts": {"head": True},
+            },
+            "0": {
+                "clip_timestamp": 0.0,
+                "head_angle": -5.0,
+                "alerts": {"head": False},
+            },
+        }
+    }
+    points = _analytics_points(coach, "head_angle", alert_key="head")
+    assert points == [(0.0, -5.0, False), (1.0, -18.0, True)]
+
+    chart_frame = tk.Frame(root)
+    chart_frame.grid(row=10, column=0, sticky="nsew")
+    chart = tk.Canvas(chart_frame, width=600, height=280)
+    chart.pack()
+    root.update()
+    _draw_analytics_chart(
+        chart,
+        title="Head alignment",
+        unit="degrees",
+        practice=points,
+        reference=points,
+        threshold=-15.0,
+    )
+    fills = [chart.itemcget(item, "fill") for item in chart.find_all()]
+    assert "#fde2e2" in fills
+    assert "#c62828" in fills
+    chart.destroy()
+
+    panel = gui.review
+    panel.coach_data = coach
+    panel.reference_coach_data = coach
+    panel.open_posture_analytics()
+    root.update()
+    assert len(panel.analytics_canvases) == 4
+    assert "Practice: 2 analyzed frames" in panel.analytics_status.get()
+    assert "Reference: 2 analyzed frames" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+
+def test_practice_analytics_loads_saved_per_frame_metrics(studio, tmp_path):
+    _root, gui = studio
+    report = review_fixture(tmp_path)
+    overlay = tmp_path / "overlay.avi"
+    rows = [
+        {
+            "timestamp": 8.0,
+            "clip_timestamp": 0.0,
+            "head_angle": -2.0,
+            "shoulder_elev_pct": 1.0,
+            "knee_bend_deg": 14.0,
+            "axis_curve_ratio": 0.01,
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        },
+        {
+            "timestamp": 8.1,
+            "clip_timestamp": 0.1,
+            "head_angle": -20.0,
+            "shoulder_elev_pct": 12.0,
+            "knee_bend_deg": 4.0,
+            "axis_curve_ratio": 0.08,
+            "alerts": {"head": True, "shoulders": True, "knees": True, "axis": True},
+        },
+    ]
+    overlay.with_suffix(".notes.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+
+    gui.review.load_report(report)
+    assert gui.review.coach_data is None
+    assert gui.review.practice_analytics_data is not None
+    assert len(gui.review.practice_analytics_data["frames"]) == 2
+    assert gui.review.practice_analytics_data["frames"]["1"]["alerts"]["axis"] is True
+    gui.review.show_video_notes(1)
+    assert "Head:" in gui.review.video_notes.get("1.0", "end")
+
+
+def test_analytics_zoom_pan_and_copy_chart_image(studio, monkeypatch):
+    from types import SimpleNamespace
+
+    root, gui = studio
+    panel = gui.review
+    panel.coach_data = {
+        "frames": {
+            str(index): {
+                "clip_timestamp": float(index),
+                "head_angle": float(index),
+                "alerts": {"head": index > 5},
+            }
+            for index in range(11)
+        }
+    }
+    panel.reference_coach_data = panel.coach_data
+    panel.open_posture_analytics()
+    root.update()
+    chart = panel.analytics_canvases["head"]
+    initial_lines = sum(chart.type(item) == "line" for item in chart.find_all())
+    panel.analytics_zoom_var.set(2.0)
+    panel.analytics_pan_var.set(0.5)
+    panel._refresh_posture_analytics()
+    zoomed_lines = sum(chart.type(item) == "line" for item in chart.find_all())
+    assert zoomed_lines < initial_lines
+
+    command_calls = []
+    monkeypatch.setattr("tango_posture.review_ui.shutil.which", lambda _: "/usr/bin/true")
+    monkeypatch.setattr(
+        "tango_posture.review_ui.subprocess.run",
+        lambda command, **_: command_calls.append(command) or SimpleNamespace(returncode=0, stderr=""),
+    )
+    panel.analytics_metric_var.set("Head alignment")
+    panel.copy_analytics_chart()
+    assert command_calls and command_calls[0][1:3] == ["-c", "-R"]
+    assert "Copied Head alignment chart image" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+
+def test_facebook_reel_import_ui_enables_download_and_analysis(studio, tmp_path):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    panel.toggle_import_panel()
+    panel.import_youtube_var.set("incomplete YouTube text")
+    panel.import_facebook_var.set("https://www.facebook.com/reel/123456789012345/")
+    panel.on_facebook_url_edited()
+    assert panel.import_youtube_var.get() == ""
+    assert panel.import_facebook_download_button.instate(["!disabled"])
+    assert panel.import_start_button.instate(["!disabled"])
+    assert panel.import_download_button.instate(["disabled"])
+
+    def fake_downloader(_url: str, target_path: Path) -> Path:
+        writer = cv2.VideoWriter(
+            str(target_path), cv2.VideoWriter.fourcc(*"mp4v"), 15, (160, 120)
+        )
+        assert writer.isOpened()
+        for frame_index in range(36):
+            writer.write(np.full((120, 160, 3), 30 + frame_index, np.uint8))
+        writer.release()
+        return target_path
+
+    estimator_cls = _make_synthetic_movement_estimator(1.0)
+    panel.import_facebook_downloader = fake_downloader
+    panel.import_estimator_factory = lambda: estimator_cls(Path("models/pose_landmarker_lite.task"))
+    result = panel.start_reference_import(synchronous=True)
+    root.update()
+
+    assert result.facebook_reel is not None
+    assert result.facebook_reel.reel_id == "123456789012345"
+    assert result.video_path.name == "facebook_reel_123456789012345.mp4"
+    assert panel.report is not None
+    assert panel.report.facebook_reel is not None
+
+
+def test_analytics_can_analyze_practice_without_saved_metrics(studio, tmp_path):
+    import cv2
+
+    root, gui = studio
+    panel = gui.review
+    video = tmp_path / "practice_for_analytics.mp4"
+    writer = cv2.VideoWriter(str(video), cv2.VideoWriter.fourcc(*"mp4v"), 15, (160, 120))
+    assert writer.isOpened()
+    for frame_index in range(36):
+        writer.write(np.full((120, 160, 3), 35 + frame_index, np.uint8))
+    writer.release()
+    estimator = _make_synthetic_movement_estimator(1.0)
+    panel.import_estimator_factory = lambda: estimator(Path("models/pose_landmarker_lite.task"))
+    panel.set_import_video_file(video)
+    panel.opened_video_path = video.resolve()
+    panel.practice_analytics_data = None
+    panel.coach_data = None
+    panel.open_posture_analytics()
+    panel.analyse_practice_for_analytics()
+    deadline = time.monotonic() + 5.0
+    while panel.analytics_job and time.monotonic() < deadline:
+        panel.pump()
+        root.update()
+        time.sleep(0.02)
+    panel.pump()
+    assert panel.practice_analytics_data is not None
+    assert len(panel.practice_analytics_data["frames"]) == 36
+    assert panel.coach_data is panel.practice_analytics_data
+    assert "Practice analyzed" in panel.analytics_status.get()
+    panel.close_posture_analytics()
+
+
+def test_analytics_time_alignment_algorithm_and_manual_parameters(studio):
+    import math
+
+    root, gui = studio
+    panel = gui.review
+
+    # Reference signal over 0..5.0s; Practice is delayed by +1.2s (t_practice = t_ref + 1.2)
+    true_shift = 1.2
+    ref_frames = {}
+    prac_frames = {}
+    for index in range(51):
+        t = round(index * 0.1, 3)
+        ref_frames[str(index)] = {
+            "clip_timestamp": t,
+            "head_angle": -8.0 + 6.0 * math.sin(1.8 * t),
+            "shoulder_elev_pct": 10.0 + 8.0 * math.cos(1.4 * t),
+            "knee_bend_deg": 18.0 + 5.0 * math.sin(2.1 * t),
+            "axis_curve_smoothed": 0.02 + 0.03 * math.sin(1.5 * t),
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        }
+        t_src = t - true_shift
+        prac_frames[str(index)] = {
+            "clip_timestamp": t,
+            "head_angle": -8.0 + 6.0 * math.sin(1.8 * t_src),
+            "shoulder_elev_pct": 10.0 + 8.0 * math.cos(1.4 * t_src),
+            "knee_bend_deg": 18.0 + 5.0 * math.sin(2.1 * t_src),
+            "axis_curve_smoothed": 0.02 + 0.03 * math.sin(1.5 * t_src),
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        }
+
+    panel.practice_analytics_data = {"frames": prac_frames}
+    panel.reference_coach_data = {"frames": ref_frames}
+    panel.open_posture_analytics()
+    root.update()
+
+    head_canvas = panel.analytics_canvases["head"]
+    before_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+
+    assert panel.analytics_align_button is not None
+    panel.analytics_align_button.invoke()
+    root.update()
+
+    assert panel.analytics_time_offset_var.get() == pytest.approx(true_shift, abs=0.1)
+    assert panel.analytics_time_scale_var.get() == pytest.approx(1.0, abs=0.05)
+    assert "Time aligned" in panel.analytics_status.get()
+    aligned_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert aligned_coords != before_coords
+
+    # Per-series mode aligns each metric independently and refreshes charts
+    panel.analytics_align_mode_var.set("Per series")
+    res = panel.align_analytics_time_series()
+    root.update()
+    assert set(res["per_series"]) == {"head", "shoulders", "knees", "hips"}
+    assert len(panel.analytics_per_series_alignment) == 4
+    assert "Time aligned per series" in panel.analytics_status.get()
+
+    # Manual parameters override per-series alignment and immediately refresh charts
+    panel.analytics_time_offset_var.set(0.5)
+    panel.analytics_time_scale_var.set(1.1)
+    panel.on_manual_analytics_alignment()
+    root.update()
+    assert not panel.analytics_per_series_alignment
+    assert "Manual time alignment: offset +0.50s, scale 1.10x." in panel.analytics_status.get()
+    manual_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert manual_coords != aligned_coords
+
+    # Reset restores 0.0s offset and 1.0x scale and refreshes charts to original state
+    assert panel.analytics_reset_align_button is not None
+    panel.analytics_reset_align_button.invoke()
+    root.update()
+    assert panel.analytics_time_offset_var.get() == pytest.approx(0.0)
+    assert panel.analytics_time_scale_var.get() == pytest.approx(1.0)
+    reset_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert reset_coords == before_coords
+    panel.close_posture_analytics()
+
+
+

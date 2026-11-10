@@ -1,5 +1,6 @@
 """Desktop controller. Headless and GUI use the same observation/session pipeline."""
 
+import json
 import platform
 import shutil
 import subprocess
@@ -16,7 +17,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .archive import append_segment, practice_directory, practice_path
+from .archive import (
+    append_segment,
+    practice_directory,
+    practice_path,
+)
 from .beat import BeatTracker
 from .calibration import calibrate, compatible, profile, save_calibration_file
 from .capture import Capture
@@ -39,6 +44,7 @@ from .geometry import (
 )
 from .metrics import measure
 from .models import verify
+from .movement import render_floor_guide
 from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
 from .reports import write_markdown_report
@@ -49,8 +55,8 @@ GUIDANCE = (
     "Fixed, level camera; whole body in frame; adequate light; uncluttered background.\n"
     "Stand side-on; fitted clothing helps. Keep the selected anatomical side visible.\n"
     "Facing means direction in the ORIGINAL UNMIRRORED image; setup is unmirrored.\n"
-    "C: calibrate (3s countdown + 12s capture); A: accept; R: retry; S: start;\n"
-    "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit.\n"
+    "C: calibrate (3s countdown + configured capture window); A: accept; R: record video; S: start scoring;\n"
+    "P: pause/resume; E: end/save; V: toggle verbose skeleton; Y: toggle vertical axis; Q: quit/save; X: abort.\n"
     "Measurements are relative to your reference, not medical or technique judgements."
 )
 
@@ -281,12 +287,28 @@ class Application:
                 recorded_overlay=self.record_overlay,
             )
             self.report_written = True
+            if self.record_overlay is not None and self.frame_log:
+                notes_path = self.record_overlay.with_suffix(".notes.jsonl")
+                notes_path.write_text(
+                    "".join(
+                        json.dumps(row, separators=(",", ":"), allow_nan=False) + "\n"
+                        for row in self.frame_log
+                    ),
+                    encoding="utf-8",
+                )
             if (
                 self.display is not None
                 and self.practice_file is not None
-                and self.recording_finished
+                and (
+                    self.recording_finished
+                    or (
+                        self.session is not None
+                        and self.session.finished
+                        and self.recordings_started == 0
+                    )
+                )
             ):
-                append_segment(
+                seg_idx = append_segment(
                     self.practice_file,
                     report_path,
                     self.record_video,
@@ -294,6 +316,13 @@ class Application:
                     [float(row["timestamp"]) for row in self.frame_log],
                 )
                 self.display.report_ready(self.practice_file)
+                if (
+                    not self.calibration_only
+                    and self.practice_file.suffix.lower() == ".tp"
+                    and self.record_video is not None
+                    and hasattr(self.display, "segment_saved")
+                ):
+                    self.display.segment_saved(self.practice_file, seg_idx)
                 print(f"Saved practice: {self.practice_file}")
             else:
                 print(f"Saved report: {report_path} (latest: {report_dir / 'latest_report.md'})")
@@ -882,6 +911,16 @@ class Application:
                     else:
                         knee_straight_elapsed = 0.0
                 bad_knees = knee_straight_elapsed >= self.cfg.knee_straight_duration
+                if self.frame_log:
+                    self.frame_log[-1]["alerts"] = {
+                        "head": bool(bad_head),
+                        "shoulders": bool(bad_shoulders),
+                        "knees": bool(bad_knees),
+                        "axis": bool(bad_axis),
+                    }
+                    self.frame_log[-1]["clip_timestamp"] = float(
+                        timestamp - self.frame_log[0]["timestamp"]
+                    )
 
                 sh_disp_pct = (
                     shoulder_elev_pct
@@ -1111,7 +1150,7 @@ class Application:
                         overlay_writer.write(panel)
                         if self.display is not None and self.recording:
                             lines_panel = draw(
-                                captured.image,
+                                render_floor_guide(captured.image),
                                 display_frame,
                                 self.cfg.mirror and self.setup_confirmed,
                                 [],
@@ -1186,6 +1225,16 @@ class Application:
                 if overlay_lines_writer:
                     overlay_lines_writer.release()
                     overlay_lines_writer = None
+                if self.beat_tracker:
+                    self.beat_tracker.close()
+                    if not self.aborted:
+                        recorded_vids = [
+                            p for p in (self.record_video, self.record_overlay) if p is not None
+                        ]
+                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
+                        for mp in muxed:
+                            print(f"Embedded microphone audio into: {mp}")
+                    self.beat_tracker = None
                 if self.aborted:
                     if self.session and not self.session.finished:
                         self.storage.discard_running_session(self.session.id)
@@ -1200,13 +1249,6 @@ class Application:
                 try:
                     if self.beat_tracker:
                         self.beat_tracker.close()
-                    if self.beat_tracker:
-                        recorded_vids = [
-                            p for p in (self.record_video, self.record_overlay) if p is not None
-                        ]
-                        muxed = self.beat_tracker.mux_into_videos(recorded_vids)
-                        for mp in muxed:
-                            print(f"Embedded microphone audio into: {mp}")
                     if self.capture:
                         self.capture.close()
                 finally:

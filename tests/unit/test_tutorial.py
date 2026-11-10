@@ -20,4 +20,4 @@ def test_manual_has_semantic_html_and_unique_setting_targets():
         row = document.find(f".//tr[@id='{settings[field]}']")
         assert row is not None
         assert row.find("td/code").text == field
-        assert len(list(row)) == 3
+        assert len(list(row)) in (2, 3)

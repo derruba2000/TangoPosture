@@ -1,13 +1,21 @@
 """Portable practice archives and temporary, validated replay extraction."""
 
+import hashlib
 import json
 import shutil
 import stat
 import threading
+from contextlib import contextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile, TemporaryDirectory
+from typing import Any
 from zipfile import ZIP_DEFLATED, ZIP_STORED, BadZipFile, ZipFile
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from .domain import Calibration
 
@@ -15,9 +23,33 @@ _locks: dict[Path, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
 
+@contextmanager
 def _archive_lock(path: Path):
+    resolved = path.resolve()
     with _locks_guard:
-        return _locks.setdefault(path.resolve(), threading.RLock())
+        thread_lock = _locks.setdefault(resolved, threading.RLock())
+    with thread_lock:
+        lock_file = None
+        if fcntl is not None:
+            with suppress(OSError):
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                lock_path = resolved.with_name(f".{resolved.name}.lock")
+                lock_file = lock_path.open("a+", encoding="utf-8")
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if lock_file is not None and fcntl is not None:
+                with suppress(OSError):
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                with suppress(OSError):
+                    lock_file.close()
+
+
+def movement_member_name(index: int) -> str:
+    if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+        raise ValueError("Invalid practice segment index")
+    return f"movement_{index:02d}.v1.json"
 
 
 def practice_directory(data_dir: str) -> Path:
@@ -83,32 +115,150 @@ def append_segment(path: Path, report: Path, video: Path | None, overlay: Path |
         return _append_segment(path, report, video, overlay, timestamps)
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stream_member_sha256(archive: ZipFile, member_name: str, destination: Path | None = None) -> str:
+    digest = hashlib.sha256()
+    with archive.open(member_name) as source:
+        if destination is not None:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open("wb") as target:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+                    target.write(chunk)
+        else:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def extract_segment_video(path: Path, index: int, destination: Path) -> str:
+    with _archive_lock(path):
+        manifest = read_manifest(path)
+        if manifest.get("kind") == "calibration":
+            raise ValueError("Calibration archives do not support movement analysis")
+        segments = manifest["segments"]
+        if not isinstance(index, int) or isinstance(index, bool) or not (0 <= index < len(segments)):
+            raise ValueError(f"Recording {index:02d} not found in archive")
+        video_member = segments[index].get("video")
+        if not video_member:
+            raise ValueError("Raw video required")
+        with ZipFile(path) as archive:
+            if video_member not in archive.namelist():
+                raise ValueError("Raw video required")
+            return _stream_member_sha256(archive, str(video_member), destination)
+
+
+def store_movement_analysis(
+    path: Path, index: int, expected_video_sha256: str, payload: dict[str, Any]
+) -> str:
+    member_name = movement_member_name(index)
+    content = json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    with _archive_lock(path):
+        manifest = read_manifest(path)
+        if manifest.get("kind") == "calibration":
+            raise ValueError("Calibration archives do not support movement analysis")
+        segments = manifest["segments"]
+        if not (0 <= index < len(segments)):
+            raise ValueError(f"Recording {index:02d} not found in archive")
+        video_member = segments[index].get("video")
+        if not video_member:
+            raise ValueError("Raw video required")
+        with ZipFile(path) as current_archive:
+            if video_member not in current_archive.namelist():
+                raise ValueError("Raw video required")
+            actual_sha256 = _stream_member_sha256(current_archive, str(video_member))
+        if actual_sha256 != expected_video_sha256:
+            raise ValueError("Archived raw video changed before movement analysis could be committed")
+        with NamedTemporaryFile(dir=path.parent, suffix=".tp.tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            with (
+                ZipFile(path) as previous,
+                ZipFile(temporary, "w", compression=ZIP_DEFLATED) as output,
+            ):
+                for member in previous.infolist():
+                    if member.filename == member_name:
+                        continue
+                    with previous.open(member) as source, output.open(member, "w") as target:
+                        shutil.copyfileobj(source, target)
+                output.writestr(member_name, content)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return member_name
+
+
+def read_movement_analysis(path: Path, index: int) -> dict[str, Any] | None:
+    member_name = movement_member_name(index)
+    if path.is_dir():
+        target = path / member_name
+        if not target.is_file():
+            return None
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as error:
+            raise ValueError(f"Corrupt movement analysis {member_name}: {error}") from error
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid movement analysis {member_name}")
+        return data
+    with _archive_lock(path):
+        read_manifest(path)
+        try:
+            with ZipFile(path) as archive:
+                if member_name not in archive.namelist():
+                    return None
+                raw_bytes = archive.read(member_name)
+        except (BadZipFile, KeyError, OSError) as error:
+            raise ValueError(f"Cannot read movement analysis {member_name}: {error}") from error
+    if len(raw_bytes) > 10 * 1024 * 1024:
+        raise ValueError(f"Movement analysis {member_name} exceeds maximum size")
+    try:
+        data = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeError, ValueError, TypeError) as error:
+        raise ValueError(f"Corrupt movement analysis {member_name}: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid movement analysis {member_name}")  # noqa: TRY004
+    return data
+
+
 def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path | None,
                     timestamps: list[float]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
-    manifest = read_manifest(path) if path.exists() else {
+    manifest: dict[str, Any] = read_manifest(path) if path.exists() else {
         "version": 1, "name": path.stem, "segments": [],
     }
-    index = len(manifest["segments"])
-    segment = {
-        "index": index, "video": f"video_{index:02d}.mp4" if video else None,
-        "overlay": f"overlay_{index:02d}.mp4" if overlay else None,
-        "report": f"report_{index:02d}.md",
-        "metadata": f"report_{index:02d}.metadata.json",
+    segments_list: list[dict[str, Any]] = manifest["segments"]
+    index = len(segments_list)
+    video_name = f"video_{index:02d}.mp4" if video else None
+    overlay_name = f"overlay_{index:02d}.mp4" if overlay else None
+    report_name = f"report_{index:02d}.md"
+    metadata_name = f"report_{index:02d}.metadata.json"
+    segment: dict[str, Any] = {
+        "index": index, "video": video_name,
+        "overlay": overlay_name,
+        "report": report_name,
+        "metadata": metadata_name,
     }
     metadata = {
-        "version": 1, "report_file": segment["report"],
-        "raw_video": segment["video"], "overlay_video": segment["overlay"],
+        "version": 1, "report_file": report_name,
+        "raw_video": video_name, "overlay_video": overlay_name,
         "source_video": None, "frame_timestamps": timestamps,
     }
     markdown = report.read_text(encoding="utf-8")
-    for source, key in ((video, "video"), (overlay, "overlay")):
-        if source is None:
+    for src_path, replacement_name in ((video, video_name), (overlay, overlay_name)):
+        if src_path is None or replacement_name is None:
             continue
-        markdown = markdown.replace(source.resolve().as_uri(), segment[key])
-        markdown = markdown.replace(str(source.resolve()), segment[key])
-        markdown = markdown.replace(str(source), segment[key])
-    manifest["segments"].append(segment)
+        markdown = markdown.replace(src_path.resolve().as_uri(), replacement_name)
+        markdown = markdown.replace(str(src_path.resolve()), replacement_name)
+        markdown = markdown.replace(str(src_path), replacement_name)
+    segments_list.append(segment)
     with NamedTemporaryFile(dir=path.parent, suffix=".tp.tmp", delete=False) as stream:
         temporary = Path(stream.name)
     try:
@@ -118,15 +268,15 @@ def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path 
                     for member in previous.infolist():
                         if member.filename == "manifest.json":
                             continue
-                        with previous.open(member) as source, output.open(member, "w") as target:
-                            shutil.copyfileobj(source, target)
-            if video:
-                output.write(video, segment["video"], compress_type=ZIP_STORED)
-            if overlay:
-                output.write(overlay, segment["overlay"], compress_type=ZIP_STORED)
-                write_review_companions(output, overlay, segment["overlay"])
-            output.writestr(segment["report"], markdown)
-            output.writestr(segment["metadata"], json.dumps(metadata, allow_nan=False))
+                        with previous.open(member) as member_src, output.open(member, "w") as target:
+                            shutil.copyfileobj(member_src, target)
+            if video and video_name:
+                output.write(video, video_name, compress_type=ZIP_STORED)
+            if overlay and overlay_name:
+                output.write(overlay, overlay_name, compress_type=ZIP_STORED)
+                write_review_companions(output, overlay, overlay_name)
+            output.writestr(report_name, markdown)
+            output.writestr(metadata_name, json.dumps(metadata, allow_nan=False))
             output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
         temporary.replace(path)
     finally:
@@ -136,17 +286,21 @@ def _append_segment(path: Path, report: Path, video: Path | None, overlay: Path 
 
 def save_calibration_archive(path: Path, reference: Calibration, video: Path,
                              overlay: Path, timestamps: list[float]) -> None:
-    segment = {
-        "index": 0, "video": "video_00.mp4", "overlay": "overlay_00.mp4",
-        "report": "report_00.md", "metadata": "report_00.metadata.json",
+    video_name = "video_00.mp4"
+    overlay_name = "overlay_00.mp4"
+    report_name = "report_00.md"
+    metadata_name = "report_00.metadata.json"
+    segment: dict[str, Any] = {
+        "index": 0, "video": video_name, "overlay": overlay_name,
+        "report": report_name, "metadata": metadata_name,
     }
     manifest = {
         "version": 1, "kind": "calibration", "name": reference.name,
         "reference": "reference.json", "segments": [segment],
     }
     metadata = {
-        "version": 1, "report_file": segment["report"], "raw_video": segment["video"],
-        "overlay_video": segment["overlay"], "source_video": None,
+        "version": 1, "report_file": report_name, "raw_video": video_name,
+        "overlay_video": overlay_name, "source_video": None,
         "frame_timestamps": timestamps,
     }
     report = (
@@ -163,12 +317,12 @@ def save_calibration_archive(path: Path, reference: Calibration, video: Path,
             temporary = Path(stream.name)
         try:
             with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as output:
-                output.write(video, segment["video"], compress_type=ZIP_STORED)
-                output.write(overlay, segment["overlay"], compress_type=ZIP_STORED)
-                write_review_companions(output, overlay, segment["overlay"])
+                output.write(video, video_name, compress_type=ZIP_STORED)
+                output.write(overlay, overlay_name, compress_type=ZIP_STORED)
+                write_review_companions(output, overlay, overlay_name)
                 output.writestr("reference.json", json.dumps(asdict(reference), allow_nan=False))
-                output.writestr(segment["report"], report)
-                output.writestr(segment["metadata"], json.dumps(metadata, allow_nan=False))
+                output.writestr(report_name, report)
+                output.writestr(metadata_name, json.dumps(metadata, allow_nan=False))
                 output.writestr("manifest.json", json.dumps(manifest, allow_nan=False))
             temporary.replace(path)
         finally:

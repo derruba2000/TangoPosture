@@ -5,8 +5,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tkinter as tk
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from tkinter import ttk
@@ -32,6 +34,115 @@ def time_label(seconds: float) -> str:
     return f"{int(seconds // 60):02d}:{seconds % 60:04.1f}"
 
 
+def cut_video_segment(
+    source_path: Path | str,
+    output_path: Path | str,
+    start_seconds: float,
+    end_seconds: float,
+) -> Path:
+    """Write a new video containing the selected `[start, end)` source interval."""
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if source == output:
+        raise ValueError("Choose a different output path so the source video stays unchanged")
+    if output.exists():
+        raise FileExistsError(f"Output file already exists: {output}")
+    if (
+        not math.isfinite(start_seconds)
+        or not math.isfinite(end_seconds)
+        or start_seconds < 0.0
+        or end_seconds <= start_seconds
+    ):
+        raise ValueError("End time must be greater than a nonnegative start time")
+
+    reader = VideoReader(source)
+    duration = reader.duration
+    fps = reader.fps
+    width, height = reader.width, reader.height
+    reader.close()
+    if end_seconds > duration:
+        raise ValueError(f"End time exceeds video duration ({duration:.2f}s)")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-n",
+            "-ss",
+            f"{start_seconds:.6f}",
+            "-i",
+            str(source),
+            "-t",
+            f"{end_seconds - start_seconds:.6f}",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ValueError(f"Could not start ffmpeg: {error}") from error
+        if result.returncode != 0:
+            output.unlink(missing_ok=True)
+            detail = (result.stderr or "").strip().splitlines()
+            raise ValueError(detail[-1] if detail else "ffmpeg could not cut this video")
+        if not output.is_file() or output.stat().st_size == 0:
+            raise ValueError("ffmpeg completed without creating a video file")
+        return output
+
+    capture = cv2.VideoCapture(str(source))
+    writer: cv2.VideoWriter | None = None
+    try:
+        start_frame = min(max(0, round(start_seconds * fps)), max(0, round(duration * fps) - 1))
+        end_frame = min(round(duration * fps), math.ceil(end_seconds * fps))
+        capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        fourcc = "MJPG" if output.suffix.lower() == ".avi" else "mp4v"
+        writer = cv2.VideoWriter(
+            str(output), cv2.VideoWriter.fourcc(*fourcc), fps, (width, height)
+        )
+        if not writer.isOpened():
+            raise OSError(f"Cannot create sliced video: {output}")
+        written = 0
+        for _ in range(start_frame, end_frame):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            writer.write(frame)
+            written += 1
+        if written == 0:
+            raise ValueError("The selected range contains no decodable frames")
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+    finally:
+        capture.release()
+        if writer is not None:
+            writer.release()
+    return output
+
+
 class VideoReader:
     def __init__(self, path: Path):
         self.path = path.expanduser().resolve()
@@ -50,6 +161,8 @@ class VideoReader:
             self.cap.release()
             raise ValueError(f"Cannot decode video or read its timing: {self.path}")
         self.count = int(count)
+        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.index = -1
 
     @property
@@ -70,22 +183,143 @@ class VideoReader:
         self.cap.release()
 
 
+def save_overlay_video(
+    source_path: Path | str,
+    output_path: Path | str,
+    start_frame: int,
+    end_frame: int,
+    *,
+    frame_transform: Callable[[Any, int, float], Any],
+) -> tuple[Path, bool]:
+    """Export transformed frames from an inclusive source-frame interval.
+
+    Returns the output path and whether source audio was muxed into the result.
+    """
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if source == output:
+        raise ValueError("Choose a different output path so the source video stays unchanged")
+    if output.exists():
+        raise FileExistsError(f"Output file already exists: {output}")
+    reader = VideoReader(source)
+    fps, frame_count = reader.fps, reader.count
+    reader.close()
+    if not (0 <= start_frame <= end_frame < frame_count):
+        raise ValueError("Selected replay range is outside the source video")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg = shutil.which("ffmpeg")
+    with tempfile.TemporaryDirectory(prefix="tango-overlay-") as temp_dir:
+        rendered_path = Path(temp_dir) / "rendered.mp4"
+        capture = cv2.VideoCapture(str(source))
+        writer: cv2.VideoWriter | None = None
+        rendered_size: tuple[int, int] | None = None
+        try:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            written = 0
+            for frame_index in range(start_frame, end_frame + 1):
+                ok, image = capture.read()
+                if not ok or image is None:
+                    break
+                rendered = frame_transform(image, frame_index, fps)
+                height, width = rendered.shape[:2]
+                if rendered_size is None:
+                    rendered_size = (width, height)
+                    writer = cv2.VideoWriter(
+                        str(rendered_path),
+                        cv2.VideoWriter.fourcc(*"mp4v"),
+                        fps,
+                        rendered_size,
+                    )
+                    if not writer.isOpened():
+                        raise OSError(f"Cannot create overlay video: {rendered_path}")
+                elif rendered_size != (width, height):
+                    raise ValueError("Overlay renderer changed frame dimensions during export")
+                assert writer is not None
+                writer.write(rendered)
+                written += 1
+            if written == 0:
+                raise ValueError("Selected replay range contains no decodable frames")
+        except Exception:
+            output.unlink(missing_ok=True)
+            raise
+        finally:
+            capture.release()
+            if writer is not None:
+                writer.release()
+
+        if ffmpeg is None:
+            shutil.copyfile(rendered_path, output)
+            return output, False
+
+        start_seconds = start_frame / fps
+        duration_seconds = written / fps
+        command = [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-n",
+            "-i",
+            str(rendered_path),
+            "-ss",
+            f"{start_seconds:.6f}",
+            "-t",
+            f"{duration_seconds:.6f}",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(output),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as error:
+            raise ValueError(f"Could not start ffmpeg: {error}") from error
+        if result.returncode != 0:
+            output.unlink(missing_ok=True)
+            detail = (result.stderr or "").strip().splitlines()
+            raise ValueError(detail[-1] if detail else "Could not add source audio")
+        return output, True
+
+
 class ReplayPlayer(ttk.Frame):
     def __init__(self, parent, audio: tk.Variable):
         super().__init__(parent, padding=8)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
-        self.comparisons = []
-        self.notes = []
-        self.on_frame = None
+        self.comparisons: list[tuple[VideoReader, tk.Label]] = []
+        self.comparison_specs: list[dict[str, Any]] = []
+        self.comparison_photos: list[tk.PhotoImage] = []
+        self.notes: list[Any] = []
+        self.on_frame: Callable[[int], None] | None = None
+        self.frame_transform: Callable[[Any, int, float], Any] | None = None
         self.reader: VideoReader | None = None
+        self.clip_range: tuple[float, float] | None = None
+        self.start_frame: int = 0
+        self.end_frame: int = 0
         self.playing = False
         self.closed = False
         self.timer: str | None = None
         self.sound: subprocess.Popen | None = None
         self.audio = audio
         self.photo: tk.PhotoImage | None = None
+        self.raw_frame: Any = None
         self.last_image: Any = None
+        self._clock_anchor: tuple[int, float] = (0, 0.0)
         self.speed = tk.StringVar(value="1")
         self.position = tk.DoubleVar(value=0)
         self.jump = tk.StringVar(value="00:00.0")
@@ -159,32 +393,83 @@ class ReplayPlayer(ttk.Frame):
             self.pause()
             self.status.set(str(error))
 
-    def load(self, path: Path, seconds: float = 0):
+    @property
+    def source_time_seconds(self) -> float:
+        if self.reader is None:
+            return 0.0
+        return max(0.0, self.reader.index / self.reader.fps)
+
+    @property
+    def clip_time_seconds(self) -> float:
+        src = self.source_time_seconds
+        if self.clip_range is not None:
+            return max(0.0, src - self.clip_range[0])
+        return src
+
+    def load(
+        self,
+        path: Path,
+        seconds: float = 0,
+        *,
+        clip_range: tuple[float, float] | None = None,
+    ):
         reader = VideoReader(path)
         self.pause()
         if self.reader:
             self.reader.close()
         self.reader = reader
-        self.name.set(str(reader.path))
-        self.seekbar.configure(to=max(0, (reader.count - 1) / reader.fps))
-        self.seek(seconds)
+        self.clip_range = clip_range
+        if clip_range is not None and clip_range[1] > clip_range[0] >= 0.0:
+            self.start_frame = min(
+                reader.count - 1, max(0, round(clip_range[0] * reader.fps))
+            )
+            self.end_frame = min(
+                reader.count - 1,
+                max(self.start_frame, math.ceil(clip_range[1] * reader.fps) - 1),
+            )
+            self.name.set(
+                f"{reader.path} [{time_label(clip_range[0])} - {time_label(clip_range[1])}]"
+            )
+            self.seekbar.configure(
+                from_=self.start_frame / reader.fps,
+                to=max(self.start_frame / reader.fps, self.end_frame / reader.fps),
+            )
+            initial_seconds = max(clip_range[0], seconds)
+        else:
+            self.clip_range = None
+            self.start_frame = 0
+            self.end_frame = reader.count - 1
+            self.name.set(str(reader.path))
+            self.seekbar.configure(from_=0, to=max(0, (reader.count - 1) / reader.fps))
+            initial_seconds = seconds
+        self.seek(initial_seconds)
         self.status.set(
             "Replay ready. Enable Sound for audio via ffplay, or use your system player."
         )
 
-    def compare(self, paths, refresh=True):
+    def compare(
+        self,
+        paths,
+        refresh: bool = True,
+        *,
+        specs: list[dict[str, Any]] | None = None,
+    ):
         for reader, label in self.comparisons:
             reader.close()
             self.images.columnconfigure(int(label.grid_info()["column"]), weight=0, uniform="")
             label.destroy()
         self.comparisons = []
-        for path in paths:
+        self.comparison_specs = []
+        self.comparison_photos = []
+        for idx, path in enumerate(paths):
             reader = VideoReader(path)
             label = tk.Label(self.images, background="#151a1d")
             column = len(self.comparisons) + 1
             self.images.columnconfigure(column, weight=1, uniform="video")
             label.grid(row=0, column=column, sticky="nsew")
             self.comparisons.append((reader, label))
+            spec = dict(specs[idx]) if specs and idx < len(specs) else {}
+            self.comparison_specs.append(spec)
         if self.reader and refresh and paths:
             self._frame(self.reader.index)
 
@@ -205,23 +490,84 @@ class ReplayPlayer(ttk.Frame):
         )
         self.image.configure(image=self.photo, text="")
 
+    def refresh_frame(self):
+        if self.reader is None or self.raw_frame is None or self.closed:
+            return
+        base = self.raw_frame.copy()
+        self.last_image = (
+            self.frame_transform(base, self.reader.index, self.reader.fps)
+            if self.frame_transform is not None
+            else base
+        )
+        self._render()
+
     def _frame(self, index: int):
         assert self.reader is not None
-        self.last_image = self.reader.frame(index)
+        clamped_index = min(max(self.start_frame, index), self.end_frame)
+        decoded = self.reader.frame(clamped_index)
+        self.raw_frame = decoded.copy()
+        self.last_image = (
+            self.frame_transform(decoded.copy(), self.reader.index, self.reader.fps)
+            if self.frame_transform is not None
+            else decoded
+        )
         seconds = self.reader.index / self.reader.fps
         self.position.set(seconds)
-        self.clock.set(f"{time_label(seconds)} / {time_label(self.reader.duration)}")
+        if self.clip_range is not None:
+            clip_sec = max(0.0, seconds - self.clip_range[0])
+            clip_dur = max(0.0, self.clip_range[1] - self.clip_range[0])
+            self.clock.set(
+                f"{time_label(clip_sec)} / {time_label(clip_dur)} (src {time_label(seconds)})"
+            )
+        else:
+            self.clock.set(f"{time_label(seconds)} / {time_label(self.reader.duration)}")
         self._render()
-        for reader, label in self.comparisons:
-            frame = reader.frame(round(seconds * reader.fps))
+        new_photos: list[tk.PhotoImage] = []
+        for idx, (reader, label) in enumerate(self.comparisons):
+            spec = self.comparison_specs[idx] if idx < len(self.comparison_specs) else {}
+            comp_range = spec.get("clip_range")
+            comp_start = 0
+            comp_end = reader.count - 1
+            if (
+                isinstance(comp_range, tuple)
+                and len(comp_range) == 2
+                and comp_range[1] > comp_range[0] >= 0.0
+            ):
+                comp_start = min(
+                    reader.count - 1, max(0, round(comp_range[0] * reader.fps))
+                )
+                comp_end = min(
+                    reader.count - 1,
+                    max(comp_start, math.ceil(comp_range[1] * reader.fps) - 1),
+                )
+            primary_anchor = spec.get("primary_anchor_source_seconds")
+            comp_anchor = spec.get("anchor_source_seconds")
+            if isinstance(primary_anchor, (int, float)) and isinstance(comp_anchor, (int, float)):
+                target_sec = float(comp_anchor) + (seconds - float(primary_anchor))
+            else:
+                target_sec = seconds
+            comp_frame_idx = min(
+                comp_end, max(comp_start, round(target_sec * reader.fps))
+            )
+            frame = reader.frame(comp_frame_idx)
+            comp_transform = spec.get("frame_transform")
+            if callable(comp_transform):
+                frame = comp_transform(frame.copy(), reader.index, reader.fps)
             h, w = frame.shape[:2]
             scale = min(max(1, label.winfo_width()) / w, max(1, label.winfo_height()) / h)
-            rgb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                             (max(1, round(w * scale)), max(1, round(h * scale))))
+            rgb = cv2.resize(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+            )
             h, w = rgb.shape[:2]
-            label.photo = tk.PhotoImage(master=self,
-                data=f"P6\n{w} {h}\n255\n".encode() + rgb.tobytes(), format="PPM")
-            label.configure(image=label.photo)
+            photo = tk.PhotoImage(
+                master=self,
+                data=f"P6\n{w} {h}\n255\n".encode() + rgb.tobytes(),
+                format="PPM",
+            )
+            new_photos.append(photo)
+            label.configure(image=photo)
+        self.comparison_photos = new_photos
         if self.on_frame:
             self.on_frame(self.reader.index)
 
@@ -232,6 +578,14 @@ class ReplayPlayer(ttk.Frame):
             raise ValueError("Replay time must be finite and nonnegative")
         self._frame(round(seconds * self.reader.fps))
         self._restart_clock()
+
+    def seek_clip_relative(self, clip_seconds: float):
+        if not self.reader:
+            raise ValueError("Open a video first")
+        if not math.isfinite(clip_seconds) or clip_seconds < 0:
+            raise ValueError("Clip time must be finite and nonnegative")
+        base = self.clip_range[0] if self.clip_range is not None else 0.0
+        self.seek(base + clip_seconds)
 
     def step(self, amount: int):
         if not self.reader:
@@ -245,8 +599,8 @@ class ReplayPlayer(ttk.Frame):
         else:
             if not self.reader:
                 raise ValueError("Open a video first")
-            if self.reader.index >= self.reader.count - 1:
-                self._frame(0)
+            if self.reader.index >= self.end_frame:
+                self._frame(self.start_frame)
             self.playing = True
             self.play_button.configure(text="Pause")
             self._restart_clock()
@@ -267,7 +621,7 @@ class ReplayPlayer(ttk.Frame):
         try:
             if index != self.reader.index:
                 self._frame(index)
-            if index >= self.reader.count - 1:
+            if index >= self.end_frame:
                 self.pause()
                 return
             if self.sound and self.sound.poll() is not None:
@@ -305,21 +659,29 @@ class ReplayPlayer(ttk.Frame):
             return
         speed = float(self.speed.get())
         tempo = "atempo=0.5,atempo=0.5" if speed == 0.25 else f"atempo={speed}"
-        self.sound = subprocess.Popen(
+        cmd = [
+            executable,
+            "-nodisp",
+            "-autoexit",
+            "-loglevel",
+            "error",
+            "-ss",
+            str(self.position.get()),
+        ]
+        if self.clip_range is not None:
+            remaining = max(0.1, (self.clip_range[1] - self.position.get()) / max(speed, 0.25))
+            cmd.extend(["-t", f"{remaining:.3f}"])
+        cmd.extend(
             [
-                executable,
-                "-nodisp",
-                "-autoexit",
-                "-loglevel",
-                "error",
-                "-ss",
-                str(self.position.get()),
                 "-vn",
                 "-af",
                 tempo,
                 "-i",
                 str(self.reader.path),
-            ],
+            ]
+        )
+        self.sound = subprocess.Popen(
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -355,7 +717,10 @@ class ReplayPlayer(ttk.Frame):
         if self.reader:
             self.reader.close()
             self.reader = None
-        self.last_image = self.photo = None
+        self.clip_range = None
+        self.start_frame = 0
+        self.end_frame = 0
+        self.raw_frame = self.last_image = self.photo = None
         self.image.configure(image="", text="No video selected")
         self.name.set("No video selected")
         self.position.set(0)
