@@ -1396,3 +1396,81 @@ def test_analytics_can_analyze_practice_without_saved_metrics(studio, tmp_path):
     panel.close_posture_analytics()
 
 
+def test_analytics_time_alignment_algorithm_and_manual_parameters(studio):
+    import math
+
+    root, gui = studio
+    panel = gui.review
+
+    # Reference signal over 0..5.0s; Practice is delayed by +1.2s (t_practice = t_ref + 1.2)
+    true_shift = 1.2
+    ref_frames = {}
+    prac_frames = {}
+    for index in range(51):
+        t = round(index * 0.1, 3)
+        ref_frames[str(index)] = {
+            "clip_timestamp": t,
+            "head_angle": -8.0 + 6.0 * math.sin(1.8 * t),
+            "shoulder_elev_pct": 10.0 + 8.0 * math.cos(1.4 * t),
+            "knee_bend_deg": 18.0 + 5.0 * math.sin(2.1 * t),
+            "axis_curve_smoothed": 0.02 + 0.03 * math.sin(1.5 * t),
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        }
+        t_src = t - true_shift
+        prac_frames[str(index)] = {
+            "clip_timestamp": t,
+            "head_angle": -8.0 + 6.0 * math.sin(1.8 * t_src),
+            "shoulder_elev_pct": 10.0 + 8.0 * math.cos(1.4 * t_src),
+            "knee_bend_deg": 18.0 + 5.0 * math.sin(2.1 * t_src),
+            "axis_curve_smoothed": 0.02 + 0.03 * math.sin(1.5 * t_src),
+            "alerts": {"head": False, "shoulders": False, "knees": False, "axis": False},
+        }
+
+    panel.practice_analytics_data = {"frames": prac_frames}
+    panel.reference_coach_data = {"frames": ref_frames}
+    panel.open_posture_analytics()
+    root.update()
+
+    head_canvas = panel.analytics_canvases["head"]
+    before_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+
+    assert panel.analytics_align_button is not None
+    panel.analytics_align_button.invoke()
+    root.update()
+
+    assert panel.analytics_time_offset_var.get() == pytest.approx(true_shift, abs=0.1)
+    assert panel.analytics_time_scale_var.get() == pytest.approx(1.0, abs=0.05)
+    assert "Time aligned" in panel.analytics_status.get()
+    aligned_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert aligned_coords != before_coords
+
+    # Per-series mode aligns each metric independently and refreshes charts
+    panel.analytics_align_mode_var.set("Per series")
+    res = panel.align_analytics_time_series()
+    root.update()
+    assert set(res["per_series"]) == {"head", "shoulders", "knees", "hips"}
+    assert len(panel.analytics_per_series_alignment) == 4
+    assert "Time aligned per series" in panel.analytics_status.get()
+
+    # Manual parameters override per-series alignment and immediately refresh charts
+    panel.analytics_time_offset_var.set(0.5)
+    panel.analytics_time_scale_var.set(1.1)
+    panel.on_manual_analytics_alignment()
+    root.update()
+    assert not panel.analytics_per_series_alignment
+    assert "Manual time alignment: offset +0.50s, scale 1.10x." in panel.analytics_status.get()
+    manual_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert manual_coords != aligned_coords
+
+    # Reset restores 0.0s offset and 1.0x scale and refreshes charts to original state
+    assert panel.analytics_reset_align_button is not None
+    panel.analytics_reset_align_button.invoke()
+    root.update()
+    assert panel.analytics_time_offset_var.get() == pytest.approx(0.0)
+    assert panel.analytics_time_scale_var.get() == pytest.approx(1.0)
+    reset_coords = [head_canvas.coords(item) for item in head_canvas.find_all()]
+    assert reset_coords == before_coords
+    panel.close_posture_analytics()
+
+
+

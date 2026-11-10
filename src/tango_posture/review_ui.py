@@ -152,6 +152,8 @@ def _analytics_points(
         if not isinstance(entry, dict):
             continue
         value = entry.get(metric)
+        if value is None and metric == "axis_curve_smoothed":
+            value = entry.get("axis_curve_ratio")
         timestamp = entry.get("clip_timestamp", entry.get("timestamp"))
         if not (
             isinstance(value, int | float)
@@ -164,6 +166,256 @@ def _analytics_points(
         is_bad = bool(alerts.get(alert_key, False)) if isinstance(alerts, dict) else False
         points.append((float(timestamp), float(value) * scale, is_bad))
     return sorted(points, key=lambda point: point[0])
+
+
+def _apply_analytics_time_alignment(
+    points: list[tuple[float, float, bool]],
+    *,
+    offset: float = 0.0,
+    time_scale: float = 1.0,
+) -> list[tuple[float, float, bool]]:
+    """Map time-series timestamps using `t_aligned = t * time_scale + offset`."""
+    if not points:
+        return []
+    if not (math.isfinite(offset) and math.isfinite(time_scale) and time_scale > 0.0):
+        return list(points)
+    if abs(offset) <= 1e-9 and abs(time_scale - 1.0) <= 1e-9:
+        return list(points)
+    aligned = [
+        (float(timestamp) * float(time_scale) + float(offset), float(value), bool(is_bad))
+        for timestamp, value, is_bad in points
+    ]
+    return sorted(aligned, key=lambda point: point[0])
+
+
+def _series_alignment_loss(
+    p_t: np.ndarray,
+    p_v: np.ndarray,
+    r_t: np.ndarray,
+    r_v: np.ndarray,
+    spread: float,
+    *,
+    offset: float,
+    time_scale: float,
+    max_shift: float,
+) -> tuple[float, float] | None:
+    """Return `(loss, similarity_score)` for aligning Reference `(r_t, r_v)` to Practice `(p_t, p_v)`."""
+    r_t_aligned = r_t * time_scale + offset
+    p_dur = float(p_t[-1] - p_t[0])
+    r_dur = float(r_t_aligned[-1] - r_t_aligned[0])
+    min_dur = min(p_dur, r_dur)
+    t0 = max(float(p_t[0]), float(r_t_aligned[0]))
+    t1 = min(float(p_t[-1]), float(r_t_aligned[-1]))
+    overlap = t1 - t0
+    min_overlap = max(1e-3, 0.35 * min_dur) if min_dur > 0.0 else 0.0
+    if overlap < min_overlap:
+        return None
+
+    n_grid = max(16, min(128, max(len(p_t), len(r_t)) * 2))
+    grid = np.linspace(t0, t1, n_grid) if overlap > 0.0 else np.asarray([t0], dtype=float)
+    p_interp = np.interp(grid, p_t, p_v)
+    r_interp = np.interp(grid, r_t_aligned, r_v)
+
+    direct_mse = float(np.mean(((p_interp - r_interp) / spread) ** 2))
+    p_zero = p_interp - float(np.mean(p_interp))
+    r_zero = r_interp - float(np.mean(r_interp))
+    shape_mse = float(np.mean(((p_zero - r_zero) / spread) ** 2))
+    signal_mse = 0.65 * shape_mse + 0.35 * direct_mse
+
+    overlap_ratio = min(1.0, max(0.35, overlap / max(min_dur, 1e-6)))
+    shift_norm = offset / max(max_shift, 1e-3)
+    reg = 0.01 * (shift_norm**2) + 0.05 * ((time_scale - 1.0) ** 2)
+    loss = (signal_mse / math.sqrt(overlap_ratio)) + reg
+    similarity = 1.0 / (1.0 + signal_mse)
+    return loss, similarity
+
+
+def _align_analytics_series_pair(
+    practice: list[tuple[float, float, bool]],
+    reference: list[tuple[float, float, bool]],
+    *,
+    max_shift: float = 10.0,
+    base_scale: float = 1.0,
+    search_scale: bool = True,
+) -> tuple[float, float, float]:
+    """Find `(best_offset, best_scale, similarity_score)` aligning `reference` to `practice`."""
+    if len(practice) < 2 or len(reference) < 2:
+        return 0.0, base_scale, 0.0
+    result = _align_all_analytics_series(
+        {"series": (practice, reference)},
+        max_shift=max_shift,
+        base_scale=base_scale,
+        search_scale=search_scale,
+    )
+    return float(result["offset"]), float(result["scale"]), float(result["score"])
+
+
+def _align_all_analytics_series(
+    series_pairs: dict[
+        str, tuple[list[tuple[float, float, bool]], list[tuple[float, float, bool]]]
+    ],
+    *,
+    max_shift: float = 10.0,
+    base_scale: float = 1.0,
+    search_scale: bool = True,
+) -> dict[str, Any]:
+    """Align Practice vs Reference across one or more posture metric time series."""
+    max_shift = max(0.1, float(max_shift))
+    base_scale = float(base_scale) if math.isfinite(base_scale) and base_scale > 0.0 else 1.0
+
+    prepared: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]] = {}
+    for key, (practice, reference) in series_pairs.items():
+        if len(practice) < 2 or len(reference) < 2:
+            continue
+        p_t = np.asarray([pt[0] for pt in practice], dtype=float)
+        p_v = np.asarray([pt[1] for pt in practice], dtype=float)
+        r_t = np.asarray([pt[0] for pt in reference], dtype=float)
+        r_v = np.asarray([pt[1] for pt in reference], dtype=float)
+        if float(p_t[-1] - p_t[0]) <= 0.0 and float(r_t[-1] - r_t[0]) <= 0.0:
+            continue
+        p_std = float(np.std(p_v))
+        r_std = float(np.std(r_v))
+        spread = max(
+            p_std,
+            r_std,
+            float(np.ptp(p_v)) * 0.25,
+            float(np.ptp(r_v)) * 0.25,
+            1e-3,
+        )
+        weight = 1.0 if max(p_std, r_std) > 1e-4 else 0.1
+        prepared[key] = (p_t, p_v, r_t, r_v, spread, weight)
+
+    if not prepared:
+        return {"offset": 0.0, "scale": base_scale, "score": 0.0, "per_series": {}}
+
+    if search_scale:
+        scale_candidates = sorted(
+            {
+                round(float(val), 4)
+                for val in (1.0, base_scale, *np.linspace(0.75, 1.25, 11))
+                if 0.25 <= float(val) <= 4.0
+            }
+        )
+    else:
+        scale_candidates = [base_scale]
+
+    coarse_offsets = sorted({0.0, *(float(v) for v in np.linspace(-max_shift, max_shift, 161))})
+
+    def evaluate_joint(offset: float, scale: float) -> tuple[float, float] | None:
+        total_loss = 0.0
+        total_sim = 0.0
+        total_weight = 0.0
+        for p_t, p_v, r_t, r_v, spread, weight in prepared.values():
+            res = _series_alignment_loss(
+                p_t,
+                p_v,
+                r_t,
+                r_v,
+                spread,
+                offset=offset,
+                time_scale=scale,
+                max_shift=max_shift,
+            )
+            if res is None:
+                continue
+            loss, sim = res
+            total_loss += loss * weight
+            total_sim += sim * weight
+            total_weight += weight
+        if total_weight <= 0.0:
+            return None
+        return total_loss / total_weight, total_sim / total_weight
+
+    best_offset = 0.0
+    best_scale = base_scale
+    best_loss = math.inf
+    best_score = 0.0
+
+    for scale in scale_candidates:
+        for offset in coarse_offsets:
+            evaluated = evaluate_joint(offset, scale)
+            if evaluated is not None and evaluated[0] < best_loss:
+                best_loss, best_score = evaluated
+                best_offset = offset
+                best_scale = scale
+
+    fine_low = max(-max_shift, best_offset - max(0.25, max_shift / 40.0))
+    fine_high = min(max_shift, best_offset + max(0.25, max_shift / 40.0))
+    fine_offsets = sorted({best_offset, 0.0, *(float(v) for v in np.linspace(fine_low, fine_high, 81))})
+    fine_scales = (
+        sorted(
+            {
+                best_scale,
+                1.0,
+                *(
+                    round(float(v), 4)
+                    for v in np.linspace(
+                        max(0.25, best_scale - 0.06), min(4.0, best_scale + 0.06), 13
+                    )
+                ),
+            }
+        )
+        if search_scale
+        else [base_scale]
+    )
+    for scale in fine_scales:
+        for offset in fine_offsets:
+            evaluated = evaluate_joint(offset, scale)
+            if evaluated is not None and evaluated[0] < best_loss:
+                best_loss, best_score = evaluated
+                best_offset = offset
+                best_scale = scale
+
+    per_series: dict[str, dict[str, float]] = {}
+    for key, (p_t, p_v, r_t, r_v, spread, _weight) in prepared.items():
+        s_best_offset = best_offset
+        s_best_scale = best_scale
+        s_best_loss = math.inf
+        s_best_sim = 0.0
+        for scale in scale_candidates:
+            for offset in coarse_offsets:
+                res = _series_alignment_loss(
+                    p_t,
+                    p_v,
+                    r_t,
+                    r_v,
+                    spread,
+                    offset=offset,
+                    time_scale=scale,
+                    max_shift=max_shift,
+                )
+                if res is not None and res[0] < s_best_loss:
+                    s_best_loss, s_best_sim = res
+                    s_best_offset = offset
+                    s_best_scale = scale
+        s_fine_low = max(-max_shift, s_best_offset - max(0.25, max_shift / 40.0))
+        s_fine_high = min(max_shift, s_best_offset + max(0.25, max_shift / 40.0))
+        for offset in np.linspace(s_fine_low, s_fine_high, 51):
+            res = _series_alignment_loss(
+                p_t,
+                p_v,
+                r_t,
+                r_v,
+                spread,
+                offset=float(offset),
+                time_scale=s_best_scale,
+                max_shift=max_shift,
+            )
+            if res is not None and res[0] < s_best_loss:
+                s_best_loss, s_best_sim = res
+                s_best_offset = float(offset)
+        per_series[key] = {
+            "offset": round(float(s_best_offset), 4),
+            "scale": round(float(s_best_scale), 4),
+            "score": round(float(s_best_sim), 4),
+        }
+
+    return {
+        "offset": round(float(best_offset), 4),
+        "scale": round(float(best_scale), 4),
+        "score": round(float(best_score), 4),
+        "per_series": per_series,
+    }
 
 
 def _draw_analytics_chart(
@@ -578,9 +830,18 @@ class ReviewPanel(ttk.Frame):
         self.analytics_job = ""
         self.analytics_note = ""
         self.analytics_analyse_button: ttk.Button | None = None
+        self.analytics_align_button: ttk.Button | None = None
+        self.analytics_reset_align_button: ttk.Button | None = None
         self.analytics_metric_var = tk.StringVar(value="Head alignment")
         self.analytics_zoom_var = tk.DoubleVar(value=1.0)
         self.analytics_pan_var = tk.DoubleVar(value=0.0)
+        self.analytics_time_offset_var = tk.DoubleVar(value=0.0)
+        self.analytics_time_scale_var = tk.DoubleVar(value=1.0)
+        self.analytics_max_shift_var = tk.DoubleVar(value=10.0)
+        self.analytics_search_scale_var = tk.BooleanVar(value=True)
+        self.analytics_align_mode_var = tk.StringVar(value="All series")
+        self.analytics_per_series_alignment: dict[str, tuple[float, float]] = {}
+        self.analytics_alignment_summary = ""
         self.replay_controls_visible = False
         self.anchor_left_var = tk.StringVar(value="0.0")
         self.anchor_right_var = tk.StringVar(value="0.0")
@@ -1137,11 +1398,11 @@ class ReviewPanel(ttk.Frame):
 
         window = tk.Toplevel(self)
         window.title("Practice and reference analytics")
-        window.geometry("1100x720")
-        window.minsize(760, 520)
+        window.geometry("1100x760")
+        window.minsize(760, 560)
         window.transient(self.winfo_toplevel())
         window.columnconfigure(0, weight=1)
-        window.rowconfigure(2, weight=1)
+        window.rowconfigure(3, weight=1)
         self.analytics_window = window
         ttk.Label(
             window,
@@ -1149,7 +1410,7 @@ class ReviewPanel(ttk.Frame):
             wraplength=1040,
             padding=(10, 8),
         ).grid(row=0, column=0, sticky="ew")
-        controls = ttk.Frame(window, padding=(10, 0, 10, 6))
+        controls = ttk.Frame(window, padding=(10, 0, 10, 4))
         controls.grid(row=1, column=0, sticky="ew")
         self.analytics_analyse_button = ttk.Button(
             controls,
@@ -1187,8 +1448,102 @@ class ReviewPanel(ttk.Frame):
             command=lambda _value: self._refresh_posture_analytics(),
             length=160,
         ).pack(side="left")
+
+        align_controls = ttk.Frame(window, padding=(10, 0, 10, 6))
+        align_controls.grid(row=2, column=0, sticky="ew")
+        self.analytics_align_button = ttk.Button(
+            align_controls,
+            text="Align time",
+            command=lambda: self.guard_analytics(self.align_analytics_time_series),
+        )
+        self.analytics_align_button.pack(side="left", padx=(0, 8))
+        ttk.Label(align_controls, text="Series:").pack(side="left", padx=(0, 4))
+        align_mode_combo = ttk.Combobox(
+            align_controls,
+            textvariable=self.analytics_align_mode_var,
+            values=(
+                "All series",
+                "Per series",
+                "Head alignment",
+                "Shoulder height",
+                "Knee bend",
+                "Hip alignment / offset",
+            ),
+            state="readonly",
+            width=18,
+        )
+        align_mode_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(align_controls, text="Offset (s):").pack(side="left", padx=(0, 4))
+        offset_spin = ttk.Spinbox(
+            align_controls,
+            from_=-60.0,
+            to=60.0,
+            increment=0.1,
+            textvariable=self.analytics_time_offset_var,
+            width=7,
+            command=lambda: self.guard_analytics(self.on_manual_analytics_alignment),
+        )
+        offset_spin.pack(side="left", padx=(0, 4))
+        offset_spin.bind(
+            "<Return>", lambda _event: self.guard_analytics(self.on_manual_analytics_alignment)
+        )
+        offset_spin.bind(
+            "<FocusOut>", lambda _event: self.guard_analytics(self.on_manual_analytics_alignment)
+        )
+        ttk.Scale(
+            align_controls,
+            from_=-10.0,
+            to=10.0,
+            variable=self.analytics_time_offset_var,
+            command=lambda _value: self.on_manual_analytics_alignment(),
+            length=110,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Label(align_controls, text="Scale:").pack(side="left", padx=(0, 4))
+        scale_spin = ttk.Spinbox(
+            align_controls,
+            from_=0.25,
+            to=4.0,
+            increment=0.05,
+            textvariable=self.analytics_time_scale_var,
+            width=6,
+            command=lambda: self.guard_analytics(self.on_manual_analytics_alignment),
+        )
+        scale_spin.pack(side="left", padx=(0, 8))
+        scale_spin.bind(
+            "<Return>", lambda _event: self.guard_analytics(self.on_manual_analytics_alignment)
+        )
+        scale_spin.bind(
+            "<FocusOut>", lambda _event: self.guard_analytics(self.on_manual_analytics_alignment)
+        )
+        ttk.Label(align_controls, text="Max shift (s):").pack(side="left", padx=(0, 4))
+        max_shift_spin = ttk.Spinbox(
+            align_controls,
+            from_=0.5,
+            to=60.0,
+            increment=0.5,
+            textvariable=self.analytics_max_shift_var,
+            width=6,
+        )
+        max_shift_spin.pack(side="left", padx=(0, 8))
+        ttk.Checkbutton(
+            align_controls,
+            text="Fit speed",
+            variable=self.analytics_search_scale_var,
+        ).pack(side="left", padx=(0, 8))
+        ttk.Button(
+            align_controls,
+            text="Apply",
+            command=lambda: self.guard_analytics(self.on_manual_analytics_alignment),
+        ).pack(side="left", padx=(0, 6))
+        self.analytics_reset_align_button = ttk.Button(
+            align_controls,
+            text="Reset alignment",
+            command=lambda: self.guard_analytics(self.reset_analytics_time_alignment),
+        )
+        self.analytics_reset_align_button.pack(side="left")
+
         grid = ttk.Frame(window, padding=6)
-        grid.grid(row=2, column=0, sticky="nsew")
+        grid.grid(row=3, column=0, sticky="nsew")
         for column in range(2):
             grid.columnconfigure(column, weight=1, uniform="metric")
         for row in range(2):
@@ -1207,11 +1562,176 @@ class ReviewPanel(ttk.Frame):
         window.update_idletasks()
         self._refresh_posture_analytics()
 
+    def guard_analytics(self, action: Callable[[], Any]) -> None:
+        try:
+            action()
+        except (ValueError, OSError, RuntimeError, TypeError, KeyError, tk.TclError) as error:
+            self.analytics_status.set(str(error))
+            self.status.set(str(error))
+
     def close_posture_analytics(self) -> None:
         if self.analytics_window is not None:
             self.analytics_window.destroy()
         self.analytics_window = None
         self.analytics_canvases = {}
+
+    def _analytics_chart_specs(self) -> dict[str, tuple[str, str, str, float, str, float]]:
+        cfg = self.config_provider()
+        return {
+            "head": ("Head alignment", "head_angle", "degrees", cfg.head_down_angle, "head", 1.0),
+            "shoulders": (
+                "Shoulder height",
+                "shoulder_elev_pct",
+                "% raised",
+                cfg.shoulder_raise_threshold,
+                "shoulders",
+                1.0,
+            ),
+            "knees": (
+                "Knee bend",
+                "knee_bend_deg",
+                "degrees",
+                cfg.closed_embrace_min_knee_bend,
+                "knees",
+                1.0,
+            ),
+            "hips": (
+                "Hip alignment / offset",
+                "axis_curve_smoothed",
+                "% offset",
+                cfg.axis_curve_entry * 100.0,
+                "axis",
+                100.0,
+            ),
+        }
+
+    def _current_analytics_alignment(self) -> tuple[float, float]:
+        try:
+            offset = float(self.analytics_time_offset_var.get())
+        except (ValueError, TypeError, tk.TclError):
+            offset = 0.0
+        try:
+            scale = float(self.analytics_time_scale_var.get())
+        except (ValueError, TypeError, tk.TclError):
+            scale = 1.0
+        if not math.isfinite(offset):
+            offset = 0.0
+        if not math.isfinite(scale) or scale <= 0.0:
+            scale = 1.0
+        return offset, scale
+
+    def on_manual_analytics_alignment(self) -> tuple[float, float]:
+        try:
+            offset = float(self.analytics_time_offset_var.get())
+        except (ValueError, TypeError, tk.TclError) as exc:
+            raise ValueError("Time offset must be a finite number in seconds") from exc
+        try:
+            scale = float(self.analytics_time_scale_var.get())
+        except (ValueError, TypeError, tk.TclError) as exc:
+            raise ValueError("Time scale must be a positive number") from exc
+        if not math.isfinite(offset):
+            raise ValueError("Time offset must be a finite number in seconds")
+        if not math.isfinite(scale) or scale <= 0.0:
+            raise ValueError("Time scale must be greater than zero")
+        self.analytics_per_series_alignment.clear()
+        if abs(offset) <= 1e-9 and abs(scale - 1.0) <= 1e-9:
+            self.analytics_alignment_summary = ""
+        else:
+            self.analytics_alignment_summary = (
+                f"Manual time alignment: offset {offset:+.2f}s, scale {scale:.2f}x."
+            )
+        self._refresh_posture_analytics()
+        return offset, scale
+
+    def reset_analytics_time_alignment(self) -> None:
+        self.analytics_time_offset_var.set(0.0)
+        self.analytics_time_scale_var.set(1.0)
+        self.analytics_per_series_alignment.clear()
+        self.analytics_alignment_summary = ""
+        self._refresh_posture_analytics()
+
+    def align_analytics_time_series(self) -> dict[str, Any]:
+        practice_data = self.practice_analytics_data or self.coach_data
+        reference_data = self.reference_coach_data
+        if not (practice_data or {}).get("frames") or not (reference_data or {}).get("frames"):
+            raise ValueError(
+                "Analyze both Practice and Reference videos before running time alignment"
+            )
+        try:
+            max_shift = float(self.analytics_max_shift_var.get())
+        except (ValueError, TypeError, tk.TclError) as exc:
+            raise ValueError("Max shift must be a positive number of seconds") from exc
+        if not math.isfinite(max_shift) or max_shift <= 0.0:
+            raise ValueError("Max shift must be greater than zero")
+
+        _, base_scale = self._current_analytics_alignment()
+        search_scale = bool(self.analytics_search_scale_var.get())
+        specs = self._analytics_chart_specs()
+        all_pairs: dict[
+            str, tuple[list[tuple[float, float, bool]], list[tuple[float, float, bool]]]
+        ] = {}
+        for key, (_title, metric, _unit, _threshold, alert_key, scale) in specs.items():
+            p_pts = _analytics_points(practice_data, metric, scale=scale, alert_key=alert_key)
+            r_pts = _analytics_points(reference_data, metric, scale=scale, alert_key=alert_key)
+            if len(p_pts) >= 2 and len(r_pts) >= 2:
+                all_pairs[key] = (p_pts, r_pts)
+
+        if not all_pairs:
+            raise ValueError("At least two time-series samples are required to align charts")
+
+        mode = self.analytics_align_mode_var.get()
+        metric_labels = {
+            "Head alignment": "head",
+            "Shoulder height": "shoulders",
+            "Knee bend": "knees",
+            "Hip alignment / offset": "hips",
+        }
+        selected_key = metric_labels.get(mode)
+        if selected_key is not None:
+            if selected_key not in all_pairs:
+                raise ValueError(f"No comparable samples available for {mode}")
+            target_pairs = {selected_key: all_pairs[selected_key]}
+        else:
+            target_pairs = all_pairs
+
+        result = _align_all_analytics_series(
+            target_pairs,
+            max_shift=max_shift,
+            base_scale=base_scale,
+            search_scale=search_scale,
+        )
+        per_series = result["per_series"]
+        self.analytics_per_series_alignment.clear()
+
+        if mode == "Per series" and per_series:
+            for key, info in per_series.items():
+                self.analytics_per_series_alignment[key] = (
+                    float(info["offset"]),
+                    float(info["scale"]),
+                )
+            mean_offset = float(np.mean([info["offset"] for info in per_series.values()]))
+            mean_scale = float(np.mean([info["scale"] for info in per_series.values()]))
+            self.analytics_time_offset_var.set(round(mean_offset, 3))
+            self.analytics_time_scale_var.set(round(mean_scale, 3))
+            details = ", ".join(
+                f"{key} {info['offset']:+.2f}s ({info['scale']:.2f}x)"
+                for key, info in per_series.items()
+            )
+            self.analytics_alignment_summary = f"Time aligned per series: {details}."
+        else:
+            best_offset = float(result["offset"])
+            best_scale = float(result["scale"])
+            best_score = float(result["score"])
+            self.analytics_time_offset_var.set(round(best_offset, 3))
+            self.analytics_time_scale_var.set(round(best_scale, 3))
+            scope = mode if selected_key is not None else f"{len(target_pairs)} series"
+            self.analytics_alignment_summary = (
+                f"Time aligned ({scope}): offset {best_offset:+.2f}s, "
+                f"scale {best_scale:.2f}x (fit {best_score * 100.0:.0f}%)."
+            )
+
+        self._refresh_posture_analytics()
+        return result
 
     def copy_analytics_chart(self) -> None:
         labels = {
@@ -1261,6 +1781,8 @@ class ReviewPanel(ttk.Frame):
             if not reference_count:
                 missing.append("Reference coach data")
             status += f" Missing {', '.join(missing)}; analyze both videos as clips to compare them."
+        if self.analytics_alignment_summary:
+            status += f" {self.analytics_alignment_summary}"
         self.analytics_status.set(status)
         for key in self.analytics_canvases:
             self._draw_analytics_metric(key)
@@ -1269,48 +1791,30 @@ class ReviewPanel(ttk.Frame):
         canvas = self.analytics_canvases.get(key)
         if canvas is None:
             return
-        cfg = self.config_provider()
-        charts = {
-            "head": ("Head alignment", "head_angle", "degrees", cfg.head_down_angle, "head", 1.0),
-            "shoulders": (
-                "Shoulder height",
-                "shoulder_elev_pct",
-                "% raised",
-                cfg.shoulder_raise_threshold,
-                "shoulders",
-                1.0,
-            ),
-            "knees": (
-                "Knee bend",
-                "knee_bend_deg",
-                "degrees",
-                cfg.closed_embrace_min_knee_bend,
-                "knees",
-                1.0,
-            ),
-            "hips": (
-                "Hip alignment / offset",
-                "axis_curve_smoothed",
-                "% offset",
-                cfg.axis_curve_entry * 100.0,
-                "axis",
-                100.0,
-            ),
-        }
+        charts = self._analytics_chart_specs()
         title, metric, unit, threshold, alert_key, scale = charts[key]
+        practice_points = _analytics_points(
+            self.practice_analytics_data or self.coach_data,
+            metric,
+            scale=scale,
+            alert_key=alert_key,
+        )
+        reference_points = _analytics_points(
+            self.reference_coach_data, metric, scale=scale, alert_key=alert_key
+        )
+        if key in self.analytics_per_series_alignment:
+            align_offset, align_scale = self.analytics_per_series_alignment[key]
+        else:
+            align_offset, align_scale = self._current_analytics_alignment()
+        reference_points = _apply_analytics_time_alignment(
+            reference_points, offset=align_offset, time_scale=align_scale
+        )
         _draw_analytics_chart(
             canvas,
             title=title,
             unit=unit,
-            practice=_analytics_points(
-                self.practice_analytics_data or self.coach_data,
-                metric,
-                scale=scale,
-                alert_key=alert_key,
-            ),
-            reference=_analytics_points(
-                self.reference_coach_data, metric, scale=scale, alert_key=alert_key
-            ),
+            practice=practice_points,
+            reference=reference_points,
             threshold=threshold,
             zoom=float(self.analytics_zoom_var.get()),
             pan=float(self.analytics_pan_var.get()),
