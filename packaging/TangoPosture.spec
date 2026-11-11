@@ -42,12 +42,14 @@ exe = EXE(
     exclude_binaries=True,
     name="TangoPosture",
     console=False,
+    icon=str(root / "build/desktop-resources/TangoPosture.ico") if sys.platform == "win32" else None,
 )
 collection = COLLECT(exe, analysis.binaries, analysis.datas, name="TangoPosture")
 if sys.platform == "darwin":
     app = BUNDLE(
         collection,
         name="TangoPosture.app",
+        icon=str(root / "build/desktop-resources/TangoPosture.icns"),
         bundle_identifier="org.tangoposture.desktop",
         info_plist={
             "NSCameraUsageDescription": "TangoPosture uses the camera to record and analyse practice.",

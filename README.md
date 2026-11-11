@@ -66,6 +66,16 @@ recording functionality still require testing on the target machine; Windows
 support is experimental, and some media features depend on platform-specific
 tools or capabilities.
 
+If macOS says **"Apple could not verify TangoPosture is free of malware"**,
+this is the expected Gatekeeper warning for these unnotarized builds, not a
+successful malware scan. Only if you trust the release and have verified its
+checksum: copy the app into Applications, try opening it, then go to
+**System Settings > Privacy & Security > Open Anyway** and confirm **Open**.
+This creates an exception for this app; do not disable Gatekeeper globally.
+See [Apple's instructions](https://support.apple.com/en-us/102445).
+Removing this warning for distributed builds requires an Apple Developer ID
+signature and Apple notarization; changing the logo does not remove it.
+
 Installed-app data and recordings are stored under
 `~/Library/Application Support/TangoPosture` on macOS and
 `%LOCALAPPDATA%\TangoPosture` on Windows. Uninstalling the app does not remove
@@ -101,10 +111,21 @@ overwritten. A release must have been published after this workflow exists on
 the default branch, and repository Actions settings must permit the workflow's
 release write permission.
 
+Desktop builds convert `logos/TangoPosture_logo_under_1MB.png` into multi-size
+macOS `.icns` and Windows `.ico` icons using the packaging dependency group.
+These icons are embedded in the app bundle, Windows executable, and Windows
+setup installer. For local PyInstaller builds, run
+`uv run --frozen --group packaging python scripts/prepare_desktop_icons.py`
+before building.
+
 The smoke tests exercise bundled resources, native dependencies, and a pose
 inference; they do not certify real camera, microphone, GUI interaction, or
 recording behavior. Validate those manually on clean target machines before
 recommending a release.
+
+macOS disk-image cleanup retries transient busy-volume errors before forcing
+detach of the CI smoke-test image. Smoke-test and final detach failures still
+fail the build.
 
 Windows compilation, installation, and smoke testing appear as separate workflow
 steps. Installation is limited to 180 seconds and smoke testing to 120 seconds.

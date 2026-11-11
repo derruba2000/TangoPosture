@@ -58,6 +58,8 @@ jobs:
         run: uv run --frozen --group packaging tango-posture models fetch --output build/model/pose_landmarker_lite.task
       - name: Prepare manual
         run: uv run --frozen --group packaging python -c "from pathlib import Path; import shutil; p=Path('build/desktop-resources'); p.mkdir(parents=True, exist_ok=True); shutil.copyfile('docs/TANGO_POSTURE_GUIDE.md', p / 'TANGO_POSTURE_MANUAL.md')"
+      - name: Prepare desktop icons
+        run: uv run --frozen --group packaging python scripts/prepare_desktop_icons.py
       - name: Build application
         run: uv run --frozen --group packaging pyinstaller --noconfirm packaging/TangoPosture.spec
       - name: Build and verify macOS disk image
@@ -72,7 +74,19 @@ jobs:
           hdiutil verify release/TangoPosture-macOS-arm64.dmg
           mkdir "$RUNNER_TEMP/tango-dmg"
           hdiutil attach release/TangoPosture-macOS-arm64.dmg -mountpoint "$RUNNER_TEMP/tango-dmg" -nobrowse
-          trap 'hdiutil detach "$RUNNER_TEMP/tango-dmg"' EXIT
+          detach_dmg() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if hdiutil detach "$RUNNER_TEMP/tango-dmg"; then
+                return 0
+              fi
+              echo "Disk image still busy; retrying cleanup in ${attempt}s" >&2
+              sleep "$attempt"
+            done
+            echo "Normal unmount failed; forcing detach of the CI smoke-test image" >&2
+            hdiutil detach -force "$RUNNER_TEMP/tango-dmg"
+          }
+          trap detach_dmg EXIT
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/tango-dmg/TangoPosture.app/Contents/MacOS/TangoPosture" --smoke-test
       - name: Build Windows installer

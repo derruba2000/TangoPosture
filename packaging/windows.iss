@@ -13,6 +13,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\release
 OutputBaseFilename=TangoPosture-Windows-x64-Setup
+SetupIconFile=..\build\desktop-resources\TangoPosture.ico
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\TangoPosture.exe
