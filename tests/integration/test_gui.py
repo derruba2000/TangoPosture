@@ -644,7 +644,8 @@ def test_ollama_analysis_streams_saves_and_reopens_for_its_report(studio, tmp_pa
     assert not panel.analysis_view.text.get("1.0", "end").strip()
 
 
-def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypatch):
+@pytest.mark.parametrize("gui_delay", [0, 2.1], ids=["normal", "slow-gui"])
+def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypatch, gui_delay):
     root, gui = studio
     panel = gui.review
     report = tmp_path / "report_stream.md"
@@ -657,34 +658,37 @@ def test_ollama_stream_is_rendered_before_completion(studio, tmp_path, monkeypat
     def analyze(_client, _report, on_chunk, _cancel):
         on_chunk("## Streaming\n\n**Visible** `now`")
         emitted.set()
-        assert release.wait(2)
+        release.wait()
         return "## Streaming\n\n**Visible** `now`", True
 
     monkeypatch.setattr("tango_posture.review_ui.OllamaClient.analyze", analyze)
     panel.request_analysis()
-    assert emitted.wait(2)
-    panel.pump()
-    root.update()
-    assert panel.analysis_status_label.winfo_ismapped()
-    assert panel.analysis_status.get() == "Receiving analysis..."
-    deadline = time.monotonic() + 2
-    while not panel.analysis_stream and time.monotonic() < deadline:
+    try:
+        assert emitted.wait(5)
+        # Rendering on a loaded CI runner can exceed the old worker's two-second deadline.
+        time.sleep(gui_delay)
+        panel.pump()
         root.update()
-        time.sleep(0.01)
-    root.update()
-    rendered = panel.analysis_view.text.get("1.0", "end")
-    assert panel.analysis_status.get() == "Receiving analysis..."
-    assert "Visible now" in rendered
-    assert "##" not in rendered and "**" not in rendered and "`" not in rendered
-    assert panel.analysis_view.text.tag_ranges("h2")
-    assert panel.analysis_view.text.tag_ranges("bold")
-    assert panel.analysis_view.text.tag_ranges("code")
-    release.set()
-    deadline = time.monotonic() + 2
+        assert panel.analysis_status_label.winfo_ismapped()
+        assert panel.analysis_status.get() == "Receiving analysis..."
+        rendered = panel.analysis_view.text.get("1.0", "end")
+        assert "Visible now" in rendered
+        assert "##" not in rendered and "**" not in rendered and "`" not in rendered
+        assert panel.analysis_view.text.tag_ranges("h2")
+        assert panel.analysis_view.text.tag_ranges("bold")
+        assert panel.analysis_view.text.tag_ranges("code")
+        assert panel.job
+        assert not list(tmp_path.glob("*.analysis-*.json"))
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
     while panel.job and time.monotonic() < deadline:
+        panel.pump()
         root.update()
         time.sleep(0.01)
     assert not panel.job
+    assert panel.analysis_status.get().startswith("Saved ")
+    assert len(list(tmp_path.glob("*.analysis-*.json"))) == 1
 
 
 def test_cancelled_analysis_does_not_save_or_show_stale_results(studio, tmp_path, monkeypatch):
