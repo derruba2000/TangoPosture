@@ -65,6 +65,10 @@ Ask a tango teacher to annotate the intended reference's suitability and visible
   before surfacing a save failure. Regression tests inject transient and
   persistent failures, check that both segments retain their analysis, and verify
   that a failed replacement preserves the previous archive.
+- The Ollama streaming GUI regression holds the mock worker until rendering
+  assertions finish, including a simulated 2.1-second GUI delay. A `finally`
+  block always releases it; completion is checked through explicit event pumping
+  and a bounded wait. Thread exceptions must not be treated as harmless warnings.
 - Pure synthetic geometry/timing, simulated lifecycle and storage tests: see implementation report.
 - Verified model loaded with CPU delegate and processed blank generated frames and a short locally encoded blank video.
 - Blank-video run used blocked Python socket/URL calls. It produced UNKNOWN observations, completed exports, and released capture/detector resources.
