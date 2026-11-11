@@ -102,6 +102,30 @@ The application therefore reports the measurements separately. It also keeps mea
 
 ## 4. A first practice session
 
+### Install from desktop binaries
+
+Download the macOS Apple Silicon `.dmg` or Windows x64 setup executable from
+[GitHub Releases](https://github.com/derruba2000/TangoPosture/releases) and
+verify it against that release's `SHA256SUMS.txt`. The installers include Python
+and the verified pose model; the source setup below is not needed.
+On macOS, drag TangoPosture into Applications. On Windows, run the installer
+and launch TangoPosture from the Start menu.
+
+These experimental builds are unsigned and the macOS app is not notarized.
+If macOS says **"Apple could not verify TangoPosture is free of malware"**,
+only proceed if you trust the download and have verified its checksum.
+After trying to open the installed app, use
+**System Settings > Privacy & Security > Open Anyway**, then confirm **Open**.
+This permits this app without disabling Gatekeeper globally; it does not prove
+the app is malware-free. See [Apple's instructions](https://support.apple.com/en-us/102445).
+Developer ID signing and Apple notarization are required to remove this warning
+for distributed builds.
+
+Recordings and data are stored under
+`~/Library/Application Support/TangoPosture` on macOS and
+`%LOCALAPPDATA%\TangoPosture` on Windows. Uninstalling the app does not delete
+these files.
+
 ### Install the environment and model
 
 The initial compatibility target is Python 3.11. The implementation was checked on macOS on Apple Silicon. From the repository root:

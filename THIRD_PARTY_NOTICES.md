@@ -35,6 +35,12 @@ Inventory of the installed, locked Python 3.11 macOS arm64 environment. Original
 The offline tutorial uses Python-Markdown 3.10.2 (BSD-3-Clause). Preserve its
 installed distribution licence when redistributing the application.
 
+## Desktop icon generation
+
+Pillow 12.0.0 (HPND) is a packaging-only dependency used to convert the project
+logo into `.ico` and `.icns` files. Its [licence](https://github.com/python-pillow/Pillow/blob/12.0.0/LICENSE)
+governs Pillow; the generated icons use the project's logo.
+
 ## Model weights
 
 Google BlazePose GHUM Lite, Pose Landmarker float16 bundle version 1: Apache-2.0 according to the [official linked model card, page 2](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf). `models/manifest.json` records the exact source, SHA-256 and provenance limitations. This is separate evidence from the MediaPipe code licence. The training dataset is not provided or licensed by this project.
