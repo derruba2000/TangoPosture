@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
 
 from tango_posture.config import Config, export_toml
@@ -10,7 +11,9 @@ from tango_posture.core.entities import ReferenceSummary
 from tango_posture.desktop_qt.components.beat_strip import BeatStrip
 from tango_posture.desktop_qt.components.status_strip import StatusStrip
 from tango_posture.desktop_qt.components.video_stage import VideoStage
+from tango_posture.desktop_qt.main import SPLASH_DURATION_MS, show_startup_splash
 from tango_posture.desktop_qt.router import Route, Router
+from tango_posture.desktop_qt.screens.help import HelpScreen
 from tango_posture.desktop_qt.shell import MainWindow
 
 
@@ -74,6 +77,82 @@ def test_main_window_instantiation_and_navigation(qapp):
 
     window.router.navigate(Route.HELP)
     assert window.stack.currentWidget() == window.screens[Route.HELP]
+
+    window.close()
+
+
+def test_about_button_opens_one_branded_dialog(qapp):
+    window = MainWindow(Config())
+
+    window.about_btn.click()
+    qapp.processEvents()
+    dialog = window.about_dialog
+
+    assert dialog is not None
+    assert dialog.windowTitle() == "About TangoPosture"
+    assert dialog.version_label.text().startswith("Version ")
+    assert dialog.license_label.text() == "License: Apache-2.0"
+    assert "not a medical assessment" in dialog.disclaimer_label.text()
+    assert "github.com/derruba2000/TangoPosture" in dialog.repo_link.text()
+    window.about_btn.click()
+    assert window.about_dialog is dialog
+    window.close()
+
+
+def test_startup_splash_delays_main_window_for_three_seconds(qapp, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(
+        "tango_posture.desktop_qt.main.QTimer.singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+    window = MainWindow(Config())
+
+    splash = show_startup_splash(window, QPixmap())
+    qapp.processEvents()
+
+    assert splash.isVisible()
+    assert not window.isVisible()
+    assert scheduled[0][0] == 3000 == SPLASH_DURATION_MS
+    scheduled[0][1]()
+    qapp.processEvents()
+    assert window.isVisible()
+    assert not splash.isVisible()
+    window.close()
+
+
+def test_help_renders_styled_manual_with_hierarchical_contents_and_search(qapp):
+    window = MainWindow(Config())
+    help_screen = window.screens[Route.HELP]
+    assert isinstance(help_screen, HelpScreen)
+
+    assert help_screen.toc_list.topLevelItemCount() > 0
+    assert help_screen.toc_list.topLevelItem(0).childCount() > 0
+    assert "TANGO POSTURE / LEARN &amp; PRACTISE" in help_screen.manual_html
+    assert "<table>" in help_screen.manual_html
+    assert "Tango Posture Coach Manual" in help_screen.viewer.toPlainText()
+
+    help_screen.search_input.setText("confidence")
+    help_screen._search_manual()
+    assert help_screen.search_matches
+    assert "matches" in help_screen.search_status.text()
+    help_screen._next_match()
+    assert "of" in help_screen.search_status.text()
+
+    help_screen.search_input.setText("no such manual phrase")
+    help_screen._search_manual()
+    assert help_screen.search_status.text() == "No matches"
+    window.close()
+
+
+def test_navigation_buttons_have_icons_and_accessible_labels(qapp):
+    window = MainWindow(Config())
+
+    assert len(window.nav_buttons) == 9
+    for button in window.nav_buttons.values():
+        assert not button.icon().isNull()
+        assert button.iconSize().width() == 20
+        assert button.accessibleName() == button.text()
+        assert button.toolTip() == button.text()
 
     window.close()
 
@@ -158,6 +237,13 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
     assert window.bridge.config.tango_bpm == 120.0
     assert settings_screen.smooth_spin.value() == Config().smoothing
     assert settings_screen.mirror_cb.isChecked() == Config().mirror
+    settings_screen.field_widgets["calibration_duration"].setValue(15.0)
+    settings_screen.field_widgets["ollama_num_ctx"].setValue(8192)
+    settings_screen.field_widgets["head_forward.entry"].setValue(0.1)
+    assert settings_screen._save_settings()
+    assert window.bridge.config.calibration_duration == 15.0
+    assert window.bridge.config.ollama_num_ctx == 8192
+    assert window.bridge.config.head_forward.entry == 0.1
 
     source = Config(
         camera=3,
@@ -169,6 +255,9 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
         shoulder_raise_threshold=17.0,
         beat_tracking=False,
         tango_bpm=135.0,
+        calibration_duration=15.0,
+        calibration_valid_duration=12.0,
+        ollama_num_ctx=8192,
         ollama_base_url="http://localhost:11435",
         ollama_model="custom-model",
     )
@@ -190,6 +279,33 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
     assert settings_screen.bpm_spin.value() == 135.0
     assert settings_screen.ollama_url.text() == "http://localhost:11435"
     assert settings_screen.ollama_model.text() == "custom-model"
+    assert settings_screen.field_widgets["calibration_duration"].value() == 15.0
+    assert settings_screen.field_widgets["ollama_num_ctx"].value() == 8192
+    assert settings_screen.tabs.count() == 11
+    window.close()
+
+
+def test_settings_screen_exposes_all_shared_setting_fields(qapp):
+    from tango_posture.config import SETTING_GROUPS
+
+    window = MainWindow(Config())
+    settings_screen = window.screens[Route.SETTINGS]
+
+    assert set(settings_screen.field_widgets) == {
+        field for fields in SETTING_GROUPS.values() for field in fields
+    }
+    window.close()
+
+
+def test_invalid_settings_are_not_applied(qapp):
+    window = MainWindow(Config())
+    settings_screen = window.screens[Route.SETTINGS]
+    original_config = window.bridge.config.model_dump()
+    settings_screen.field_widgets["ollama_model"].setText("")
+
+    assert not settings_screen._save_settings()
+    assert window.bridge.config.model_dump() == original_config
+    assert window.status_strip._status_label.text().startswith("Could not apply settings:")
     window.close()
 
 

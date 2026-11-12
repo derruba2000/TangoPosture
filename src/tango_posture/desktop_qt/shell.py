@@ -6,7 +6,7 @@ import sys
 from importlib.resources import files as package_files
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Config
+from .about import AboutDialog
 from .components.status_strip import StatusStrip
+from .navigation_icons import navigation_icon
 from .router import Route, Router
 from .screens.analytics import AnalyticsScreen
 from .screens.coach import CoachScreen
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
         self.bridge = ServiceBridge(cfg, self)
         self.router = Router(self)
         self._close_when_practice_stops = False
+        self.about_dialog: AboutDialog | None = None
 
         self.setWindowTitle("TangoPosture Studio")
         self.resize(1200, 800)
@@ -81,10 +84,17 @@ class MainWindow(QMainWindow):
         brand_row.setSpacing(10)
         logo_lbl = QLabel()
         logo_data = self._load_logo()
+        self.brand_pixmap = QPixmap()
         if logo_data:
-            pixmap = QPixmap()
-            pixmap.loadFromData(logo_data)
-            logo_lbl.setPixmap(pixmap.scaled(28, 28, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            self.brand_pixmap.loadFromData(logo_data)
+            logo_lbl.setPixmap(
+                self.brand_pixmap.scaled(
+                    28,
+                    28,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
         brand_title = QLabel("TangoPosture")
         brand_title.setStyleSheet("font-size: 15px; font-weight: bold; color: #FFFFFF;")
         brand_row.addWidget(logo_lbl)
@@ -99,27 +109,38 @@ class MainWindow(QMainWindow):
         self.nav_buttons: dict[Route, QPushButton] = {}
 
         nav_items = [
-            (Route.HOME, "⌂  Home"),
-            (Route.PRACTICE, "●  Live Practice"),
-            (Route.REFERENCES, "◎  References"),
-            (Route.LIBRARY, "▤  Library"),
-            (Route.REVIEW, "▶  Review"),
-            (Route.ANALYTICS, "📈 Analytics"),
-            (Route.COACH, "✦  AI Coach"),
-            (Route.SETTINGS, "⚙  Settings"),
-            (Route.HELP, "?  Help & Guide"),
+            (Route.HOME, "Home", "home"),
+            (Route.PRACTICE, "Live Practice", "practice"),
+            (Route.REFERENCES, "References", "references"),
+            (Route.LIBRARY, "Library", "library"),
+            (Route.REVIEW, "Review", "review"),
+            (Route.ANALYTICS, "Analytics", "analytics"),
+            (Route.COACH, "AI Coach", "coach"),
+            (Route.SETTINGS, "Settings", "settings"),
+            (Route.HELP, "Help & Guide", "help"),
         ]
 
-        for route, label in nav_items:
+        for route, label, icon_name in nav_items:
             btn = QPushButton(label)
             btn.setProperty("class", "nav-btn")
+            btn.setIcon(navigation_icon(icon_name))
+            btn.setIconSize(QSize(20, 20))
             btn.setCheckable(True)
+            btn.setAccessibleName(label)
+            btn.setToolTip(label)
             btn.clicked.connect(lambda _, r=route: self.router.navigate(r))
             self.btn_group.addButton(btn)
             self.nav_buttons[route] = btn
             nav_layout.addWidget(btn)
 
         nav_layout.addStretch()
+        self.about_btn = QPushButton("About")
+        self.about_btn.setProperty("class", "nav-btn")
+        self.about_btn.setIcon(navigation_icon("about"))
+        self.about_btn.setIconSize(QSize(20, 20))
+        self.about_btn.setAccessibleName("About TangoPosture")
+        self.about_btn.clicked.connect(self._show_about)
+        nav_layout.addWidget(self.about_btn)
         body_layout.addWidget(self.nav_rail)
 
         # 2. Central Stacked Content Screens
@@ -154,7 +175,7 @@ class MainWindow(QMainWindow):
             practice_screen.stopped.connect(self._finish_close_if_ready)
 
         # Setup Shortcuts (Ctrl+1 to Ctrl+9 / Cmd+1 to Cmd+9)
-        for idx, (route, _) in enumerate(nav_items, start=1):
+        for idx, (route, _, _) in enumerate(nav_items, start=1):
             modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
             shortcut = QShortcut(QKeySequence(f"{modifier}+{idx}"), self)
             shortcut.activated.connect(lambda r=route: self._navigate_shortcut(r))
@@ -170,6 +191,13 @@ class MainWindow(QMainWindow):
                 return
             focused_widget = focused_widget.parentWidget()
         self.router.navigate(route)
+
+    def _show_about(self) -> None:
+        if self.about_dialog is None:
+            self.about_dialog = AboutDialog(self.brand_pixmap, self)
+        self.about_dialog.show()
+        self.about_dialog.raise_()
+        self.about_dialog.activateWindow()
 
     def _load_logo(self) -> bytes | None:
         try:

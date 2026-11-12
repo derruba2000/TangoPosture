@@ -9,15 +9,17 @@ to the existing application worker, supports explicit calibration acceptance,
 and provides real archive/video Review, synchronized comparison, timestamp
 seeking, frame stepping, speed control, report-to-Coach handoff, local video
 export, report relinking, persisted Analytics charts/events, and an explicitly
-invoked Ollama Coach. Coach responses stream on a worker thread, are cancellable,
-and are saved against a SHA-256 report digest; a changed source report is
-discarded rather than saved.
+invoked Ollama Coach. Settings now expose the shared Tk configuration groups
+in the Qt interface, the navigation rail has a custom vector icon for every
+destination, and startup/About/Help match the Tk desktop experience. Coach
+responses stream on a worker thread, are cancellable, and are saved against a
+SHA-256 report digest; a changed source report is discarded rather than saved.
 
 Latest automated verification:
 
-- `uv run --frozen pytest -q`: **316 passed**.
+- `uv run --frozen pytest -q`: **322 passed**.
 - `uv run --frozen ruff check .`: passed.
-- `uv run --frozen mypy src`: passed across 65 source files.
+- `uv run --frozen mypy src`: passed across 69 source files.
 - `git diff --check`: passed.
 
 Remaining desktop scope and acceptance limits:

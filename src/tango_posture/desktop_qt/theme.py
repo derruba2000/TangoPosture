@@ -136,7 +136,7 @@ QPushButton.danger {{
 /* Navigation Rail Buttons */
 QPushButton.nav-btn {{
     text-align: left;
-    padding: 10px 14px;
+    padding: 10px 12px;
     border: none;
     border-radius: 4px;
     background-color: transparent;
@@ -152,6 +152,8 @@ QPushButton.nav-btn:hover {{
 
 QPushButton.nav-btn:checked {{
     background-color: {COLOR_BURGUNDY};
+    border-left: 3px solid {COLOR_COPPER};
+    padding-left: 11px;
     color: #FFFFFF;
     font-weight: 600;
 }}

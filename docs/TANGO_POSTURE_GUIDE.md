@@ -143,6 +143,11 @@ To open the PySide6 desktop interface, run `uv run tango-posture qt`. The equiva
 
 ### Qt desktop workflows
 
+Qt shows the TangoPosture splash screen for three seconds at startup. Select
+**About** at the bottom of the navigation rail for version, license, repository
+and usage information. **Help & Guide** renders the same styled offline manual
+as Tk, with hierarchical contents and searchable, highlighted matches.
+
 The Library lists saved practice archives and reports. **Open Local Video…**
 opens the selected file in Review without copying or modifying it. Saved reports
 can also be opened directly; their report text, source provenance and timestamps
@@ -150,6 +155,11 @@ remain associated with the selected report. If a standalone report's linked
 video has moved, **Relink Report Video…** checks its SHA-256 identity and clears
 stale timing data when the content differs. **Export Video…** copies the
 currently selected video stream to a destination you choose.
+
+Settings are organized into the same groups used by the Tk interface, covering
+camera and view, calibration, tracking, movement, music, replay and Ollama.
+**Apply Settings** validates and applies changes for the current app session;
+use **Export TOML…** to save them to a configuration file.
 
 Review supports raw, overlay and (when archived) full-lines video streams,
 timestamp seeking, speed/frame-step controls and side-by-side comparison with
