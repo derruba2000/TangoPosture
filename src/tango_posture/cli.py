@@ -18,7 +18,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, help="Validated TOML configuration")
     p.add_argument("--data-dir", help="Local SQLite and exports directory")
     sub = p.add_subparsers(dest="command", required=True)
-    sub.add_parser("gui", help="Open the graphical practice setup and controls")
+    gui_p = sub.add_parser("gui", help="Open the graphical practice setup and controls")
+    gui_p.add_argument("--qt", action="store_true", help="Launch modern PySide6 Qt interface")
+    sub.add_parser("qt", help="Launch modern PySide6 Qt interface")
     models = sub.add_parser("models")
     models.add_subparsers(dest="action", required=True).add_parser("fetch").add_argument(
         "--output", type=Path, help="Model destination; explicit setup-only network operation"
@@ -95,7 +97,11 @@ def main(argv: list[str] | None = None, *, display: PracticeDisplay | None = Non
             )
         }
         cfg = load(args.config, overrides)
-        if args.command == "gui":
+        if args.command in ("gui", "qt"):
+            if args.command == "qt" or getattr(args, "qt", False):
+                from .desktop_qt import launch_qt
+
+                return launch_qt(cfg)
             from .gui import launch
 
             return launch(cfg)
