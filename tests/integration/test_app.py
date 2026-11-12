@@ -170,6 +170,40 @@ def test_native_display_buttons_use_the_existing_session_pipeline(tmp_path, refe
         storage.close()
 
 
+def test_stop_scoring_does_not_stop_recording_pipeline(tmp_path, reference, cfg, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    keys = iter("stq")
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            super().show(image)
+            self.request(next(keys))
+
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    storage = Storage(tmp_path)
+    storage.save_calibration(reference)
+    capture = FakeCapture(count=3)
+    app = Application(
+        cfg,
+        storage,
+        video="fixture",
+        reference=reference,
+        capture=capture,
+        estimator=FakeEstimator(),
+        display=Buttons(),
+        practice_name="stop-scoring",
+    )
+    try:
+        app.run()
+        assert app.state == "FINISHED"
+        assert app.recording_saved
+        assert storage.list("sessions")[0]["status"] == "completed"
+        assert app.practice_file is not None and app.practice_file.is_file()
+    finally:
+        storage.close()
+
+
 def test_gui_record_key_does_not_start_calibration(tmp_path, cfg):
     import shutil
 

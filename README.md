@@ -91,9 +91,12 @@ uv python install 3.11
 uv sync --frozen
 uv run tango-posture --help
 uv run tango-posture models fetch
+uv run tango-posture qt
 ```
 
 `models fetch` is an explicit setup operation. It downloads only the versioned model in `models/manifest.json`, verifies SHA-256, and atomically installs it. Runs never download models. For offline installation, transfer that exact verified file yourself and pass `--model-path /path/to/pose_landmarker_lite.task`. Every run verifies its checksum.
+
+`uv run tango-posture qt` opens the PySide6 desktop interface. The no-argument command and `uv run tango-posture gui` continue to open the legacy Tk interface; `uv run tango-posture gui --qt` is an equivalent Qt launch command.
 
 The pinned MediaPipe 0.10.31 release fixes Windows Tasks initialization (`function 'free' not found` in 0.10.30) without pulling in a second OpenCV package. See [wheel evidence](docs/wheel_compatibility.json), [third-party notices](THIRD_PARTY_NOTICES.md), and the [model manifest](models/manifest.json). Original application code is Apache-2.0; dependency and model terms remain separate.
 
@@ -137,18 +140,19 @@ failed verification prevents installer publication.
 
 ## Webcam Practice Workflow
 
-### Option 1: Graphical Practice Studio (Recommended)
+### Option 1: Graphical Practice Studio
 
-Open the native desktop interface with any of these commands:
+Open the native Qt desktop interface with:
 
 ```bash
-./run_practice.sh
-uv run tango-posture
-uv run tango-posture gui
+uv run tango-posture qt
 ```
 
-Startup shows a branded splash screen for three seconds with a busy cursor and
-animated waiting indicator. **About** (or **Help > About TangoPosture**) shows the
+Use `uv run tango-posture gui` for the legacy Tk interface.
+
+The tab-and-window workflow below describes the legacy Tk interface. Its startup
+shows a branded splash screen for three seconds with a busy cursor and animated
+waiting indicator. **About** (or **Help > About TangoPosture**) shows the
 application version, license, and a clickable GitHub repository link.
 
 The **Practice** tab selects a camera or video and shows the run log; it also offers

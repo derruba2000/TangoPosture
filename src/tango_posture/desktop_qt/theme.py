@@ -93,6 +93,10 @@ QPushButton:pressed {{
     background-color: {COLOR_BASE};
 }}
 
+QPushButton:focus {{
+    border: 2px solid {COLOR_TEXT_PRIMARY};
+}}
+
 QPushButton:disabled {{
     background-color: {COLOR_PANEL};
     border-color: {COLOR_BORDER};
@@ -203,6 +207,10 @@ QCheckBox::indicator {{
 QCheckBox::indicator:checked {{
     background-color: {COLOR_BURGUNDY};
     border-color: {COLOR_BURGUNDY};
+}}
+
+QCheckBox::indicator:focus {{
+    border: 2px solid {COLOR_TEXT_PRIMARY};
 }}
 
 /* ScrollBars */

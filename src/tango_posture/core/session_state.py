@@ -14,6 +14,7 @@ Inside ``Preview`` recording is on/off and scoring is off/active/paused independ
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
@@ -168,7 +169,7 @@ def close(state: SessionState) -> SessionState:
     return SessionState(saved_segments=state.saved_segments)
 
 
-COMMANDS = {
+COMMANDS: dict[str, Callable[..., SessionState]] = {
     "choose_source": choose_source,
     "ready": ready,
     "fail": fail,
@@ -185,7 +186,7 @@ COMMANDS = {
 }
 
 
-def apply(state: SessionState, command: str, *args) -> SessionState:
+def apply(state: SessionState, command: str, *args: object) -> SessionState:
     try:
         handler = COMMANDS[command]
     except KeyError as error:

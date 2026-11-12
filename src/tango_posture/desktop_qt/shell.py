@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import sys
 from importlib.resources import files as package_files
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QCloseEvent, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -43,10 +48,11 @@ class MainWindow(QMainWindow):
         self.cfg = cfg
         self.bridge = ServiceBridge(cfg, self)
         self.router = Router(self)
+        self._close_when_practice_stops = False
 
         self.setWindowTitle("TangoPosture Studio")
         self.resize(1200, 800)
-        self.setMinimumSize(1024, 680)
+        self.setMinimumSize(1024, 700)
         self.setStyleSheet(STYLESHEET)
 
         # Main Root Widget
@@ -143,15 +149,27 @@ class MainWindow(QMainWindow):
         # Wire Signals
         self.router.route_changed.connect(self._on_route_changed)
         self.bridge.status_message.connect(self.status_strip.set_status)
+        practice_screen = self.screens[Route.PRACTICE]
+        if isinstance(practice_screen, PracticeScreen):
+            practice_screen.stopped.connect(self._finish_close_if_ready)
 
         # Setup Shortcuts (Ctrl+1 to Ctrl+9 / Cmd+1 to Cmd+9)
         for idx, (route, _) in enumerate(nav_items, start=1):
-            sc = QShortcut(QKeySequence(f"Ctrl+{idx}"), self)
-            sc.activated.connect(lambda r=route: self.router.navigate(r))
+            modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
+            shortcut = QShortcut(QKeySequence(f"{modifier}+{idx}"), self)
+            shortcut.activated.connect(lambda r=route: self._navigate_shortcut(r))
 
         # Initial Route
         self.nav_buttons[Route.HOME].setChecked(True)
         self.stack.setCurrentWidget(self.screens[Route.HOME])
+
+    def _navigate_shortcut(self, route: Route) -> None:
+        focused_widget = QApplication.focusWidget()
+        while focused_widget is not None:
+            if isinstance(focused_widget, (QLineEdit, QPlainTextEdit, QTextEdit)):
+                return
+            focused_widget = focused_widget.parentWidget()
+        self.router.navigate(route)
 
     def _load_logo(self) -> bytes | None:
         try:
@@ -164,13 +182,63 @@ class MainWindow(QMainWindow):
         return None
 
     def _on_route_changed(self, route: Route, payload: object) -> None:
+        practice_screen = self.screens[Route.PRACTICE]
+        if (
+            self.stack.currentWidget() is practice_screen
+            and route is not Route.PRACTICE
+            and isinstance(practice_screen, PracticeScreen)
+        ):
+            practice_screen.stop_for_navigation()
+
         if route in self.nav_buttons:
             self.nav_buttons[route].setChecked(True)
 
         screen = self.screens.get(route)
         if screen:
             self.stack.setCurrentWidget(screen)
+            if (
+                route is Route.PRACTICE
+                and payload == "calibrate"
+                and isinstance(screen, PracticeScreen)
+            ):
+                screen.begin_calibration()
             if hasattr(screen, "refresh"):
                 screen.refresh()
-            if route is Route.REVIEW and isinstance(payload, Path) and hasattr(screen, "load_archive"):
-                screen.load_archive(payload)
+            if route is Route.REVIEW and isinstance(screen, ReviewScreen):
+                if isinstance(payload, Path):
+                    screen.load_archive(payload)
+                elif isinstance(payload, dict):
+                    archive_path = payload.get("archive_path")
+                    segment_index = payload.get("segment_index", 0)
+                    timestamp = payload.get("timestamp")
+                    if (
+                        isinstance(archive_path, Path)
+                        and isinstance(segment_index, int)
+                        and (timestamp is None or isinstance(timestamp, (int, float)))
+                    ):
+                        screen.load_archive(
+                            archive_path, segment_index=segment_index, timestamp=timestamp
+                        )
+            if (
+                route is Route.COACH
+                and isinstance(screen, CoachScreen)
+                and isinstance(payload, (Path, dict))
+            ):
+                screen.load_report(payload)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        practice_screen = self.screens[Route.PRACTICE]
+        if (
+            isinstance(practice_screen, PracticeScreen)
+            and practice_screen.worker_running
+        ):
+            self._close_when_practice_stops = True
+            practice_screen.stop_for_navigation()
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _finish_close_if_ready(self) -> None:
+        if self._close_when_practice_stops:
+            self._close_when_practice_stops = False
+            self.close()

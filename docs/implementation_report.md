@@ -2,6 +2,41 @@
 
 Date: 1 November 2026 | Version: 0.1.0 | Target environment: Python 3.11 on macOS arm64
 
+## Qt desktop implementation update
+
+The PySide6 entry point (`uv run tango-posture qt`) now connects Live Practice
+to the existing application worker, supports explicit calibration acceptance,
+and provides real archive/video Review, synchronized comparison, timestamp
+seeking, frame stepping, speed control, report-to-Coach handoff, local video
+export, report relinking, persisted Analytics charts/events, and an explicitly
+invoked Ollama Coach. Coach responses stream on a worker thread, are cancellable,
+and are saved against a SHA-256 report digest; a changed source report is
+discarded rather than saved.
+
+Latest automated verification:
+
+- `uv run --frozen pytest -q`: **316 passed**.
+- `uv run --frozen ruff check .`: passed.
+- `uv run --frozen mypy src`: passed across 65 source files.
+- `git diff --check`: passed.
+
+Remaining desktop scope and acceptance limits:
+
+- Library opens local video files without copying or changing them and lists
+  saved reports/archives. Local videos can also be analyzed as bounded
+  movement-review clips with cancellation and SHA-256 provenance, then opened
+  in Review. URL downloads and soundtrack analysis are not exposed by the Qt
+  Library; pivot/step overlays are only available where generated evidence
+  supports them.
+- Analytics deliberately displays the three posture metric families actually
+  persisted by schema v1. Pivot/step histories and temporal alignment are not
+  inferred; alignment stays disabled unless compatible persisted data exists.
+- Reference comparison synchronizes by elapsed playback time; it does not
+  calculate or claim a semantic/biomechanical alignment.
+- Physical camera/microphone validation, >1-hour soak, native accessibility and
+  scaling checks, macOS/Windows clean-install smoke, teacher review, and user
+  acceptance remain pending. See `docs/manual_validation.md`.
+
 ## 1. Milestone Completion Summary
 
 | Milestone | Status | Key Deliverables |

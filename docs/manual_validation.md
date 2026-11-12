@@ -1,6 +1,6 @@
 # Manual and real-video validation
 
-Status on 1 November 2026: synthetic and local runtime checks executed; **real dancer video, webcam, and teacher validation are pending**. No suitable rights-cleared personal video was supplied, and this implementation did not activate the user's webcam unattended. The available runtime identifies Apple M2 Pro / macOS 26.6.2 arm64. This is not evidence of successful camera access.
+Status on 12 November 2026: synthetic and local runtime checks executed; **real dancer video, webcam, and teacher validation are pending**. No suitable rights-cleared personal video was supplied, and this implementation did not activate the user's webcam unattended. The available runtime identifies Apple M2 Pro / macOS 26.6.2 arm64. This is not evidence of successful camera access.
 
 ## Reproducible user-supplied fixture
 
@@ -73,3 +73,24 @@ Ask a tango teacher to annotate the intended reference's suitability and visible
 - Verified model loaded with CPU delegate and processed blank generated frames and a short locally encoded blank video.
 - Blank-video run used blocked Python socket/URL calls. It produced UNKNOWN observations, completed exports, and released capture/detector resources.
 - No human pose, false-alert rate, missed-deviation rate, webcam latency, or teacher suitability result is available. `docs/runtime_smoke.json` reports a blank-video runtime check only; it must not be advertised as dancer performance.
+
+## Qt desktop acceptance checklist
+
+Run `uv run tango-posture qt` from the repository root. This checklist is
+**pending manual execution**; offscreen widget tests do not establish native
+window-manager, accessibility, camera, media, or teacher-acceptance behavior.
+
+| Area | Manual check | Evidence to record |
+| --- | --- | --- |
+| Layout | Complete the Home → Practice → References → Library → Review → Analytics → AI Coach → Settings → Help flows at 1280×800 and 1024×700; repeat at 125% and 150% display scaling. | OS, display scale, screenshots, clipped/overlapping controls |
+| Keyboard and focus | Navigate without a mouse, verify visible focus and shortcut discoverability, and confirm navigation shortcuts do not interrupt text editing. | Steps attempted, focus/contrast issues, shortcut results |
+| Practice lifecycle | On a real camera, calibrate and explicitly accept a reference; verify scoring and recording are independent, pause affects scoring only, and stop/save, abort, and quit preserve the intended segments. | Camera/model versions, session/export status, saved segment count |
+| Failure recovery | Deny camera permission, disconnect the device, and close/cancel during capture; confirm actionable errors, released camera indicator, and preserved completed data. | Failure step, displayed message, device/resource state |
+| Library and imports | Open a saved report and a local video; cancel a file selection; relink a moved report video with matching and changed content; export the selected stream and verify the source is unchanged. | Source hashes, saved paths, cancellation recovery, export hash |
+| Review and analytics | Use a known clip/archive with timestamped observations; seek report links and persisted events; inspect raw/overlay/full-lines variants; compare with a reference archive; click chart times and verify unknown periods remain gaps. | Fixture identity, frame/time offsets, comparison sync, event and coverage discrepancies |
+| Local AI | With Ollama absent, confirm status is explicit; with a local model, explicitly start, observe streaming, cancel, and retry analysis. Change the report on disk during generation and verify the stale result is rejected. | Endpoint locality, model, cancellation result, source report/provenance hash |
+| Installation | Install from clean macOS ARM and Windows x64 environments; check model checksum, first launch, permissions, offline operation after setup, and uninstall data retention. | OS/build/checksum, first-launch result, camera/mic result |
+
+Do not mark an area passed from a simulated worker, blank-video smoke test, or
+offscreen Qt test. Attach reproducible environment details and distinguish
+automated evidence from physical-device observations.

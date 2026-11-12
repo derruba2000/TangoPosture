@@ -270,7 +270,12 @@ class Application:
             print(f"Exports: {output}")
             self.notice = f"Saved {status}; active {summary['active_duration']:.1f}s. Exports printed in terminal."
             self.state = "FINISHED"
-        if self.frame_log and not self.report_written and not self.calibration_only:
+        if (
+            self.frame_log
+            and not self.report_written
+            and not self.calibration_only
+            and not self.recording
+        ):
             report_dir = (
                 self.workspace_path
                 if self.workspace_path is not None
@@ -387,6 +392,10 @@ class Application:
             self.storage.save_calibration(self.candidate)
             self.reference = self.candidate
             self.candidate = None
+            if self.calibration_only and self.display is not None:
+                saved = getattr(self.display, "calibration_saved", None)
+                if callable(saved) and self.saved_calibration_path is not None:
+                    saved(self.saved_calibration_path)
             print(
                 f"Calibration completed & saved: {self.saved_calibration_path} "
                 f"(id: {self.reference.id}, {self.reference.review['label']})"
@@ -446,6 +455,9 @@ class Application:
         if key == ord("s") and self.state in ("READY", "FINISHED") and not self.candidate:
             self.setup_confirmed = True
             self.start_session(timestamp)
+        if key == ord("t") and self.session and not self.session.finished:
+            self.finish(timestamp, "completed")
+            return True
         if key == ord("p") and self.session:
             if self.state == "RUNNING":
                 self.session.pause(timestamp)
@@ -468,6 +480,7 @@ class Application:
         if self.recordings_started >= self.cfg.max_recordings:
             self.notice = f"Recording limit reached ({self.cfg.max_recordings})"
             if self.display is not None:
+                self.display.recording.clear()
                 self.display.recording_states.put("limit")
             return
         assert self.workspace_path is not None
@@ -706,8 +719,21 @@ class Application:
                                 self.candidate.quality["axis_neutral_offset"] = float(
                                     np.median(self.cal_axis_offsets)
                                 )
-                            self.accept()
-                            self._speak("Calibration completed")
+                                candidate_ready = (
+                                    getattr(self.display, "candidate_ready", None)
+                                    if self.display is not None
+                                    else None
+                                )
+                                if callable(candidate_ready):
+                                    candidate_ready(self.candidate.name)
+                                if not (
+                                    self.calibration_only
+                                    and getattr(self.display, "requires_reference_acceptance", False)
+                                ):
+                                    self.accept()
+                                    self._speak("Calibration completed")
+                                else:
+                                    self._speak("Calibration ready. Press Accept to save.")
                             if self.headless:
                                 self.start_session(timestamp)
                         except ValueError as error:
@@ -1344,6 +1370,8 @@ class Application:
                             self.display.close()
                         elif not self.headless:
                             cv2.destroyAllWindows()
-                        if self.workspace_path is not None and (self.aborted or self.recording_saved):
+                        if self.workspace_path is not None and (
+                            self.aborted or self.recording_saved or self.calibration_only
+                        ):
                             shutil.rmtree(self.workspace_path, ignore_errors=True)
         return self.outputs

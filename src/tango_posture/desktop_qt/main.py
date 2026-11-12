@@ -18,11 +18,14 @@ def launch_qt(cfg: Config) -> int:
     app = QApplication.instance()
     if app is None:
         app = QApplication(sys.argv)
+    elif not isinstance(app, QApplication):
+        raise RuntimeError("A non-GUI Qt application is already running")
 
     app.setApplicationName("TangoPosture Studio")
     app.setOrganizationName("TangoPosture")
 
     # Set Application Icon
+    data: bytes | None
     try:
         res = package_files("tango_posture").joinpath("TangoPosture_logo_under_1MB.png")
         data = res.read_bytes()

@@ -130,9 +130,10 @@ class HomeScreen(QScrollArea):
 
         # Clear old items in recent list
         while self.recent_list_container.count():
-            item = self.recent_list_container.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            layout_item = self.recent_list_container.takeAt(0)
+            widget = layout_item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
         practices = self.bridge.list_practices()
         if not practices:
@@ -140,22 +141,26 @@ class HomeScreen(QScrollArea):
             empty_lbl.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; padding: 12px;")
             self.recent_list_container.addWidget(empty_lbl)
         else:
-            for item in practices[:5]:
+            for practice in practices[:5]:
                 row = QFrame()
                 row.setProperty("class", "card")
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(16, 12, 16, 12)
 
                 info_col = QVBoxLayout()
-                p_name = QLabel(item["name"])
+                p_name = QLabel(practice["name"])
                 p_name.setStyleSheet("font-weight: 600; font-size: 13px;")
-                p_sub = QLabel(f"Segments: {item['segments_count']} · {item['path'].name}")
+                p_sub = QLabel(
+                    f"Segments: {practice['segments_count']} · {practice['path'].name}"
+                )
                 p_sub.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
                 info_col.addWidget(p_name)
                 info_col.addWidget(p_sub)
 
                 review_btn = QPushButton("Review")
-                review_btn.clicked.connect(lambda _, path=item["path"]: self.router.navigate(Route.REVIEW, path))
+                review_btn.clicked.connect(
+                    lambda _, path=practice["path"]: self.router.navigate(Route.REVIEW, path)
+                )
 
                 row_layout.addLayout(info_col)
                 row_layout.addStretch()

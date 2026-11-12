@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...config import Config
+from ...core.entities import ReferenceSummary
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
 from ..theme import COLOR_TEXT_MUTED
@@ -27,7 +30,7 @@ class ReferencesScreen(QWidget):
         super().__init__(parent)
         self.bridge = bridge
         self.router = router
-        self.selected_ref = None
+        self.selected_ref: ReferenceSummary | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -50,7 +53,9 @@ class ReferencesScreen(QWidget):
 
         cal_btn = QPushButton("New Calibration")
         cal_btn.setProperty("class", "primary")
-        cal_btn.clicked.connect(lambda: self.router.navigate(Route.PRACTICE))
+        cal_btn.clicked.connect(
+            lambda: self.router.navigate(Route.PRACTICE, "calibrate")
+        )
 
         header.addWidget(refresh_btn)
         header.addWidget(cal_btn)
@@ -100,6 +105,8 @@ class ReferencesScreen(QWidget):
 
         self.match_btn = QPushButton("Match Camera Settings")
         self.match_btn.setProperty("class", "accent")
+        self.match_btn.setEnabled(False)
+        self.confirm_camera_cb.setEnabled(False)
         self.match_btn.clicked.connect(self._match_camera_settings)
 
         df_layout.addWidget(self.detail_name)
@@ -130,9 +137,20 @@ class ReferencesScreen(QWidget):
     def _on_selection_changed(self) -> None:
         selected_rows = self.table.selectedItems()
         if not selected_rows:
+            self._clear_selection()
             return
-        ref = self.table.item(selected_rows[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        name_item = self.table.item(selected_rows[0].row(), 0)
+        if name_item is None:
+            self._clear_selection()
+            return
+        ref = name_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(ref, ReferenceSummary):
+            self._clear_selection()
+            self.bridge.status_message.emit("The selected reference entry is invalid.")
+            return
         self.selected_ref = ref
+        self.match_btn.setEnabled(True)
+        self.confirm_camera_cb.setEnabled(True)
         self.detail_name.setText(ref.name)
         self.detail_meta.setText(
             f"ID: {ref.id[:8]}...\n"
@@ -143,16 +161,41 @@ class ReferencesScreen(QWidget):
         )
         self.confirm_camera_cb.setChecked(False)
 
+    def _clear_selection(self) -> None:
+        self.selected_ref = None
+        self.match_btn.setEnabled(False)
+        self.confirm_camera_cb.setEnabled(False)
+        self.detail_name.setText("No reference selected")
+        self.detail_meta.setText("Select a reference from the table to view details.")
+
     def _match_camera_settings(self) -> None:
         if not self.selected_ref:
+            self.bridge.status_message.emit("Select a saved reference first.")
             return
-        cfg = self.bridge.config
+        if not self.confirm_camera_cb.isChecked():
+            self.bridge.status_message.emit(
+                "Confirm that the physical camera placement is unchanged before reusing this reference."
+            )
+            return
+
         try:
             cam_idx = int(self.selected_ref.camera)
-            cfg.camera = cam_idx
-        except ValueError:
-            pass
-        if self.selected_ref.side in ("left", "right"):
-            cfg.side = self.selected_ref.side  # type: ignore
+            cfg = Config.model_validate(
+                {
+                    **self.bridge.config.model_dump(),
+                    "camera": cam_idx,
+                    "side": self.selected_ref.side,
+                    "facing": self.selected_ref.facing,
+                }
+            )
+        except (ValueError, ValidationError) as error:
+            self.bridge.status_message.emit(
+                f"Cannot reuse this reference with the selected camera: {error}"
+            )
+            return
         self.bridge.update_config(cfg)
-        self.detail_meta.setText(self.detail_meta.text() + "\n\n✓ Camera settings matched successfully!")
+        self.detail_meta.setText(
+            self.detail_meta.text()
+            + "\n\nSettings selected. Camera profile and resolution compatibility "
+            "will be checked when practice starts."
+        )

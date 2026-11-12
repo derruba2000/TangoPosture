@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
+from pydantic import ValidationError
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -165,14 +167,21 @@ class SettingsScreen(QScrollArea):
     def _reset_defaults(self) -> None:
         default_cfg = Config()
         self.bridge.update_config(default_cfg)
-        self.cam_spin.setValue(default_cfg.camera)
-        self.side_combo.setCurrentText(default_cfg.side)
-        self.facing_combo.setCurrentText(default_cfg.facing)
-        self.mirror_cb.setChecked(default_cfg.mirror)
-        self.conf_spin.setValue(default_cfg.confidence)
-        self.bpm_spin.setValue(default_cfg.tango_bpm)
-        self.ollama_url.setText(default_cfg.ollama_base_url)
-        self.ollama_model.setText(default_cfg.ollama_model)
+        self._apply_config(default_cfg)
+
+    def _apply_config(self, cfg: Config) -> None:
+        self.cam_spin.setValue(cfg.camera)
+        self.side_combo.setCurrentText(cfg.side)
+        self.facing_combo.setCurrentText(cfg.facing)
+        self.mirror_cb.setChecked(cfg.mirror)
+        self.conf_spin.setValue(cfg.confidence)
+        self.smooth_spin.setValue(cfg.smoothing)
+        self.head_angle_spin.setValue(cfg.head_down_angle)
+        self.shoulder_spin.setValue(cfg.shoulder_raise_threshold)
+        self.beat_cb.setChecked(cfg.beat_tracking)
+        self.bpm_spin.setValue(cfg.tango_bpm)
+        self.ollama_url.setText(cfg.ollama_base_url)
+        self.ollama_model.setText(cfg.ollama_model)
 
     def _export_toml(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Export TOML Configuration", "settings.toml", "TOML (*.toml)")
@@ -182,8 +191,9 @@ class SettingsScreen(QScrollArea):
     def _import_toml(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import TOML Configuration", "", "TOML (*.toml)")
         if path:
-            self.bridge.import_settings_toml(Path(path))
-            cfg = self.bridge.config
-            self.cam_spin.setValue(cfg.camera)
-            self.side_combo.setCurrentText(cfg.side)
-            self.bpm_spin.setValue(cfg.tango_bpm)
+            try:
+                self.bridge.import_settings_toml(Path(path))
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError, ValidationError) as error:
+                self.bridge.status_message.emit(f"Could not import settings: {error}")
+                return
+            self._apply_config(self.bridge.config)

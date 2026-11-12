@@ -139,6 +139,37 @@ uv run tango-posture --help
 
 `uv sync --frozen` installs the dependency versions recorded in the lockfile. `models fetch` performs the explicit model download and checksum verification. After these setup steps, ordinary runs do not require a network connection.
 
+To open the PySide6 desktop interface, run `uv run tango-posture qt`. The equivalent command is `uv run tango-posture gui --qt`. The no-argument command and `uv run tango-posture gui` still open the legacy Tk interface.
+
+### Qt desktop workflows
+
+The Library lists saved practice archives and reports. **Open Local Video…**
+opens the selected file in Review without copying or modifying it. Saved reports
+can also be opened directly; their report text, source provenance and timestamps
+remain associated with the selected report. If a standalone report's linked
+video has moved, **Relink Report Video…** checks its SHA-256 identity and clears
+stale timing data when the content differs. **Export Video…** copies the
+currently selected video stream to a destination you choose.
+
+Review supports raw, overlay and (when archived) full-lines video streams,
+timestamp seeking, speed/frame-step controls and side-by-side comparison with
+a local video or calibration archive. Comparison follows the primary
+playhead's elapsed time; it does not calculate a biomechanical or musical
+alignment.
+
+Analytics reads saved local observations and events only. Click a chart or
+double-click a persisted event to seek a matching archived recording; seeking is
+unavailable when no archived frame timestamp covers that observation. Unknown
+periods remain gaps. The current persisted schema exposes three posture metric
+families, not a fourth unsupported measurement.
+
+AI Coach accepts a Markdown report or a `.tp`/`.tpc` archive report. It makes no
+Ollama request until **Analyze Selected Report** is explicitly clicked, streams
+the local model response, supports cancellation, and saves each result with the
+source report hash, model and endpoint. Results for a report changed during
+analysis are rejected. **Check Ollama** is also an explicit request to the
+configured Ollama endpoint.
+
 ### Set up the camera
 
 Use a fixed, approximately level camera and leave enough space in the frame for the whole body. Choose adequate lighting and an uncluttered background. Fitted clothing may make landmark estimation easier, but the application must abstain if visibility is inadequate regardless of clothing.
