@@ -329,6 +329,19 @@ class Application:
                     self.record_video,
                     self.record_overlay,
                     [float(row["timestamp"]) for row in self.frame_log],
+                    analytics={
+                        "max_gap": self.cfg.max_gap,
+                        "frame_timestamps": [float(row["timestamp"]) for row in self.frame_log],
+                        "frames": self.frame_log,
+                        "session": {
+                            "id": self.session.id,
+                            "status": status,
+                            "observations": self.session.rows,
+                            "summary": self.last_summary,
+                            "events": events,
+                            "max_gap": self.cfg.max_gap,
+                        } if self.session is not None else None,
+                    },
                 )
                 self.recording_saved = True
                 if self.display is not None:

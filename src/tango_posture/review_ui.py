@@ -1249,8 +1249,11 @@ class ReviewPanel(ttk.Frame):
             self.current_segment_index = int(selected_segment["index"])
             record.videos = {
                 label: self.archive.folder / selected_segment[key]
-                for label, key in (("Raw video", "video"), ("Overlay", "overlay"))
-                if selected_segment[key] is not None
+                for label, key in (
+                    ("Raw video", "video"), ("Overlay", "overlay"),
+                    ("Full lines + messages", "lines"),
+                )
+                if selected_segment.get(key) is not None
             }
         else:
             self.current_segment_index = None

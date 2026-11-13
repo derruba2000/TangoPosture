@@ -232,6 +232,12 @@ class MainWindow(QMainWindow):
                 screen.begin_calibration()
             if hasattr(screen, "refresh"):
                 screen.refresh()
+            if (
+                route is Route.LIBRARY
+                and isinstance(screen, LibraryScreen)
+                and payload == "import-url"
+            ):
+                screen.import_online_video()
             if route is Route.REVIEW and isinstance(screen, ReviewScreen):
                 if isinstance(payload, Path):
                     screen.load_archive(payload)

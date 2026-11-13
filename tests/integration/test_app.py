@@ -421,7 +421,7 @@ def test_archive_save_failure_preserves_recordings_and_closes_capture(
     workspace.mkdir()
     monkeypatch.setattr("tango_posture.app.mkdtemp", lambda **_: str(workspace))
 
-    def fail_save(*args):
+    def fail_save(*args, **kwargs):
         raise OSError("archive disk full")
 
     monkeypatch.setattr("tango_posture.app.append_segment", fail_save)

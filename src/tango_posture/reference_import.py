@@ -61,8 +61,10 @@ from .movement import (
     analyse_movement_observations,
     validate_movement_analysis,
 )
-from .overlay import MESSAGES, draw
+from .overlay import MESSAGES, draw, screen_point
+from .pose.constants import CONNECTIONS
 from .pose.mediapipe_backend import MediaPipeEstimator
+from .quality import reliable
 from .reports import write_markdown_report
 from .review import ReportRecord, update_report_metadata, write_metadata
 from .session import Session
@@ -1517,11 +1519,13 @@ def render_coach_frame_overlay(
     verbose_skeleton: bool = True,
     show_vertical_axis: bool = True,
     show_footer: bool = False,
+    lines_only: bool = False,
 ) -> np.ndarray:
     """Render the Open Practice Coach HUD (axis lines, skeleton, alerts, role, beats) on a frame.
 
     Uses the per-frame state saved by `analyse_imported_clip` and the live-coach `overlay.draw()`.
     Returns `image` unchanged when the frame has no saved coach state or sizes disagree.
+    `lines_only` draws reliable skeleton connections without labels, dots or alerts.
     """
     frames_map = coach_data.get("frames")
     if not isinstance(frames_map, dict):
@@ -1558,6 +1562,24 @@ def render_coach_frame_overlay(
                 )
         if pose_dict:
             poses.append(pose_dict)
+
+    if lines_only:
+        canvas = image.copy()
+        for pose in poses:
+            for a, b in CONNECTIONS:
+                if reliable(pose.get(a), cfg.confidence) and reliable(
+                    pose.get(b), cfg.confidence
+                ):
+                    pa, pb = pose[a], pose[b]
+                    cv2.line(
+                        canvas,
+                        screen_point(pa.x, pa.y, width, height, False),
+                        screen_point(pb.x, pb.y, width, height, False),
+                        (80, 220, 80),
+                        2,
+                        cv2.LINE_AA,
+                    )
+        return canvas
 
     def _opt(key: str) -> float | None:
         value = entry.get(key)

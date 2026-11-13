@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import queue
 import re
 import shutil
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from threading import Event, Thread
+from typing import Any
 from zipfile import BadZipFile
 
 import cv2
@@ -21,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSplitter,
     QTabWidget,
@@ -29,12 +34,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...archive import file_sha256, read_analytics, read_movement_analysis, store_analytics
+from ...movement import render_floor_guide, render_movement_overlay, validate_movement_analysis
+from ...reference_import import (
+    MAX_IMPORT_RANGE_SECONDS,
+    coach_notes_for_frame,
+    load_report_coach_data,
+    load_report_movement_data,
+    render_coach_frame_overlay,
+)
 from ...replay import time_label
 from ..components.video_stage import VideoStage
+from ..review_analysis import ReviewAnalysis, analyse_review_clip
 from ..review_playback import VIDEO_SUFFIXES, ReviewPlayback
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
-from ..theme import COLOR_TEXT_MUTED, COLOR_TEXT_PRIMARY
+from ..theme import (
+    COLOR_DANGER,
+    COLOR_SUCCESS,
+    COLOR_TEXT_MUTED,
+    COLOR_TEXT_PRIMARY,
+    COLOR_WARNING,
+)
 
 REPLAY_ERRORS = (OSError, ValueError, RuntimeError, BadZipFile, cv2.error)
 
@@ -62,14 +83,21 @@ class ReviewScreen(QWidget):
         self._clock = clock
         self._started_at = 0.0
         self._playback_rate = 1.0
+        self._coach_data: dict[str, Any] | None = None
+        self._movement_data: dict[str, Any] | None = None
+        self._analysis_events: queue.SimpleQueue[tuple[int, str, object]] = queue.SimpleQueue()
+        self._analysis_cancel: Event | None = None
+        self._analysis_thread: Thread | None = None
+        self._analysis_job_id = 0
+        self._active_analysis_job: int | None = None
         self.destroyed.connect(self._playback.close)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        layout.addWidget(splitter)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        layout.addWidget(self.splitter)
 
         # Center Video & Transport
         video_col = QWidget()
@@ -91,7 +119,7 @@ class ReviewScreen(QWidget):
         self.segment_combo.currentIndexChanged.connect(self._on_segment_changed)
         self.segment_combo.setEnabled(False)
 
-        open_btn = QPushButton("Open Video / Archive…")
+        open_btn = QPushButton("Open Library Archive…")
         open_btn.clicked.connect(self._open_file)
         self.relink_btn = QPushButton("Relink Report Video…")
         self.relink_btn.setEnabled(False)
@@ -100,9 +128,12 @@ class ReviewScreen(QWidget):
         self.export_btn.clicked.connect(self._export_video)
         self.export_btn.setEnabled(False)
 
-        self.analytics_btn = QPushButton("View Analytics")
+        self.analytics_btn = QPushButton("Analyze posture & movement")
         self.analytics_btn.setEnabled(False)
-        self.analytics_btn.setToolTip("Analytics are not available in this replay player.")
+        self.analytics_btn.setToolTip(
+            "Analyze the raw video in the background to add synchronized skeleton and posture insights."
+        )
+        self.analytics_btn.clicked.connect(self._start_posture_analysis)
 
         self.compare_cb = QCheckBox("Compare reference")
         self.compare_cb.setEnabled(False)
@@ -122,7 +153,6 @@ class ReviewScreen(QWidget):
         tb_layout.addWidget(self.compare_btn)
         tb_layout.addWidget(self.compare_cb)
         tb_layout.addStretch()
-        tb_layout.addWidget(self.analytics_btn)
         vc_layout.addWidget(top_bar)
         self.status_label = QLabel(
             "Open a local video or .tp practice archive. Video only (no audio)."
@@ -182,25 +212,74 @@ class ReviewScreen(QWidget):
         tr_layout.addWidget(self.speed_combo)
         vc_layout.addWidget(transport_card)
 
-        splitter.addWidget(video_col)
+        self.splitter.addWidget(video_col)
 
         # Right Inspector Panel
         inspector = QFrame()
         inspector.setProperty("class", "card")
         inspector.setMinimumWidth(300)
         inspector.setMaximumWidth(420)
+        self.inspector = inspector
         insp_layout = QVBoxLayout(inspector)
         insp_layout.setContentsMargins(14, 12, 14, 12)
 
         tabs = QTabWidget()
+        self.inspector_tabs = tabs
         # Tab 1: Frame Insights
         insights_tab = QWidget()
         it_layout = QVBoxLayout(insights_tab)
         it_layout.setContentsMargins(8, 10, 8, 10)
-        self.insights_text = QLabel("Synchronized frame insights are not available in this player.")
+        self.analysis_status = QLabel(
+            "Analyze a raw video to add synchronized posture insights. Analysis runs in the background."
+        )
+        self.analysis_status.setWordWrap(True)
+        self.analysis_status.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 11px;")
+        it_layout.addWidget(self.analytics_btn)
+        it_layout.addWidget(self.analysis_status)
+        self.show_coach_cb = QCheckBox("Skeleton / posture overlay")
+        self.show_pivots_cb = QCheckBox("Pivot rings")
+        self.show_steps_cb = QCheckBox("Step footprints")
+        self.lines_only_cb = QCheckBox("Lines only on floor")
+        for checkbox in (self.show_coach_cb, self.show_pivots_cb, self.show_steps_cb):
+            checkbox.setChecked(True)
+        for checkbox in (
+            self.show_coach_cb, self.show_pivots_cb, self.show_steps_cb, self.lines_only_cb
+        ):
+            checkbox.toggled.connect(self._refresh_overlay)
+            it_layout.addWidget(checkbox)
+
+        self.metric_values: dict[str, QLabel] = {}
+        for key, title in (
+            ("head_angle", "Head alignment"),
+            ("shoulder_elev_pct", "Shoulder height"),
+            ("axis_curve_smoothed", "Torso / hip alignment"),
+            ("knee_bend_deg", "Knee bend"),
+        ):
+            row = QHBoxLayout()
+            name_label = QLabel(title)
+            name_label.setStyleSheet(f"color: {COLOR_TEXT_MUTED};")
+            value_label = QLabel("Not observed")
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(name_label, 1)
+            row.addWidget(value_label)
+            it_layout.addLayout(row)
+            self.metric_values[key] = value_label
+
+        self.alerts_text = QLabel("Posture alerts will appear here when a frame is analyzed.")
+        self.alerts_text.setWordWrap(True)
+        self.alerts_text.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-weight: 600;")
+        it_layout.addWidget(self.alerts_text)
+
+        self.insights_text = QLabel(
+            "The original video remains unchanged. Analysis follows the same posture thresholds as live practice."
+        )
         self.insights_text.setWordWrap(True)
         self.insights_text.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 12px;")
         it_layout.addWidget(self.insights_text)
+        self.cancel_analysis_btn = QPushButton("Cancel analysis")
+        self.cancel_analysis_btn.setEnabled(False)
+        self.cancel_analysis_btn.clicked.connect(self._cancel_posture_analysis)
+        it_layout.addWidget(self.cancel_analysis_btn)
         it_layout.addStretch()
 
         # Tab 2: Report Markdown
@@ -222,15 +301,22 @@ class ReviewScreen(QWidget):
         rt_layout.addLayout(report_actions)
         rt_layout.addWidget(self.report_view)
 
-        tabs.addTab(insights_tab, "Insights")
+        insights_scroll = QScrollArea()
+        insights_scroll.setWidgetResizable(True)
+        insights_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        insights_scroll.setWidget(insights_tab)
+        tabs.addTab(insights_scroll, "Insights")
         tabs.addTab(report_tab, "Report")
         insp_layout.addWidget(tabs)
 
-        splitter.addWidget(inspector)
-        splitter.setSizes([720, 340])
+        self.splitter.addWidget(inspector)
+        self.splitter.setSizes([720, 340])
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._on_tick)
+        self._analysis_timer = QTimer(self)
+        self._analysis_timer.setInterval(100)
+        self._analysis_timer.timeout.connect(self._poll_posture_analysis)
         app = QApplication.instance()
         if app is not None:
             app.aboutToQuit.connect(self._release)
@@ -258,6 +344,8 @@ class ReviewScreen(QWidget):
                 self.report_view.setMarkdown(
                     self._link_report_timestamps(self._playback.report)
                 )
+                self._coach_data = load_report_coach_data(self._playback._report)
+                self._movement_data = load_report_movement_data(self._playback._report)
                 self.coach_btn.setEnabled(True)
                 self._set_relink_availability()
                 if self._playback.variants:
@@ -269,6 +357,7 @@ class ReviewScreen(QWidget):
                     )
             else:
                 self._populate_streams()
+            self._update_analysis_controls()
             if timestamp is not None:
                 self._show_frame(self._playback.frame_for_timestamp(timestamp))
             self.compare_btn.setEnabled(self._playback.reader is not None)
@@ -277,15 +366,9 @@ class ReviewScreen(QWidget):
             self._playback_error(error)
 
     def _open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open local video or practice archive",
-            "",
-            f"Video / report files ({' '.join('*' + s for s in VIDEO_SUFFIXES)} *.tp *.tpc *.md)"
-            ";;All files (*)",
-        )
-        if path:
-            self.load_archive(Path(path))
+        path = self.bridge.choose_library_archive(self, "Open Library archive")
+        if path is not None:
+            self.load_archive(path)
 
     def _set_relink_availability(self) -> None:
         report = self._playback._report
@@ -346,6 +429,10 @@ class ReviewScreen(QWidget):
         self.bridge.status_message.emit(f"Exported video to {destination}")
 
     def _on_segment_changed(self, index: int) -> None:
+        self._cancel_posture_analysis()
+        self._active_analysis_job = None
+        self._coach_data = None
+        self._movement_data = None
         self._reset_transport()
         self.report_view.clear()
         self.stream_combo.blockSignals(True)
@@ -354,10 +441,22 @@ class ReviewScreen(QWidget):
         self.stream_combo.setEnabled(False)
         try:
             self._playback.select_segment(index)
+            archive = self._playback.archive
+            if archive is not None:
+                analytics = read_analytics(archive.folder, index)
+                if analytics is not None:
+                    self._coach_data = analytics.get("coach_data")
+                    self._movement_data = analytics.get("movement_data")
+                movement = read_movement_analysis(archive.folder, index)
+                if movement is not None and self._movement_data is None:
+                    self._movement_data = validate_movement_analysis(
+                        movement, expected_segment_index=index
+                    )
             self.report_view.setMarkdown(self._link_report_timestamps(self._playback.report))
             self.coach_btn.setEnabled(self._playback._report is not None)
             self._set_relink_availability()
             self._populate_streams()
+            self._update_analysis_controls()
         except REPLAY_ERRORS as error:
             self._playback_error(error)
 
@@ -373,6 +472,10 @@ class ReviewScreen(QWidget):
 
     def _on_stream_changed(self, label: str) -> None:
         self._reset_transport()
+        if label not in ("Raw video", "Local video", "Source video"):
+            self.lines_only_cb.blockSignals(True)
+            self.lines_only_cb.setChecked(False)
+            self.lines_only_cb.blockSignals(False)
         try:
             reader = self._playback.select_variant(label)
             self.duration_sec = self._playback.duration()
@@ -385,6 +488,7 @@ class ReviewScreen(QWidget):
             self.step_forward_btn.setEnabled(True)
             self.scrubber.setEnabled(True)
             self.compare_btn.setEnabled(True)
+            self._update_analysis_controls()
             name = self.current_archive_path.name if self.current_archive_path else ""
             unavailable = [
                 stream
@@ -506,20 +610,18 @@ class ReviewScreen(QWidget):
             self.bridge.status_message.emit("Open a saved report first.")
 
     def _open_comparison(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose a reference video or archive",
-            "",
-            f"Video / practice files ({' '.join('*' + s for s in VIDEO_SUFFIXES)} *.tp *.tpc)"
-            ";;All files (*)",
-        )
-        if not path:
+        path = self.bridge.choose_library_archive(self, "Compare Library archive")
+        if path is None:
             return
+        self._load_comparison(path)
+
+    def _load_comparison(self, path: Path) -> None:
         self._comparison.close()
         try:
-            self._comparison.open(Path(path))
+            self._comparison.open(path)
             if self._comparison.archive is not None:
-                self._comparison.select_segment(0)
+                index = self._playback.selected_segment_index or 0
+                self._comparison.select_segment(min(index, self._comparison.segment_count - 1))
             label = "Raw video" if "Raw video" in self._comparison.variants else next(
                 iter(self._comparison.variants), ""
             )
@@ -578,6 +680,33 @@ class ReviewScreen(QWidget):
         if reader is None:
             return
         frame = reader.frame(index)
+        self._update_frame_insights(reader.index)
+        dynamic_stream = self.stream_combo.currentText() in (
+            "Raw video", "Local video", "Source video"
+        )
+        if dynamic_stream:
+            if self.lines_only_cb.isChecked():
+                frame = render_floor_guide(frame)
+            if self._coach_data is not None and self.show_coach_cb.isChecked():
+                frame = render_coach_frame_overlay(
+                    frame.copy(),
+                    self._coach_data,
+                    reader.index,
+                    self.bridge.config,
+                    verbose_skeleton=True,
+                    show_vertical_axis=True,
+                    show_footer=False,
+                    lines_only=self.lines_only_cb.isChecked(),
+                )
+            frame = render_movement_overlay(
+                frame,
+                self._movement_data,
+                reader.index,
+                reader.fps,
+                show_pivots=self.show_pivots_cb.isChecked(),
+                show_steps=self.show_steps_cb.isChecked(),
+                step_history_seconds=self.bridge.config.replay_step_history_seconds,
+            )
         height, width = frame.shape[:2]
         image = QImage(
             frame.data, width, height, frame.strides[0], QImage.Format.Format_BGR888
@@ -591,6 +720,225 @@ class ReviewScreen(QWidget):
         self.scrubber.setValue(reader.index)
         self.scrubber.blockSignals(False)
         self._update_time_label()
+
+    def _refresh_overlay(self) -> None:
+        reader = self._playback.reader
+        if reader is None:
+            return
+        if self.lines_only_cb.isChecked() and self.stream_combo.currentText() not in (
+            "Raw video", "Local video", "Source video"
+        ):
+            for label in ("Raw video", "Local video", "Source video"):
+                if label in self._playback.variants:
+                    self.stream_combo.setCurrentText(label)
+                    return
+            self.lines_only_cb.blockSignals(True)
+            self.lines_only_cb.setChecked(False)
+            self.lines_only_cb.blockSignals(False)
+            self.analysis_status.setText(
+                "Lines-only replay requires a raw/source video; baked overlay pixels cannot be removed."
+            )
+            return
+        try:
+            self._show_frame(reader.index)
+        except REPLAY_ERRORS as error:
+            self._playback_error(error)
+
+    def _analysis_video_path(self) -> Path | None:
+        for label in ("Raw video", "Local video", "Source video"):
+            path = self._playback.variants.get(label)
+            if path is not None and path.is_file():
+                return path
+        return None
+
+    def _update_analysis_controls(self) -> None:
+        thread = self._analysis_thread
+        running = thread is not None and thread.is_alive()
+        self.analytics_btn.setEnabled(self._analysis_video_path() is not None and not running)
+        self.cancel_analysis_btn.setEnabled(
+            self._analysis_cancel is not None and not self._analysis_cancel.is_set()
+        )
+
+    def _start_posture_analysis(self) -> None:
+        if self._analysis_thread is not None:
+            self._poll_posture_analysis()
+        reader = self._playback.reader
+        video_path = self._analysis_video_path()
+        if reader is None or video_path is None:
+            self.analysis_status.setText("Open a raw or local video before analyzing posture.")
+            return
+        if self._analysis_thread is not None and self._analysis_thread.is_alive():
+            return
+        selected_out = min(reader.duration, MAX_IMPORT_RANGE_SECONDS)
+        if selected_out <= 0:
+            self.analysis_status.setText("This video has no analyzable duration.")
+            return
+
+        self._analysis_job_id += 1
+        job_id = self._analysis_job_id
+        cancel_event = threading.Event()
+        self._analysis_cancel = cancel_event
+        self._active_analysis_job = job_id
+        self.analysis_status.setText("Preparing posture analysis…")
+        self.cancel_analysis_btn.setEnabled(True)
+        self.analytics_btn.setEnabled(False)
+        self._analysis_timer.start()
+        cfg = self.bridge.config.model_copy(deep=True)
+        archive_path = self.current_archive_path
+        segment_index = self._playback.selected_segment_index
+        timestamps = list(self._playback.timestamps) or [
+            frame / reader.fps for frame in range(reader.count)
+        ]
+
+        def report_progress(current: int, total: int, message: str) -> None:
+            self._analysis_events.put((job_id, "progress", (current, total, message)))
+
+        def work() -> None:
+            try:
+                video_sha256 = file_sha256(video_path)
+                coach_data = analyse_review_clip(
+                    video_path,
+                    cfg,
+                    selected_out=selected_out,
+                    progress_callback=report_progress,
+                    cancel_check=cancel_event.is_set,
+                )
+                if (
+                    not cancel_event.is_set() and archive_path is not None
+                    and archive_path.suffix.lower() == ".tp" and segment_index is not None
+                ):
+                    store_analytics(
+                        archive_path, segment_index,
+                        {"coach_data": coach_data.coach_data,
+                         "movement_data": coach_data.movement_data, "max_gap": cfg.max_gap,
+                         "frame_timestamps": timestamps},
+                        expected_video_sha256=video_sha256,
+                    )
+                event = "cancelled" if cancel_event.is_set() else "done"
+                self._analysis_events.put((job_id, event, coach_data))
+            except Exception as error:  # noqa: BLE001 - surface background analysis errors in the UI
+                event = "cancelled" if cancel_event.is_set() else "error"
+                self._analysis_events.put(
+                    (job_id, event, f"{type(error).__name__}: {error}")
+                )
+
+        self._analysis_thread = Thread(
+            target=work,
+            name="qt-review-posture-analysis",
+            daemon=True,
+        )
+        self._analysis_thread.start()
+
+    def _cancel_posture_analysis(self) -> None:
+        cancel_event = self._analysis_cancel
+        if cancel_event is None or cancel_event.is_set():
+            return
+        cancel_event.set()
+        self.analysis_status.setText("Canceling posture analysis…")
+        self.cancel_analysis_btn.setEnabled(False)
+
+    def _poll_posture_analysis(self) -> None:
+        thread = self._analysis_thread
+        finished = thread is not None and not thread.is_alive()
+        while True:
+            try:
+                job_id, event, payload = self._analysis_events.get_nowait()
+            except queue.Empty:
+                break
+            if job_id != self._active_analysis_job:
+                continue
+            if event == "progress" and isinstance(payload, tuple):
+                current, total, message = payload
+                self.analysis_status.setText(f"{message} ({current}/{total}%)")
+            elif event == "done" and isinstance(payload, ReviewAnalysis):
+                self._coach_data = payload.coach_data
+                self._movement_data = payload.movement_data
+                frames = payload.coach_data.get("frames")
+                frame_count = len(frames) if isinstance(frames, dict) else 0
+                self.analysis_status.setText(
+                    f"Analysis ready: {frame_count} frames, "
+                    f"{len(payload.movement_data.get('pivots', []))} pivots, "
+                    f"{len(payload.movement_data.get('steps', []))} steps. "
+                    "The review overlay and insights follow the current playback frame."
+                )
+                reader = self._playback.reader
+                if reader is not None:
+                    self._show_frame(reader.index)
+            elif event == "cancelled":
+                self.analysis_status.setText("Posture analysis canceled.")
+            elif event == "error":
+                self.analysis_status.setText(f"Posture analysis failed: {payload}")
+                self.bridge.status_message.emit(f"Posture analysis failed: {payload}")
+
+        if thread is not None and finished:
+            thread.join()
+            self._analysis_thread = None
+            self._analysis_cancel = None
+            self._active_analysis_job = None
+            self._analysis_timer.stop()
+            self._update_analysis_controls()
+
+    def _update_frame_insights(self, frame_index: int) -> None:
+        data = self._coach_data
+        if data is None:
+            for value in self.metric_values.values():
+                value.setText("Not observed")
+            self.alerts_text.setText("No synchronized posture analysis is loaded.")
+            self.alerts_text.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-weight: 600;")
+            self.insights_text.setText(
+                "Analyze the raw video to track the skeleton and measure posture. "
+                "Existing full-lines recordings retain their original overlay."
+            )
+            return
+
+        frames = data.get("frames")
+        entry = frames.get(str(frame_index)) if isinstance(frames, dict) else None
+        if not isinstance(entry, dict):
+            for value in self.metric_values.values():
+                value.setText("Not observed")
+            self.alerts_text.setText("No pose data is available for this frame.")
+            self.alerts_text.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-weight: 600;")
+            self.insights_text.setText(
+                "Analyze the raw video to track the skeleton and measure posture. "
+                "Existing full-lines recordings retain their original overlay."
+            )
+            return
+
+        def metric(name: str, suffix: str, scale: float = 1.0, signed: bool = False) -> str:
+            value = entry.get(name)
+            if not isinstance(value, int | float) or isinstance(value, bool):
+                return "Not observed"
+            number = float(value) * scale
+            format_spec = "+.1f" if signed else ".1f"
+            return f"{number:{format_spec}}{suffix}"
+
+        self.metric_values["head_angle"].setText(metric("head_angle", "°", signed=True))
+        self.metric_values["shoulder_elev_pct"].setText(
+            metric("shoulder_elev_pct", "%", signed=True)
+        )
+        self.metric_values["axis_curve_smoothed"].setText(
+            metric("axis_curve_smoothed", "%", scale=100.0, signed=True)
+        )
+        self.metric_values["knee_bend_deg"].setText(metric("knee_bend_deg", "°"))
+
+        message = entry.get("message")
+        poses = entry.get("poses")
+        if isinstance(message, str) and message.strip():
+            self.alerts_text.setText(message.strip())
+            self.alerts_text.setStyleSheet(f"color: {COLOR_DANGER}; font-weight: 600;")
+        elif not poses:
+            self.alerts_text.setText("No dancer detected; posture alerts are unavailable.")
+            self.alerts_text.setStyleSheet(f"color: {COLOR_WARNING}; font-weight: 600;")
+        else:
+            self.alerts_text.setText("No active posture alert on this frame.")
+            self.alerts_text.setStyleSheet(f"color: {COLOR_SUCCESS}; font-weight: 600;")
+
+        notes = coach_notes_for_frame(data, frame_index)
+        self.insights_text.setText(
+            "\n".join(notes)
+            if notes
+            else "Frame-level metric notes are not available for this sample."
+        )
 
     def _update_time_label(self) -> None:
         self.time_label.setText(
@@ -623,6 +971,10 @@ class ReviewScreen(QWidget):
         self.status_label.setText(f"Replay unavailable: {error}")
 
     def _release(self) -> None:
+        self._cancel_posture_analysis()
+        self._active_analysis_job = None
+        self._coach_data = None
+        self._movement_data = None
         self._reopen_path = None
         self._reset_transport()
         self._playback.close()
@@ -641,6 +993,11 @@ class ReviewScreen(QWidget):
             combo.setEnabled(False)
         self.report_view.clear()
         self.coach_btn.setEnabled(False)
+        self._update_frame_insights(0)
+        self.analysis_status.setText(
+            "Analyze a raw video to add synchronized posture insights. Analysis runs in the background."
+        )
+        self._update_analysis_controls()
         self.status_label.setText("Playback closed. Open a video or .tp archive to replay.")
 
     def hideEvent(self, event: QHideEvent) -> None:

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from itertools import pairwise
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
@@ -21,14 +24,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...archive import read_manifest
 from ...domain import METRICS, UNITS
 from ..analytics_data import (
+    FRAME_METRICS,
     MetricData,
     SessionData,
     finite_number,
-    list_sessions,
-    load_session,
-    recordings_for_session,
+    load_archive_dataset,
 )
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
@@ -131,7 +134,7 @@ class AnalyticsScreen(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
-        title = QLabel("Persisted Session Analytics")
+        title = QLabel("Archived Recording Analytics")
         title.setProperty("class", "title")
         layout.addWidget(title)
         subtitle = QLabel(
@@ -144,10 +147,10 @@ class AnalyticsScreen(QWidget):
 
         toolbar = QHBoxLayout()
         self.session_combo = QComboBox()
-        self.session_combo.setAccessibleName("Saved session dataset")
+        self.session_combo.setAccessibleName("Library archive and recording analytics")
         self.session_combo.currentIndexChanged.connect(self._select_session)
         toolbar.addWidget(self.session_combo, 1)
-        refresh_btn = QPushButton("Refresh sessions")
+        refresh_btn = QPushButton("Refresh archives")
         refresh_btn.clicked.connect(self.refresh)
         toolbar.addWidget(refresh_btn)
         self.align_btn = QPushButton("Align Time Series")
@@ -184,12 +187,14 @@ class AnalyticsScreen(QWidget):
         cards = QVBoxLayout(content)
         self.charts: dict[str, MetricChart] = {}
         self.coverage_labels: dict[str, QLabel] = {}
-        for metric in METRICS:
+        for metric in (*METRICS, *FRAME_METRICS):
             card = QFrame()
             card.setProperty("class", "card")
             card_layout = QVBoxLayout(card)
             label = QLabel(
                 f"{METRIC_NAMES[metric]} — smoothed delta ({UNITS[metric].replace('_', ' ')})"
+                if metric in METRICS
+                else f"{FRAME_METRICS[metric][0]} — measurement ({FRAME_METRICS[metric][1]})"
             )
             card_layout.addWidget(label)
             coverage = QLabel()
@@ -210,7 +215,7 @@ class AnalyticsScreen(QWidget):
         self.recordings = []
         self.state_label.setText(message)
         self.event_table.setRowCount(0)
-        for metric in METRICS:
+        for metric in self.charts:
             self.charts[metric].set_data(None)
             self.coverage_labels[metric].setText("Coverage: Unknown · Events: Unknown")
 
@@ -218,17 +223,21 @@ class AnalyticsScreen(QWidget):
         selected = self.session_combo.currentData()
         self.session_combo.blockSignals(True)
         self.session_combo.clear()
-        self.session_combo.addItem("Select a saved session…", None)
-        message = "Select a saved session to view persisted observations and coverage."
+        self.session_combo.addItem("Select a Library recording…", None)
+        message = "Select a Library recording to load analytics from its archive."
         try:
-            sessions = list_sessions(Path(self.bridge.config.data_dir))
-            for identifier, label in sessions:
-                self.session_combo.addItem(label, identifier)
-            if not sessions:
-                message = (
-                    "No saved sessions. Save a practice session with metric observations first."
-                )
-        except (OSError, sqlite3.Error, ValueError) as exc:
+            archives = self.bridge.list_library_archives()
+            for archive in archives:
+                if archive["path"].suffix.lower() != ".tp":
+                    continue
+                manifest = read_manifest(archive["path"])
+                for index, _ in enumerate(manifest["segments"]):
+                    self.session_combo.addItem(
+                        f"{archive['name']} · Recording {index:02d}", (archive["path"], index)
+                    )
+            if self.session_combo.count() == 1:
+                message = "No Library practice archives. Import or save a .tp recording first."
+        except (OSError, sqlite3.Error, ValueError, BadZipFile) as exc:
             message = f"Analytics unavailable: {exc}"
         index = self.session_combo.findData(selected) if selected else 0
         self.session_combo.setCurrentIndex(max(0, index))
@@ -239,21 +248,34 @@ class AnalyticsScreen(QWidget):
             self._select_session()
 
     def _select_session(self) -> None:
-        identifier = self.session_combo.currentData()
-        self._clear("Select a saved session to view persisted observations and coverage.")
-        if not identifier:
+        selected = self.session_combo.currentData()
+        self._clear("Select a Library recording to view stored analytics.")
+        if not selected:
             return
+        path, index = selected
         try:
-            dataset = load_session(Path(self.bridge.config.data_dir), identifier)
-        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+            dataset = load_archive_dataset(path, index)
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, BadZipFile) as exc:
             self._clear(f"No compatible dataset: {exc}")
             return
         self.dataset = dataset
         try:
-            self.recordings = recordings_for_session(
-                Path(self.bridge.config.data_dir), dataset.identifier
-            )
-        except (OSError, sqlite3.Error, ValueError) as exc:
+            manifest = read_manifest(path)
+            with ZipFile(path) as archive:
+                metadata = json.loads(archive.read(manifest["segments"][index]["metadata"]))
+            if not isinstance(metadata, dict):
+                raise TypeError("Invalid archived recording metadata")
+            timestamps = metadata.get("frame_timestamps")
+            if (
+                not isinstance(timestamps, list)
+                or any(
+                    finite_number(value) is None or value < 0 for value in timestamps
+                )
+                or any(earlier >= later for earlier, later in pairwise(timestamps))
+            ):
+                raise ValueError("Invalid archived recording frame timeline")
+            self.recordings = [(path, index, timestamps)]
+        except (OSError, sqlite3.Error, ValueError, TypeError, KeyError, BadZipFile) as exc:
             self.recordings = []
             self.bridge.status_message.emit(f"Session video navigation unavailable: {exc}")
         time_end = max(
@@ -294,6 +316,9 @@ class AnalyticsScreen(QWidget):
                 f"Valid coverage: {coverage} · Valid: {valid} · Unknown: {unknown} · "
                 f"Delta samples: {available}/{len(data.points)} · "
                 f"Persisted events: {data.event_count} ({data.open_event_count} open)"
+                if metric in METRICS else
+                f"Stored measurement samples: {available}/{len(data.points)}. "
+                "Missing observations remain unknown; these are not posture scores."
             )
 
     def _seek_to_recording(self, timestamp: float) -> None:

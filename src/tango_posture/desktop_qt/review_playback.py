@@ -87,6 +87,11 @@ class ReviewPlayback:
                     raise ValueError(f"Missing archived {label.lower()}")
                 self.variants[label] = path
         overlay_member = segment.get("overlay")
+        lines_member = segment.get("lines")
+        if lines_member == f"lines_{index:02d}.mp4":
+            lines_path = self.archive.folder / lines_member
+            if lines_path.is_file():
+                self.variants["Full lines + messages"] = lines_path
         if overlay_member:
             lines_path = self.archive.folder / f"{Path(overlay_member).stem}_lines.mp4"
             if lines_path.is_file():

@@ -148,30 +148,73 @@ Qt shows the TangoPosture splash screen for three seconds at startup. Select
 and usage information. **Help & Guide** renders the same styled offline manual
 as Tk, with hierarchical contents and searchable, highlighted matches.
 
-The Library lists saved practice archives and reports. **Open Local Video…**
-opens the selected file in Review without copying or modifying it. Saved reports
-can also be opened directly; their report text, source provenance and timestamps
-remain associated with the selected report. If a standalone report's linked
-video has moved, **Relink Report Video…** checks its SHA-256 identity and clears
-stale timing data when the content differs. **Export Video…** copies the
-currently selected video stream to a destination you choose.
+The Library lists practice `.tp` and reference `.tpc` archives. **Rename** saves
+the display name inside the archive without changing its filename. **Delete**
+asks for confirmation before moving the archive, including its recordings and
+analytics, to the operating system's Trash; original imported media and legacy
+reports are retained. **Import & Analyze Video…** packages a selected local clip
+into a portable `.tp` without modifying the source video. Imports are available
+only through Library. **Migrate Legacy Data** copies loose reports with available
+media and compatible database analytics into archives, retains the originals,
+and reports unavailable media or incompatible data. Repeating migration does
+not overwrite an already migrated report. **Export Video…** in Review copies
+the currently selected stream to a destination you choose.
 
 Settings are organized into the same groups used by the Tk interface, covering
 camera and view, calibration, tracking, movement, music, replay and Ollama.
 **Apply Settings** validates and applies changes for the current app session;
 use **Export TOML…** to save them to a configuration file.
 
+Calibration and Live Practice use the shared pose pipeline: the video shows
+skeleton tracking and the inspector reports head, shoulder, torso/hip and knee
+measurements, with the configured timed posture alerts. Measurements that
+cannot be observed remain unavailable rather than being presented as good.
+
 Review supports raw, overlay and (when archived) full-lines video streams,
 timestamp seeking, speed/frame-step controls and side-by-side comparison with
-a local video or calibration archive. Comparison follows the primary
+a practice or reference archive from Library. **Open Library Archive…** and
+**Open Comparison…** list only Library `.tp`/`.tpc` entries, not loose media.
+Comparison follows the primary
 playhead's elapsed time; it does not calculate a biomechanical or musical
-alignment.
+alignment. For a raw or local video, click **Analyze posture & movement** to run a
+cancellable background analysis of up to the first two minutes. The resulting
+skeleton overlay, head/shoulder/torso-hip/knee measurements and posture alerts
+stay synchronized with the current frame. The analysis uses the same thresholds
+as live practice, does not modify the raw video, and saves results inside the
+selected `.tp` recording so they return when reopened. Archived baked video
+streams remain unchanged.
 
-Analytics reads saved local observations and events only. Click a chart or
-double-click a persisted event to seek a matching archived recording; seeking is
-unavailable when no archived frame timestamp covers that observation. Unknown
-periods remain gaps. The current persisted schema exposes three posture metric
-families, not a fourth unsupported measurement.
+Enable **Pivot rings** and **Step footprints** to display the same
+confidence-qualified movement evidence as Tk. Existing report/archive movement
+data is loaded when available. Counts of zero mean no qualifying movement was
+detected, not that an overlay is hidden. **Lines only on floor** switches to
+the raw/source stream and replaces the dancer pixels with a neutral floor,
+drawing only skeleton lines and the selected movement marks, without posture
+messages. **Open Comparison…** opens the selected Library archive's raw video
+(or an available archived stream when raw is absent) in the second pane.
+There is no comparison-stream selector; the primary stream selector and layer
+toggles let you compare overlays or lines against the comparison video.
+
+**Import YouTube / Facebook…** is available only in Library.
+Enter a supported HTTPS YouTube video or Facebook Reel URL, an optional title,
+and a clip range of up to 120 seconds. The shared Tk import worker downloads,
+analyzes and packages the clip, report and source provenance into a `.tp`, then
+opens the archive in Review.
+Imports require network access and `yt-dlp`; failures and cancellation are shown
+explicitly. Only import videos you have permission to use. Ordinary local review
+remains offline.
+
+Analytics selects a Library `.tp` recording and reads its stored analytics,
+not the session database. Each recording uses a matching index:
+`video_00.mp4`, `overlay_00.mp4`, `lines_00.mp4` (when available),
+`report_00.md` and `analytics_00.json`; subsequent recordings use `_01`, `_02`,
+and so on. Stored head, shoulder, knee and torso/hip measurements are shown
+separately from the three calibrated posture metric families. Uncalibrated clips
+do not acquire reference scores or fabricated coverage. Click a chart or
+double-click a persisted event to seek that archive recording; seeking is
+unavailable when no archived frame timestamp covers the observation. Unknown
+periods remain gaps. Portable archived analytics do not require the original
+database. Older full-lines archive names remain readable.
 
 AI Coach accepts a Markdown report or a `.tp`/`.tpc` archive report. It makes no
 Ollama request until **Analyze Selected Report** is explicitly clicked, streams

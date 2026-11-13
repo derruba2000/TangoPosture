@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
-from ..archive import practice_directory, read_manifest
+from ..archive import practice_directory, read_analytics, read_manifest
 from ..domain import METRIC_VERSION, METRICS
 
 Point = tuple[float, float | None]
@@ -125,12 +125,19 @@ def load_session(data_dir: Path, identifier: str) -> SessionData:
             "FROM events WHERE session_id=? ORDER BY onset,id",
             (identifier,),
         ).fetchall()
-        event_counts = db.execute(
-            "SELECT metric,COUNT(*) AS total,SUM(end IS NULL) AS open_count "
-            "FROM events WHERE session_id=? GROUP BY metric",
-            (identifier,),
-        ).fetchall()
 
+    return project_session(
+        identifier, row["status"], rows, events, summary, max_gap,
+    )
+
+
+def project_session(
+    identifier: str, status: str, rows: list[Any], events: list[Any],
+    summary: dict[str, Any], max_gap: float | None,
+) -> SessionData:
+    if any(finite_number(observation["timestamp"]) is None for observation in rows):
+        raise ValueError("Selected session contains an invalid observation timestamp.")
+    rows = sorted(rows, key=lambda observation: (observation["timestamp"], observation["metric"]))
     if not rows:
         raise ValueError("Selected session has no compatible persisted metric observations.")
     origin = finite_number(rows[0]["timestamp"])
@@ -173,9 +180,10 @@ def load_session(data_dir: Path, identifier: str) -> SessionData:
                 event["end_reason"] if isinstance(event["end_reason"], str) else None,
             )
         )
-    counts = {
-        event["metric"]: (event["total"], event["open_count"]) for event in event_counts
-    }
+    counts: dict[str, tuple[int, int]] = {}
+    for event in persisted_events:
+        total, opened = counts.get(event.metric, (0, 0))
+        counts[event.metric] = total + 1, opened + int(event.end is None)
     metrics = {}
     for metric, own in points.items():
         segments: list[list[tuple[float, float]]] = []
@@ -195,7 +203,7 @@ def load_session(data_dir: Path, identifier: str) -> SessionData:
         metrics[metric] = MetricData(own, segments, details, count, open_count)
     return SessionData(
         identifier,
-        row["status"],
+        status,
         metrics,
         finite_number(summary.get("active_duration")),
         max_gap,
@@ -204,6 +212,116 @@ def load_session(data_dir: Path, identifier: str) -> SessionData:
     )
 
 
+def session_payload(data_dir: Path, identifier: str) -> dict[str, Any]:
+    dataset = load_session(data_dir, identifier)
+    with closing(_connect(data_dir)) as db:
+        row = db.execute("SELECT summary FROM sessions WHERE id=?", (identifier,)).fetchone()
+        observations = [
+            dict(item) for item in db.execute(
+                "SELECT timestamp,metric,delta,quality_state,state FROM observations "
+                "WHERE session_id=? ORDER BY timestamp,metric", (identifier,),
+            )
+        ]
+    return {
+        "id": identifier, "status": dataset.status,
+        "observations": observations, "summary": _object(row["summary"]),
+        "max_gap": dataset.max_gap,
+        "events": [
+            {"id": event.identifier, "metric": event.metric, "onset": event.onset,
+             "detection": event.detection, "end": event.end,
+             "peak_deviation": event.peak_deviation, "end_reason": event.end_reason}
+            for event in dataset.events
+        ],
+    }
+
+
+def load_archive_session(path: Path, index: int) -> SessionData:
+    payload = read_analytics(path, index)
+    if payload is None:
+        raise ValueError("This recording has no stored analytics. Analyze it in Review or migrate legacy data.")
+    session = payload.get("session")
+    if not isinstance(session, dict):
+        raise TypeError("No reference-relative analytics were stored for this recording.")
+    if not isinstance(session.get("status"), str) or session["status"] == "running":
+        raise ValueError("Archived session is not finalized or has an invalid status")
+    summary = session.get("summary") or {}
+    if not isinstance(summary, dict) or summary.get("schema_version", 1) != 1:
+        raise ValueError("Unsupported archived analytics summary")
+    rows = session.get("observations")
+    events = session.get("events") or []
+    if not isinstance(rows, list) or not isinstance(events, list):
+        raise TypeError("Invalid archived analytics observations or events")
+    return project_session(
+        str(session.get("id") or f"{path.name}:{index}"),
+        str(session.get("status", "completed")), rows, events, summary,
+        gap if (gap := finite_number(session.get("max_gap"))) is not None and gap > 0 else None,
+    )
+
+
+FRAME_METRICS = {
+    "head_angle": ("Head alignment", "degrees", 1.0),
+    "shoulder_elev_pct": ("Shoulder height", "% raised", 1.0),
+    "knee_bend_deg": ("Knee bend", "degrees", 1.0),
+    "axis_curve_smoothed": ("Torso / hip offset", "%", 100.0),
+}
+
+
+def load_archive_dataset(path: Path, index: int) -> SessionData:
+    payload = read_analytics(path, index)
+    if payload is None:
+        raise ValueError("No stored analytics for this recording. Analyze in Review or migrate legacy data.")
+    if isinstance(payload.get("session"), dict):
+        dataset = load_archive_session(path, index)
+    else:
+        dataset = SessionData(
+            f"{path.name}:{index:02d}", "archived",
+            {key: MetricData([], [], {}, 0, 0) for key in METRICS},
+            None, finite_number(payload.get("max_gap")), 0.0, [],
+        )
+    coach = payload.get("coach_data")
+    entries = coach.get("frames", {}) if isinstance(coach, dict) else {}
+    if not entries:
+        entries = {str(i): entry for i, entry in enumerate(payload.get("frames") or [])}
+    timestamps = payload.get("frame_timestamps") or []
+    origin = (
+        dataset.origin_timestamp if isinstance(payload.get("session"), dict)
+        else float(timestamps[0]) if timestamps else dataset.origin_timestamp
+    )
+    for key, (_, _, scale) in FRAME_METRICS.items():
+        points: list[Point] = []
+        for frame, entry in sorted(entries.items(), key=lambda item: int(item[0])):
+            if not isinstance(entry, dict):
+                raise TypeError("Invalid archived frame analytics")
+            frame_index = int(frame)
+            timestamp = (
+                finite_number(timestamps[frame_index]) if frame_index < len(timestamps)
+                else finite_number(entry.get("timestamp"))
+            )
+            value = finite_number(entry.get(key))
+            if key == "axis_curve_smoothed" and value is None:
+                value = finite_number(entry.get("axis_curve_ratio"))
+            if timestamp is not None:
+                points.append((timestamp - origin, value * scale if value is not None else None))
+        segments: list[list[tuple[float, float]]] = []
+        current: list[tuple[float, float]] = []
+        for timestamp, value in points:
+            if value is None:
+                current = []
+                continue
+            if (
+                not current or dataset.max_gap is None
+                or timestamp - current[-1][0] > dataset.max_gap
+            ):
+                current = []
+                segments.append(current)
+            current.append((timestamp, value))
+        dataset.metrics[key] = MetricData(points, segments, {}, 0, 0)
+    if not isinstance(payload.get("session"), dict):
+        return SessionData(
+            dataset.identifier, dataset.status, dataset.metrics, dataset.active_duration,
+            dataset.max_gap, origin, dataset.events,
+        )
+    return dataset
 def recordings_for_session(data_dir: Path, identifier: str) -> list[tuple[Path, int, list[float]]]:
     """Find archived recording segments whose report identifies this persisted session."""
     folder = practice_directory(str(data_dir))

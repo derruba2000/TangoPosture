@@ -206,6 +206,7 @@ def read_report(path: Path) -> ReportRecord:
                 ("Raw video", "raw_video"),
                 ("Overlay", "overlay_video"),
                 ("Source video", "source_video"),
+                ("Full lines + messages", "lines_video"),
             ):
                 value = data.get(key)
                 if value is not None and not isinstance(value, str):

@@ -7,32 +7,40 @@ Date: 1 November 2026 | Version: 0.1.0 | Target environment: Python 3.11 on macO
 The PySide6 entry point (`uv run tango-posture qt`) now connects Live Practice
 to the existing application worker, supports explicit calibration acceptance,
 and provides real archive/video Review, synchronized comparison, timestamp
-seeking, frame stepping, speed control, report-to-Coach handoff, local video
-export, report relinking, persisted Analytics charts/events, and an explicitly
-invoked Ollama Coach. Settings now expose the shared Tk configuration groups
-in the Qt interface, the navigation rail has a custom vector icon for every
-destination, and startup/About/Help match the Tk desktop experience. Coach
-responses stream on a worker thread, are cancellable, and are saved against a
-SHA-256 report digest; a changed source report is discarded rather than saved.
+seeking, frame stepping, speed control, on-demand background posture analysis
+with synchronized skeleton, metric and alert insights, report-to-Coach handoff,
+local video export, archive-contained Analytics charts/events, and an
+explicitly invoked Ollama Coach. Settings now expose the shared Tk
+configuration groups in the Qt interface, the navigation rail has a custom
+vector icon for every destination, and startup/About/Help match the Tk desktop
+experience. Coach responses stream on a worker thread, are cancellable, and
+are saved against a SHA-256 report digest; a changed source report is discarded
+rather than saved.
 
 Latest automated verification:
 
-- `uv run --frozen pytest -q`: **322 passed**.
+- `uv run --frozen pytest -q`: **345 passed**.
 - `uv run --frozen ruff check .`: passed.
-- `uv run --frozen mypy src`: passed across 69 source files.
+- `uv run --frozen mypy src`: passed across 71 source files.
 - `git diff --check`: passed.
 
 Remaining desktop scope and acceptance limits:
 
-- Library opens local video files without copying or changing them and lists
-  saved reports/archives. Local videos can also be analyzed as bounded
-  movement-review clips with cancellation and SHA-256 provenance, then opened
-  in Review. URL downloads and soundtrack analysis are not exposed by the Qt
-  Library; pivot/step overlays are only available where generated evidence
-  supports them.
-- Analytics deliberately displays the three posture metric families actually
-  persisted by schema v1. Pivot/step histories and temporal alignment are not
-  inferred; alignment stays disabled unless compatible persisted data exists.
+- Library catalogues `.tp` practices and `.tpc` references. Display-name changes
+  persist in manifests; confirmed deletion moves archives to Trash. Local and
+  YouTube/Facebook Reel imports are Library-only and package matching indexed
+  raw, overlay, floor-lines, report and analytics members without changing the
+  original media. Legacy migration copies compatible reports/database evidence,
+  retains originals, reports failures, and is idempotent for migrated reports.
+  Soundtrack analysis is not exposed by the Qt Library.
+- Review archive/comparison pickers are restricted to Library entries. The
+  comparison-stream selector is removed. Posture/movement reanalysis persists
+  to `analytics_XX.json` after verifying the archived raw-video hash. Pivot rings,
+  step footprints and lines-only floor rendering retain the shared algorithms.
+- Analytics reads each selected `.tp` recording's stored evidence without the
+  database. Four stored frame measurements remain separate from the three
+  reference-relative metric families and do not fabricate calibrated coverage.
+  Temporal alignment remains unavailable.
 - Reference comparison synchronizes by elapsed playback time; it does not
   calculate or claim a semantic/biomechanical alignment.
 - Physical camera/microphone validation, >1-hour soak, native accessibility and

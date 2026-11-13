@@ -99,7 +99,7 @@ class ServiceBridge(QObject):
         return list(results.values())
 
     def list_practices(self) -> list[dict[str, Any]]:
-        """List practice archives (.tp) and reports."""
+        """List practice archives (.tp) using their persisted display names."""
         from ..archive import practice_directory, read_manifest
 
         folder = practice_directory(self.cfg.data_dir)
@@ -110,16 +110,47 @@ class ServiceBridge(QObject):
                     manifest = read_manifest(archive_path)
                     segments = manifest.get("segments", [])
                     items.append({
-                        "name": archive_path.stem,
+                        "name": manifest.get("name", archive_path.stem),
                         "path": archive_path.resolve(),
                         "kind": ArchiveKind.PRACTICE,
                         "created_at": manifest.get("created_at_utc", ""),
                         "segments_count": len(segments),
                         "segments": segments,
                     })
-                except (OSError, ValueError, KeyError):
-                    continue
+                except (OSError, ValueError, KeyError) as error:
+                    self.status_message.emit(f"Library archive unavailable: {archive_path.name}: {error}")
         return items
+
+    def list_library_archives(self) -> list[dict[str, Any]]:
+        from ..archive import calibration_directory, read_manifest
+
+        items = self.list_practices()
+        folder = calibration_directory(self.cfg.data_dir)
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.tpc")):
+                try:
+                    manifest = read_manifest(path)
+                    items.append({
+                        "name": manifest.get("name", path.stem),
+                        "path": path.resolve(),
+                        "kind": ArchiveKind.CALIBRATION,
+                        "created_at": manifest.get("created_at_utc", ""),
+                        "segments_count": len(manifest["segments"]),
+                    })
+                except (OSError, ValueError) as error:
+                    self.status_message.emit(f"Library archive unavailable: {path.name}: {error}")
+        return items
+
+    def choose_library_archive(self, parent: Any, title: str) -> Path | None:
+        from PySide6.QtWidgets import QInputDialog
+
+        items = self.list_library_archives()
+        if not items:
+            self.status_message.emit("Library is empty. Import a video through Library first.")
+            return None
+        labels = [f"{item['name']} — {item['path'].name}" for item in items]
+        selected, accepted = QInputDialog.getItem(parent, title, "Library archive:", labels, 0, False)
+        return items[labels.index(selected)]["path"] if accepted else None
 
     def list_reports(self) -> list[Path]:
         from ..review import report_directory

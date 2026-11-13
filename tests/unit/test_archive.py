@@ -12,9 +12,12 @@ from tango_posture.archive import (
     append_segment,
     extract_segment_video,
     file_sha256,
+    read_analytics,
     read_manifest,
     read_movement_analysis,
+    rename_archive,
     save_calibration_archive,
+    store_analytics,
     store_movement_analysis,
 )
 from tango_posture.calibration import load_calibration_file, save_calibration_file
@@ -70,6 +73,47 @@ def test_failed_append_preserves_existing_practice(tmp_path):
     with pytest.raises(FileNotFoundError):
         append_segment(archive, report, tmp_path / "missing.mp4", overlay, [1.0])
     assert archive.read_bytes() == before
+
+
+def test_rename_and_hash_checked_analytics_preserve_members(tmp_path):
+    path, report, video = (tmp_path / name for name in ("practice.tp", "report.md", "video.mp4"))
+    report.write_text("# Report")
+    video.write_bytes(b"source video")
+    append_segment(path, report, video, None, [0.0], analytics={"frames": []})
+    with ZipFile(path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist() if name != "manifest.json"}
+    rename_archive(path, "Evening practice")
+    assert read_manifest(path)["name"] == "Evening practice"
+    with ZipFile(path) as archive:
+        assert all(archive.read(name) == content for name, content in members.items())
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="changed"):
+        store_analytics(path, 0, {"frames": []}, expected_video_sha256="incorrect")
+    assert path.read_bytes() == before
+    store_analytics(
+        path, 0, {"coach_data": {"frames": {"0": {"head_angle": 5}}}},
+        expected_video_sha256=file_sha256(video),
+    )
+    assert read_analytics(path, 0)["coach_data"]["frames"]["0"]["head_angle"] == 5
+
+
+@pytest.mark.parametrize("payload", [
+    {"frame_timestamps": [0.1, 0.0]},
+    {"frame_timestamps": [0.0, 0.0]},
+    {"frame_timestamps": [True]},
+    {"frame_timestamps": [-0.1]},
+    {"coach_data": {"frames": {"-1": {}}}},
+    {"frame_timestamps": [0.0], "coach_data": {"frames": {"1": {}}}},
+    {"session": "invalid"},
+])
+def test_invalid_analytics_cannot_replace_archive(tmp_path, payload):
+    path, report = tmp_path / "practice.tp", tmp_path / "report.md"
+    report.write_text("# Report")
+    append_segment(path, report, None, None, [0.0])
+    before = path.read_bytes()
+    with pytest.raises((ValueError, TypeError), match="Invalid"):
+        store_analytics(path, 0, payload)
+    assert path.read_bytes() == before
 
 
 def test_saved_analysis_stays_in_the_practice_archive(tmp_path):
