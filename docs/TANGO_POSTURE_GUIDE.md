@@ -1053,10 +1053,10 @@ In **Library**, use **Import & Analyze Video…** for local clips or
   - Online imports validate the provider URL, then use `yt-dlp` to download before analysis. Network access is required only for these explicit downloads and configured Ollama requests, not ordinary local review.
 - **Analysis and storage**:
   - Imports produce confidence-qualified posture observations plus pivot and step evidence without requiring a reference calibration. These are not reference-relative scores.
-  - The selected range is copied into a portable `.tp` with indexed raw, overlay, lines, report and analytics members. Original media remains unchanged; frame indices are rebased consistently to the packaged clip.
+  - The selected range is copied into a portable `.tpr` by default, or `.tp` when import-as-reference is unchecked, with indexed raw, overlay, lines, report and analytics members. Original media remains unchanged; frame indices are rebased consistently to the packaged clip.
   - Source SHA-256, selected bounds and online provenance are retained. The archive's playback no longer depends on the original loose video path.
 - **Comparison**:
-  - **Open Comparison…** in Review chooses a `.tp` or `.tpc` from Library and synchronizes its video by elapsed playback time.
+  - **Open Comparison…** in Review chooses a replayable `.tp`, `.tpr` or legacy `.tpc` from Library and synchronizes its video by elapsed playback time; profile-only `.tpc` files are not offered as videos.
   - Musical/biomechanical alignment, manual comparison anchors, and soundtrack analysis are not exposed in the Qt interface. Legacy metadata for those shared-engine capabilities remains compatible.
 
 ### Architecture additions

@@ -120,8 +120,8 @@ class PracticeScreen(QWidget):
             "Confirm that the physical camera placement matches the selected reference."
         )
         reference_row.addWidget(self.confirm_camera_cb)
-        reference_row.addWidget(QLabel("New reference name:"))
-        self.reference_name = QLineEdit("My reference")
+        reference_row.addWidget(QLabel("New profile name:"))
+        self.reference_name = QLineEdit("My calibration")
         self.reference_name.setMaximumWidth(180)
         reference_row.addWidget(self.reference_name)
         setup_layout.addLayout(reference_row)
@@ -169,6 +169,7 @@ class PracticeScreen(QWidget):
         self.accept_calibration_btn = QPushButton("Accept Reference")
         self.accept_calibration_btn.setEnabled(False)
         self.accept_calibration_btn.clicked.connect(self._accept_calibration)
+        self.accept_calibration_btn.hide()
         control_row.addWidget(self.accept_calibration_btn)
 
         self.score_btn = QPushButton("Start Scoring (S)")
@@ -306,7 +307,7 @@ class PracticeScreen(QWidget):
             return
         from ..guided_calibration import GuidedCalibration
 
-        dialog = GuidedCalibration(self.bridge, self)
+        dialog = GuidedCalibration(self.bridge, self, profile_name=name)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.refresh()
             self.status_label.setText(f"Approved calibration saved: {dialog.saved_path}")

@@ -87,10 +87,10 @@ class LibraryScreen(QWidget):
         # Header
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        title = QLabel("Practice Library")
+        title = QLabel("Library")
         title.setProperty("class", "title")
         subtitle = QLabel(
-            "Import videos into portable archives, and organize your practices and references."
+            "Practice sessions, replayable references and approved calibration profiles."
         )
         subtitle.setProperty("class", "subtitle")
         title_box.addWidget(title)
@@ -600,7 +600,10 @@ class LibraryScreen(QWidget):
             cfg = self._import_cfg
             as_reference = self._import_as_reference
             events = self._package_events
-            self.import_status.setText("Saving indexed raw, overlay, lines and analytics in a .tp archive…")
+            self.import_status.setText(
+                f"Saving indexed raw, overlay, lines and analytics in a "
+                f"{'.tpr' if as_reference else '.tp'} archive…"
+            )
 
             def package() -> None:
                 try:

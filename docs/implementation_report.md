@@ -24,8 +24,8 @@ remain. Packaged smoke checks initialize Qt, and builds exclude Tk modules.
 
 Latest automated verification:
 
-- `QT_QPA_PLATFORM=offscreen uv run --frozen pytest -q`: **330 passed** at the
-  first integrated range-profile checkpoint. Tk-only integration tests were
+- `QT_QPA_PLATFORM=offscreen uv run --frozen pytest -q`: **337 passed**.
+  Tk-only integration tests were
   removed with their UI; Qt-entry-point, no-Tk startup and packaged-smoke
   regressions were added, while shared-engine tests remain.
 - `uv run --frozen ruff check .`: passed.

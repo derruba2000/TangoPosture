@@ -85,6 +85,11 @@ def test_angular_ranges_do_not_split_at_minus_plus_180():
     from dataclasses import replace
 
     frames = [frame(0), frame(0.1)]
+    for observation in frames:
+        observation.poses[0] = {
+            name: replace(point, y=1 - point.y)
+            for name, point in observation.poses[0].items()
+        }
     for side in ("left", "right"):
         point = frames[1].poses[0][f"{side}_shoulder"]
         frames[1].poses[0][f"{side}_shoulder"] = replace(point, x=point.x - 0.002)

@@ -1,12 +1,12 @@
-import cv2
 import json
+
+import cv2
 import numpy as np
 import pytest
 from conftest import frame
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from tango_posture.archive import append_segment, read_manifest
-from tango_posture.archive import read_analytics
+from tango_posture.archive import append_segment, read_analytics, read_manifest
 from tango_posture.calibration import profile
 from tango_posture.config import Config
 from tango_posture.desktop_qt.calibration_editor import CalibrationEditor
@@ -17,7 +17,6 @@ from tango_posture.desktop_qt.service_bridge import ServiceBridge
 from tango_posture.models import MANIFEST
 from tango_posture.range_profiles import read_range_profile
 from tango_posture.reference_archives import promote_reference
-from tango_posture.replay import VideoReader
 
 
 @pytest.fixture(scope="session")
@@ -84,6 +83,7 @@ def test_library_distinguishes_profiles_from_replayable_references(qapp, tmp_pat
     editor._approve()
     editor._save()
     bridge = ServiceBridge(cfg)
+    assert not bridge.list_references()[0].scoring_ready
     screen = LibraryScreen(bridge, Router())
     paths = {entry["path"].suffix for entry in screen.practices}
     assert {".tpc", ".tpr"} <= paths
@@ -140,3 +140,33 @@ def test_promoted_excerpt_has_matching_video_and_cached_frame_indices(qapp, tmp_
     assert editor._reader.count == len(editor.evidence.frames) == 10
     editor.reject()
     assert source.read_bytes() == before
+
+
+@pytest.mark.parametrize("responsive", [False, True])
+def test_guided_holds_require_a_repeatable_change_before_continuing(qapp, tmp_path, responsive):
+    from dataclasses import replace
+
+    dialog = GuidedCalibration(ServiceBridge(Config(data_dir=str(tmp_path))))
+    for index in range(240):
+        observation = frame(index / 10)
+        if responsive and (8 <= observation.timestamp < 13 or 18 <= observation.timestamp < 23):
+            point = observation.poses[0]["nose"]
+            observation.poses[0]["nose"] = replace(point, x=point.x + 0.06)
+        dialog._frames.append(observation)
+    dialog._latest = 0
+    dialog._begin()
+    for timestamp in (3, 8, 13, 18, 23):
+        dialog._latest = timestamp
+        dialog._poll()
+    assert len(dialog._holds["Head"]) == 4
+    assert dialog.next.isEnabled() is responsive
+    assert dialog.retry.isEnabled() and dialog.skip.isEnabled()
+    dialog.context.setCurrentText("Solo walking")
+    dialog._step = 4
+    dialog._next()
+    assert dialog._walking
+    dialog._latest = 33
+    dialog._poll()
+    assert dialog._review_requested
+    assert dialog._holds["Walking"][0].start == 25
+    dialog.reject()

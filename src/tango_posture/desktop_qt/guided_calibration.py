@@ -55,9 +55,11 @@ class GuidedCalibration(QDialog):
     def __init__(
         self, bridge: ServiceBridge, parent: QWidget | None = None, *,
         profile_path: Path | None = None,
+        profile_name: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.bridge = bridge
+        self._profile_name = profile_name
         self.base_profile = read_range_profile(profile_path) if profile_path else None
         self.setWindowTitle("Guided camera calibration & repeat check")
         self.resize(1000, 780)
@@ -289,6 +291,8 @@ class GuidedCalibration(QDialog):
                 base_profile=self.base_profile,
             )
             editor.context_combo.setCurrentText(self.context.currentText())
+            if self._profile_name is not None:
+                editor.name_input.setText(self._profile_name)
             if self.context.currentText() == "Solo walking":
                 editor.pose_combo.setCurrentIndex(4)
                 if self.base_profile is None:

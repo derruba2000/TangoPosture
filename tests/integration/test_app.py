@@ -53,7 +53,10 @@ class FakeEstimator:
         self.closed = True
 
 
-def test_range_scoring_records_reusable_landmarks_and_portable_analytics(tmp_path, cfg, monkeypatch):
+@pytest.mark.parametrize("camera_checked", [False, True])
+def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
+    tmp_path, cfg, monkeypatch, camera_checked,
+):
     from tango_posture.archive import read_analytics
     from tango_posture.desktop_qt.analytics_data import load_archive_dataset
     from tango_posture.desktop_qt.practice_worker import QtPracticeDisplay
@@ -68,14 +71,17 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(tmp_pat
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     cfg.data_dir = str(tmp_path)
     cfg.beat_tracking = False
+    cfg.head_down_duration = 0.1
+    cfg.head_neutral_offset = 180
     target = RangeProfile(
         name="Checked camera", context="Neutral posture", model_hash=MANIFEST["sha256"],
-        capture_profile=profile(cfg, 640, 480, "camera:0"), source={"archive": "missing.tpr"},
+        capture_profile=profile(cfg, 640, 480, "camera:0" if camera_checked else "video"),
+        source={"archive": "missing.tpr"},
         metrics={"head_pitch": ApprovedRange(
             lower=-5, upper=5, unit="degrees", view="side",
             passages=[Passage(start=0, end=2)], median=0, p10=-3, p90=3,
             valid_duration=1.8, selected_duration=2, samples=20, inside_fraction=1,
-            camera_check_passed=True,
+            camera_check_passed=camera_checked,
         )},
     )
 
@@ -101,13 +107,19 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(tmp_pat
     try:
         app.run()
         assert capture.closed and estimator.closed
-        assert app.last_summary["metrics"]["head_pitch"]["event_count"] == 1
-        assert set(app.last_summary["metrics"]) == {"head_pitch"}
+        if camera_checked:
+            assert app.last_summary["metrics"]["head_pitch"]["event_count"] == 1
+            assert set(app.last_summary["metrics"]) == {"head_pitch"}
+        else:
+            assert app.last_summary is None and app.session is None
+            assert "comparison only" in app.display.notes.lower()
+        assert "BAD HEAD ALIGNMENT" not in app.display.notes
         analytics = read_analytics(app.practice_file, 0)
         assert len(analytics["frames"]) == 30
         assert analytics["frames"][0]["poses"]
         dataset = load_archive_dataset(app.practice_file, 0)
-        assert dataset.metrics["head_pitch"].event_count == 1
+        if camera_checked:
+            assert dataset.metrics["head_pitch"].event_count == 1
         reference = tmp_path / "references" / "Promoted.tpr"
         promote_reference(app.practice_file, reference, "Reusable camera evidence")
         assert len(cached_evidence(reference).frames) == 30

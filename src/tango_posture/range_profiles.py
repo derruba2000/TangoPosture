@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Literal
 from uuid import uuid4
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -163,11 +163,22 @@ def save_range_profile(path: Path, profile: RangeProfile) -> None:
 
 
 def read_range_profile(path: Path) -> RangeProfile:
+    if path.suffix.lower() != ".tpc":
+        raise ValueError("Calibration profiles must use the .tpc extension")
+    try:
+        return _read_range_profile(path)
+    except (BadZipFile, KeyError) as error:
+        raise ValueError("Invalid range calibration archive") from error
+
+
+def _read_range_profile(path: Path) -> RangeProfile:
     with ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         if (
-            manifest.get("version") != 2 or manifest.get("kind") != "calibration"
+            not isinstance(manifest, dict)
+            or manifest.get("version") != 2 or manifest.get("kind") != "calibration"
             or manifest.get("profile") != "profile.json"
+            or manifest.get("segments") != []
         ):
             raise ValueError("Not a version-2 range calibration profile")
         result = RangeProfile.model_validate_json(archive.read("profile.json"))
@@ -303,7 +314,9 @@ def _cached_evidence(path: Path, index: int) -> Evidence:
         frames.append(FrameObservation(timestamp, width, height, poses))
     if not frames or not any(frame.poses for frame in frames):
         raise ValueError("No usable landmark cache; reanalyze this recording")
-    max_gap = float(data.get("max_gap", 0.5))
+    if "max_gap" not in data:
+        raise ValueError("Cached tracking gap limit is missing; reanalyze this recording")
+    max_gap = float(data["max_gap"])
     if not math.isfinite(max_gap) or max_gap <= 0:
         raise ValueError("Invalid cached tracking gap")
     return Evidence(frames, model_hash, capture, {

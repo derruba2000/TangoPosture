@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import sqlite3
 from collections.abc import Callable
@@ -198,6 +199,8 @@ def migrate_legacy_archives(
             else:
                 with ZipFile(destination) as archive:
                     descriptor = json.loads(archive.read("reference.json"))
+                if not isinstance(descriptor, dict):
+                    raise ValueError(f"{destination.name} contains invalid reference details")
                 if descriptor.get("source_sha256") != file_sha256(path):
                     raise FileExistsError(f"{destination.name} belongs to a different source; choose a new name")
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
