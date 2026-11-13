@@ -1,7 +1,7 @@
 import pytest
 from conftest import frame
 
-from tango_posture.calibration import calibrate, compatible
+from tango_posture.calibration.baseline import calibrate, compatible
 from tango_posture.config import Config
 from tango_posture.metrics import measure
 from tango_posture.temporal import Evaluator

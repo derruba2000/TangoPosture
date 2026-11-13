@@ -9,8 +9,8 @@ from tango_posture.archive import (
     save_calibration_archive,
 )
 from tango_posture.config import Config
-from tango_posture.desktop_qt.library_archives import migrate_legacy_archives
-from tango_posture.reference_archives import promote_reference
+from tango_posture.desktop_qt.library.archives import migrate_legacy_archives
+from tango_posture.references.archives import promote_reference
 
 
 def test_promote_selected_recording_retains_practice_original(tmp_path):

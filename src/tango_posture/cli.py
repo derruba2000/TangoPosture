@@ -4,7 +4,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .calibration import load_calibration_file
+from .calibration.baseline import load_calibration_file
 from .config import load
 from .display import PracticeDisplay
 from .models import fetch

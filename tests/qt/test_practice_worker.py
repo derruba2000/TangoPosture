@@ -8,10 +8,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from tango_posture.config import Config
-from tango_posture.desktop_qt.practice_worker import (
-    QtPracticeDisplay,
-    QtPracticeWorker,
-)
+from tango_posture.desktop_qt.practice.worker import QtPracticeDisplay, QtPracticeWorker
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.practice import PracticeScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
@@ -44,7 +41,7 @@ def _reference() -> Calibration:
 
 
 def test_worker_uses_stored_reference_profile_and_closes_storage(monkeypatch, tmp_path):
-    import tango_posture.desktop_qt.practice_worker as worker_module
+    import tango_posture.desktop_qt.practice.worker as worker_module
 
     reference = _reference()
 
@@ -104,7 +101,7 @@ def test_worker_uses_stored_reference_profile_and_closes_storage(monkeypatch, tm
 
 
 def test_worker_surfaces_runtime_error_and_closes_storage(monkeypatch, tmp_path):
-    import tango_posture.desktop_qt.practice_worker as worker_module
+    import tango_posture.desktop_qt.practice.worker as worker_module
 
     class FakeStorage:
         closed = False

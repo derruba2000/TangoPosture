@@ -90,7 +90,7 @@ def test_sample_export(tmp_path, reference, cfg):
 
 
 if __name__ == "__main__":
-    from tango_posture.calibration import calibrate, profile
+    from tango_posture.calibration.baseline import calibrate, profile
     from tango_posture.config import Config
     from tango_posture.models import MANIFEST
 

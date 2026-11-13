@@ -20,20 +20,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..domain import FrameObservation
-from ..range_profiles import (
-    METRIC_DETAILS,
-    STEPS,
-    Passage,
-    metric_samples,
-    read_range_profile,
-    repeat_check,
-)
-from ..reference_archives import promote_reference, reference_directory
-from .calibration_editor import CalibrationEditor
-from .components.video_stage import VideoStage
-from .practice_worker import PracticeThread, QtPracticeDisplay, QtPracticeWorker
-from .service_bridge import ServiceBridge, numpy_to_qimage
+from ...calibration.archives import read_range_profile
+from ...calibration.measurements import metric_samples
+from ...calibration.models import METRIC_DETAILS, STEPS, Passage
+from ...calibration.statistics import repeat_check
+from ...domain import FrameObservation
+from ...references.archives import promote_reference, reference_directory
+from ..components.video_stage import VideoStage
+from ..practice.worker import PracticeThread, QtPracticeDisplay, QtPracticeWorker
+from ..service_bridge import ServiceBridge, numpy_to_qimage
+from .editor import CalibrationEditor
 
 INSTRUCTIONS = {
     "Head": ("Look comfortably ahead", "Lower your gaze slightly, without forcing your neck"),

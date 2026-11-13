@@ -46,7 +46,7 @@ from ...core.session_state import (
 from ...core.types import SourceKind
 from ..components.beat_strip import BeatStrip
 from ..components.video_stage import VideoStage
-from ..practice_worker import PracticeThread, QtPracticeDisplay, QtPracticeWorker
+from ..practice.worker import PracticeThread, QtPracticeDisplay, QtPracticeWorker
 from ..router import Router
 from ..service_bridge import ServiceBridge, numpy_to_qimage
 from ..theme import (
@@ -305,7 +305,7 @@ class PracticeScreen(QWidget):
         if not name:
             self.status_label.setText("Enter a name for the new reference.")
             return
-        from ..guided_calibration import GuidedCalibration
+        from ..calibration.guided import GuidedCalibration
 
         dialog = GuidedCalibration(self.bridge, self, profile_name=name)
         if dialog.exec() == QDialog.DialogCode.Accepted:

@@ -1,0 +1,495 @@
+"""Per-frame coach evidence, posture annotations and cached rendering."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any, cast
+
+import cv2
+import numpy as np
+
+from ..config import Config
+from ..domain import (
+    FrameObservation,
+    Landmark,
+)
+from ..geometry import (
+    torso_axis_alignment,
+)
+from ..overlay import MESSAGES, draw, screen_point
+from ..pose.constants import CONNECTIONS
+from ..quality import reliable
+from .constants import SOUNDTRACK_SOURCE_LABEL
+
+
+def render_coach_frame_overlay(
+    image: np.ndarray,
+    coach_data: dict[str, Any],
+    frame_index: int,
+    cfg: Config,
+    *,
+    verbose_skeleton: bool = True,
+    show_vertical_axis: bool = True,
+    show_footer: bool = False,
+    lines_only: bool = False,
+) -> np.ndarray:
+    """Render the Open Practice Coach HUD (axis lines, skeleton, alerts, role, beats) on a frame.
+
+    Uses the per-frame state saved by `analyse_imported_clip` and the live-coach `overlay.draw()`.
+    Returns `image` unchanged when the frame has no saved coach state or sizes disagree.
+    `lines_only` draws reliable skeleton connections without labels, dots or alerts.
+    """
+    frames_map = coach_data.get("frames")
+    if not isinstance(frames_map, dict):
+        return image
+    entry = frames_map.get(str(frame_index))
+    if not isinstance(entry, dict):
+        return image
+
+    width = int(coach_data.get("width") or image.shape[1])
+    height = int(coach_data.get("height") or image.shape[0])
+    if image.shape[1] != width or image.shape[0] != height:
+        return image
+
+    poses: list[dict[str, Landmark]] = []
+    raw_poses = entry.get("poses")
+    if not isinstance(raw_poses, list):
+        raw_poses = [entry.get("pose")]
+    for raw_pose in raw_poses:
+        if not isinstance(raw_pose, dict) or not raw_pose:
+            continue
+        pose_dict: dict[str, Landmark] = {}
+        for name, coords in raw_pose.items():
+            if isinstance(coords, list | tuple) and len(coords) >= 3:
+                pose_dict[str(name)] = Landmark(
+                    x=float(coords[0]),
+                    y=float(coords[1]),
+                    z=float(coords[2]),
+                    visibility=(
+                        float(coords[3]) if len(coords) >= 4 and coords[3] is not None else None
+                    ),
+                    presence=(
+                        float(coords[4]) if len(coords) >= 5 and coords[4] is not None else None
+                    ),
+                )
+        if pose_dict:
+            poses.append(pose_dict)
+
+    if lines_only:
+        canvas = image.copy()
+        for pose in poses:
+            for a, b in CONNECTIONS:
+                if reliable(pose.get(a), cfg.confidence) and reliable(
+                    pose.get(b), cfg.confidence
+                ):
+                    pa, pb = pose[a], pose[b]
+                    cv2.line(
+                        canvas,
+                        screen_point(pa.x, pa.y, width, height, False),
+                        screen_point(pb.x, pb.y, width, height, False),
+                        (80, 220, 80),
+                        2,
+                        cv2.LINE_AA,
+                    )
+        return canvas
+
+    def _opt(key: str) -> float | None:
+        value = entry.get(key)
+        return float(value) if isinstance(value, int | float) else None
+
+    observation = FrameObservation(
+        timestamp=float(entry.get("timestamp", 0.0)), width=width, height=height, poses=poses
+    )
+    beat_state = entry.get("beat_state")
+    return cast(
+        np.ndarray,
+        draw(
+            image,
+            observation,
+            False,
+            list(entry.get("lines") or []),
+            str(entry.get("message") or ""),
+            cfg.confidence,
+            head_down_angle=cfg.head_down_angle,
+            head_down_duration=cfg.head_down_duration,
+            head_down_elapsed=float(entry.get("head_down_elapsed", 0.0)),
+            head_angle_smoothed=_opt("head_angle"),
+            role=str(entry.get("role") or "NONE"),
+            beat_state=beat_state if isinstance(beat_state, dict) else None,
+            head_neutral_offset=float(coach_data.get("neutral_offset", cfg.head_neutral_offset)),
+            shoulder_raise_threshold=cfg.shoulder_raise_threshold,
+            shoulder_tension_duration=cfg.shoulder_tension_duration,
+            shoulder_tension_elapsed=float(entry.get("shoulder_tension_elapsed", 0.0)),
+            shoulder_neutral_clearance=float(
+                entry.get("shoulder_neutral_clearance", cfg.shoulder_neutral_clearance)
+            ),
+            shoulder_elev_smoothed=_opt("shoulder_elev_pct"),
+            embrace_type=str(entry.get("embrace_type") or "OPEN"),
+            embrace_closed_threshold=cfg.embrace_closed_threshold,
+            closed_embrace_min_knee_bend=cfg.closed_embrace_min_knee_bend,
+            knee_straight_duration=cfg.knee_straight_duration,
+            knee_straight_elapsed=float(entry.get("knee_straight_elapsed", 0.0)),
+            knee_bend_smoothed=_opt("knee_bend_deg"),
+            facing=cfg.facing,
+            side=cfg.side,
+            axis_neutral_offset=float(
+                coach_data.get("axis_neutral_offset", cfg.axis_neutral_offset)
+            ),
+            axis_curve_entry=cfg.axis_curve_entry,
+            axis_curve_clear=cfg.axis_curve_clear,
+            axis_curve_duration=cfg.axis_curve_duration,
+            axis_curve_elapsed=float(entry.get("axis_curve_elapsed", 0.0)),
+            axis_curve_smoothed=_opt("axis_curve_smoothed"),
+            axis_curve_state=str(entry.get("axis_curve_state") or "WITHIN_LIMIT"),
+            ankle_high_lift_ratio=cfg.ankle_high_lift_ratio,
+            ankle_lift_smoothed=_opt("ankle_lift_ratio"),
+            consecutive_high_ankle_steps=int(entry.get("consecutive_high_ankle_steps", 0)),
+            max_consecutive_high_ankle_steps=cfg.max_consecutive_high_ankle_steps,
+            slow_tango_max_bpm=cfg.slow_tango_max_bpm,
+            ankle_high_alert=bool(entry.get("ankle_alert", False)),
+            verbose_skeleton=verbose_skeleton,
+            show_vertical_axis=show_vertical_axis,
+            show_footer=show_footer,
+        ),
+    )
+
+
+def coach_notes_for_frame(coach_data: dict[str, Any], frame_index: int) -> list[str] | None:
+    """Return the saved Live-coaching-notes lines for a source frame, if present."""
+    frames_map = coach_data.get("frames")
+    if not isinstance(frames_map, dict):
+        return None
+    entry = frames_map.get(str(frame_index))
+    if not isinstance(entry, dict):
+        return None
+    notes = entry.get("notes")
+    if isinstance(notes, list) and notes:
+        return [str(n) for n in notes]
+    return None
+
+
+@dataclass
+class _AlertTimers:
+    """Sustained-alert timers mirroring the live Open Practice Coach (`Application.run`)."""
+
+    head_down_since: float | None = None
+    shoulder_tension_since: float | None = None
+    shoulder_last_valid: float | None = None
+    knee_straight_since: float | None = None
+    knee_last_valid: float | None = None
+
+
+def _round_or_none(value: float | None, digits: int = 4) -> float | None:
+    return None if value is None or not math.isfinite(value) else round(float(value), digits)
+
+
+def _serialise_pose(pose: dict[str, Landmark]) -> dict[str, list[float | None]]:
+    out: dict[str, list[float | None]] = {}
+    for name, lm in pose.items():
+        if not (math.isfinite(lm.x) and math.isfinite(lm.y)):
+            continue
+        out[name] = [
+            round(float(lm.x), 4),
+            round(float(lm.y), 4),
+            round(float(lm.z), 4) if lm.z is not None and math.isfinite(lm.z) else 0.0,
+            _round_or_none(lm.visibility, 3),
+            _round_or_none(lm.presence, 3),
+        ]
+    return out
+
+
+def _build_coach_frame_entry(
+    *,
+    cfg: Config,
+    frame_obs: FrameObservation,
+    display_poses: list[dict[str, Landmark]],
+    source_time: float,
+    clip_time: float,
+    head_angle: float | None,
+    shoulder_elev_pct: float | None,
+    shoulder_neutral_clearance: float,
+    knee_bend_deg: float | None,
+    ankle_lift_ratio: float | None,
+    consecutive_high_ankle_steps: int,
+    bad_ankles: bool,
+    ankle_high_now: bool,
+    axis_curve_smoothed: float | None,
+    axis_curve_state: str,
+    axis_curve_elapsed: float,
+    bad_axis: bool,
+    role: str,
+    embrace_type: str,
+    upper_body: dict[str, float] | None,
+    st_state: dict[str, Any] | None,
+    quality_reason: str,
+    timers: _AlertTimers,
+    session_rows: list[dict[str, Any]],
+    single_pose_ok: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Compute alert timers and per-frame coaching state/notes for one analysed frame."""
+    # Head pitch: continuous downward tilt.
+    if head_angle is not None and head_angle < cfg.head_down_angle:
+        if timers.head_down_since is None:
+            timers.head_down_since = source_time
+        head_down_elapsed = source_time - timers.head_down_since
+    else:
+        timers.head_down_since = None
+        head_down_elapsed = 0.0
+    bad_head = head_down_elapsed >= cfg.head_down_duration
+
+    # Shoulder tension with hysteresis.
+    sh_clear = max(4.0, cfg.shoulder_raise_threshold * 0.65)
+    if shoulder_elev_pct is not None:
+        timers.shoulder_last_valid = source_time
+        if shoulder_elev_pct >= cfg.shoulder_raise_threshold:
+            if timers.shoulder_tension_since is None:
+                timers.shoulder_tension_since = source_time
+            shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+        elif timers.shoulder_tension_since is not None and shoulder_elev_pct >= sh_clear:
+            shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+        else:
+            timers.shoulder_tension_since = None
+            shoulder_tension_elapsed = 0.0
+    elif (
+        timers.shoulder_last_valid is None
+        or (source_time - timers.shoulder_last_valid) > cfg.max_gap
+    ):
+        timers.shoulder_tension_since = None
+        shoulder_tension_elapsed = 0.0
+    elif timers.shoulder_tension_since is not None:
+        shoulder_tension_elapsed = source_time - timers.shoulder_tension_since
+    else:
+        shoulder_tension_elapsed = 0.0
+    bad_shoulders = shoulder_tension_elapsed >= cfg.shoulder_tension_duration
+
+    # Knee bend with hysteresis.
+    knee_clear = cfg.closed_embrace_min_knee_bend + 2.5
+    if knee_bend_deg is not None:
+        timers.knee_last_valid = source_time
+        if knee_bend_deg < cfg.closed_embrace_min_knee_bend:
+            if timers.knee_straight_since is None:
+                timers.knee_straight_since = source_time
+            knee_straight_elapsed = source_time - timers.knee_straight_since
+        elif timers.knee_straight_since is not None and knee_bend_deg < knee_clear:
+            knee_straight_elapsed = source_time - timers.knee_straight_since
+        else:
+            timers.knee_straight_since = None
+            knee_straight_elapsed = 0.0
+    elif timers.knee_last_valid is None or (source_time - timers.knee_last_valid) > cfg.max_gap:
+        timers.knee_straight_since = None
+        knee_straight_elapsed = 0.0
+    elif timers.knee_straight_since is not None:
+        knee_straight_elapsed = source_time - timers.knee_straight_since
+    else:
+        knee_straight_elapsed = 0.0
+    bad_knees = knee_straight_elapsed >= cfg.knee_straight_duration
+
+    sh_disp = shoulder_elev_pct if shoulder_elev_pct is not None else 0.0
+    head_disp = head_angle if head_angle is not None else 0.0
+    knee_disp = knee_bend_deg if knee_bend_deg is not None else 0.0
+    alert = ""
+    if bad_ankles:
+        lift_pct = (ankle_lift_ratio or cfg.ankle_high_lift_ratio) * 100.0
+        alert = (
+            f"KEEP FEET CLOSE TO FLOOR (SLOW TANGO <={cfg.slow_tango_max_bpm:.0f} BPM): "
+            f"ankle raised too high ({lift_pct:.1f}%) for {consecutive_high_ankle_steps} "
+            f"consecutive steps (>={cfg.max_consecutive_high_ankle_steps})"
+        )
+    elif bad_axis and axis_curve_smoothed is not None:
+        alert = (
+            f"HIP OFFSET: hip/pelvis +{axis_curve_smoothed * 100.0:.1f}% "
+            f"past ankle-to-head line ({axis_curve_elapsed:.1f}s)"
+        )
+    elif bad_knees:
+        alert = (
+            f"BEND YOUR KNEES: knee bend {knee_disp:.1f} deg "
+            f"< {cfg.closed_embrace_min_knee_bend:.1f} deg ({knee_straight_elapsed:.1f}s)"
+        )
+    elif bad_head and bad_shoulders:
+        alert = (
+            f"BAD HEAD ALIGNMENT ({head_disp:+.1f} deg) & "
+            f"LOWER YOUR SHOULDERS ({sh_disp:+.0f}% for {shoulder_tension_elapsed:.1f}s)"
+        )
+    elif bad_shoulders:
+        alert = (
+            f"LOWER YOUR SHOULDERS: shoulder tension detected "
+            f"({sh_disp:+.0f}% raised for {shoulder_tension_elapsed:.1f}s)"
+        )
+    elif bad_head:
+        alert = (
+            f"BAD HEAD ALIGNMENT: head pointing down ({head_disp:+.1f} deg for "
+            f"{head_down_elapsed:.1f}s)"
+        )
+
+    if alert:
+        primary = alert
+    elif not frame_obs.poses:
+        primary = quality_reason or "Coaching status: No dancer detected in this frame"
+    elif quality_reason:
+        primary = quality_reason
+    elif any(r.get("state") == "DEVIATION" for r in session_rows):
+        primary = next(
+            MESSAGES.get(r["metric"], f"{r['metric']}: outside approved range")
+            for r in session_rows if r.get("state") == "DEVIATION"
+        )
+    else:
+        primary = "Coaching status: Posture & axis within target thresholds"
+
+    # Beat/phrase state for the HUD and notes.
+    beat_state: dict[str, Any] | None = None
+    if st_state is not None:
+        beat_state = {
+            "beat": int(st_state.get("beat") or 0),
+            "phrase": int(st_state.get("phrase") or 0),
+            "bpm": float(st_state.get("bpm") or cfg.tango_bpm),
+            "playing": bool(st_state.get("playing", False)),
+            "analyzing": bool(st_state.get("analyzing", False)),
+            "analyzed_seconds": 0.0,
+            "analysis_target_seconds": 30.0,
+            "phrase_locked": st_state.get("phrase") is not None,
+            "source": str(st_state.get("source") or SOUNDTRACK_SOURCE_LABEL),
+        }
+    if st_state is None:
+        beat_txt = "disabled"
+    elif not st_state.get("playing") or not st_state.get("beat"):
+        beat_txt = "No rhythmic beat detected at this moment"
+    elif st_state.get("phrase") is None:
+        beat_txt = f"Beat pulse {st_state.get('bpm') or 0:.0f} BPM ({SOUNDTRACK_SOURCE_LABEL})"
+    else:
+        beat_txt = (
+            f"Phrase {st_state['phrase']} Beat {st_state['beat']}/8 "
+            f"({float(st_state.get('bpm') or 0.0):.0f} BPM, {SOUNDTRACK_SOURCE_LABEL})"
+        )
+    role_txt = (
+        f"{role} ({embrace_type})"
+        if role in ("LEADER", "FOLLOWER") and embrace_type in ("CLOSED", "OPEN")
+        else role
+    )
+
+    torso_txt = "N/A"
+    if single_pose_ok:
+        torso = torso_axis_alignment(
+            frame_obs.poses[0], frame_obs.width, frame_obs.height, cfg.confidence
+        )
+        if torso is not None:
+            torso_txt = f"{abs(torso[0]):.1f} deg from vertical"
+    if axis_curve_smoothed is None:
+        hip_txt = "N/A"
+    elif bad_axis:
+        hip_txt = f"HIGH {axis_curve_smoothed * 100.0:+.1f}% [DEVIATION]"
+    elif axis_curve_state == "PENDING":
+        hip_txt = f"PENDING {axis_curve_smoothed * 100.0:+.1f}%"
+    else:
+        hip_txt = f"OK ({axis_curve_smoothed * 100.0:+.1f}%)"
+    head_txt = "N/A" if head_angle is None else f"{head_angle:+.1f} deg"
+    sh_txt = (
+        "N/A"
+        if shoulder_elev_pct is None
+        else (
+            f"HIGH {shoulder_elev_pct:+.0f}%"
+            if shoulder_elev_pct >= cfg.shoulder_raise_threshold
+            else f"OK ({shoulder_elev_pct:+.0f}%)"
+        )
+    )
+    knee_txt = (
+        "N/A"
+        if knee_bend_deg is None
+        else (
+            f"STRAIGHT {knee_bend_deg:.1f} deg"
+            if bad_knees or knee_bend_deg < cfg.closed_embrace_min_knee_bend
+            else f"OK ({knee_bend_deg:.1f} deg)"
+        )
+    )
+    feet_txt = (
+        "N/A"
+        if ankle_lift_ratio is None
+        else (
+            f"HIGH {ankle_lift_ratio * 100.0:.1f}% "
+            f"({consecutive_high_ankle_steps}/{cfg.max_consecutive_high_ankle_steps} steps)"
+            if bad_ankles or ankle_high_now
+            else f"OK ({ankle_lift_ratio * 100.0:.1f}%, "
+            f"{consecutive_high_ankle_steps}/{cfg.max_consecutive_high_ankle_steps} steps)"
+        )
+    )
+    lines = [
+        f"Role: {role_txt} | Beat: {beat_txt}",
+        f"Torso axis: {torso_txt} | Hip offset: {hip_txt}",
+        f"Head: {head_txt} | Shoulders: {sh_txt} | Knees: {knee_txt} | Feet: {feet_txt}",
+    ]
+    if upper_body:
+        lines.append(
+            "Upper body: "
+            + " | ".join(f"{name} {float(val):+.3f}" for name, val in upper_body.items())
+        )
+    for row in session_rows:
+        val = "N/A" if row.get("smoothed") is None else f"{float(row['smoothed']):.3f}"
+        delta = "N/A" if row.get("delta") is None else f"{float(row['delta']):+.3f}"
+        lines.append(f"{row['metric']}: {val} | delta {delta} | {row['state']}")
+
+    entry: dict[str, Any] = {
+        "timestamp": round(float(source_time), 4),
+        "clip_timestamp": round(float(clip_time), 4),
+        "poses": [_serialise_pose(p) for p in display_poses if p],
+        "message": alert,
+        "lines": [],
+        "head_angle": _round_or_none(head_angle, 3),
+        "head_down_elapsed": round(head_down_elapsed, 3),
+        "shoulder_elev_pct": _round_or_none(shoulder_elev_pct, 2),
+        "shoulder_tension_elapsed": round(shoulder_tension_elapsed, 3),
+        "shoulder_neutral_clearance": round(float(shoulder_neutral_clearance), 4),
+        "knee_bend_deg": _round_or_none(knee_bend_deg, 2),
+        "knee_straight_elapsed": round(knee_straight_elapsed, 3),
+        "embrace_type": embrace_type,
+        "ankle_alert": bool(bad_ankles),
+        "ankle_lift_ratio": _round_or_none(ankle_lift_ratio, 4),
+        "consecutive_high_ankle_steps": int(consecutive_high_ankle_steps),
+        "axis_curve_smoothed": _round_or_none(axis_curve_smoothed, 4),
+        "axis_curve_state": axis_curve_state if axis_curve_state != "UNKNOWN" else "WITHIN_LIMIT",
+        "axis_curve_elapsed": round(axis_curve_elapsed, 3),
+        "role": role,
+        "beat_state": beat_state,
+        "alerts": {
+            "head": bad_head,
+            "shoulders": bad_shoulders,
+            "knees": bad_knees,
+            "axis": bad_axis,
+            "ankles": bool(bad_ankles),
+        },
+    }
+    return entry, {"primary": primary, "lines": lines}
+
+
+def _movement_note_lines(
+    movement_data: dict[str, Any],
+    frame_index: int,
+    fps: float,
+    step_history_seconds: float,
+) -> list[str]:
+    """Pivot/step insights for the current frame plus clip totals."""
+    out: list[str] = []
+    pivots = list(movement_data.get("pivots") or [])
+    steps = list(movement_data.get("steps") or [])
+    for p in pivots:
+        if int(p["start_frame"]) <= frame_index < int(p["end_frame"]):
+            rate = p.get("peak_rate_deg_s", p.get("mean_rate_deg_s"))
+            rate_txt = f", peak {abs(float(rate)):.0f} deg/s" if rate is not None else ""
+            out.append(
+                f"Active Pivot: {str(p['direction']).upper()} "
+                f"({float(p['net_rotation_deg']):+.1f} deg net turn{rate_txt})"
+            )
+            break
+    window = max(1, round(step_history_seconds * max(fps, 1.0)))
+    for st in steps:
+        sf = int(st["frame"])
+        if sf <= frame_index < sf + window:
+            t = float(st.get("time", sf / max(fps, 1.0)))
+            mins = int(t // 60)
+            conf = float(st.get("confidence", 0.0)) * 100.0
+            out.append(
+                f"Recent Step: {str(st['side']).upper()} foot landed at "
+                f"{mins:02d}:{t - mins * 60:04.1f} "
+                f"(travel {float(st.get('travel_px', 0.0)):.0f} px, conf {conf:.0f}%)"
+            )
+    out.append(f"Clip Movement Totals: {len(pivots)} pivots, {len(steps)} steps detected")
+    return out

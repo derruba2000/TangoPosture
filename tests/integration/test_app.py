@@ -9,7 +9,7 @@ from conftest import frame
 
 from tango_posture.app import Application
 from tango_posture.archive import PracticeArchive, read_manifest
-from tango_posture.calibration import load_calibration_file, profile
+from tango_posture.calibration.baseline import load_calibration_file, profile
 from tango_posture.capture import Captured
 from tango_posture.models import MANIFEST, fetch, verify
 from tango_posture.movement import render_floor_guide
@@ -58,15 +58,11 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
     tmp_path, cfg, monkeypatch, camera_checked,
 ):
     from tango_posture.archive import read_analytics
-    from tango_posture.desktop_qt.analytics_data import load_archive_dataset
-    from tango_posture.desktop_qt.practice_worker import QtPracticeDisplay
-    from tango_posture.range_profiles import (
-        ApprovedRange,
-        Passage,
-        RangeProfile,
-        cached_evidence,
-    )
-    from tango_posture.reference_archives import promote_reference
+    from tango_posture.calibration.evidence import cached_evidence
+    from tango_posture.calibration.models import ApprovedRange, Passage, RangeProfile
+    from tango_posture.desktop_qt.analytics.data import load_archive_dataset
+    from tango_posture.desktop_qt.practice.worker import QtPracticeDisplay
+    from tango_posture.references.archives import promote_reference
 
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     cfg.data_dir = str(tmp_path)

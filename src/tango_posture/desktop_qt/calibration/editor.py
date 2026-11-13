@@ -29,29 +29,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..archive import PracticeArchive, calibration_directory, calibration_path, file_sha256
-from ..config import Config
-from ..domain import FrameObservation
-from ..overlay import draw
-from ..quality import reliable
-from ..range_profiles import (
-    METRIC_DETAILS,
-    STEPS,
-    ApprovedRange,
-    Passage,
-    RangeProfile,
-    cached_evidence,
-    dancer_frames,
-    metric_samples,
-    repeat_check,
-    save_range_profile,
-    summarize_examples,
-)
-from ..replay import VideoReader
-from .analytics_data import MetricData
-from .components.video_stage import VideoStage
-from .screens.analytics import MetricChart
-from .service_bridge import numpy_to_qimage
+from ...archive import PracticeArchive, calibration_directory, calibration_path, file_sha256
+from ...calibration.archives import save_range_profile
+from ...calibration.evidence import cached_evidence, dancer_frames
+from ...calibration.measurements import metric_samples
+from ...calibration.models import METRIC_DETAILS, STEPS, ApprovedRange, Passage, RangeProfile
+from ...calibration.statistics import repeat_check, summarize_examples
+from ...config import Config
+from ...domain import FrameObservation
+from ...overlay import draw
+from ...quality import reliable
+from ...replay import VideoReader
+from ..analytics.data import MetricData
+from ..components.metric_chart import MetricChart
+from ..components.video_stage import VideoStage
+from ..service_bridge import numpy_to_qimage
 
 
 class CalibrationEditor(QDialog):
@@ -284,7 +276,7 @@ class CalibrationEditor(QDialog):
         self._recompute()
 
     def _recompute(self, *_args: object) -> None:
-        from ..range_profiles import Evidence
+        from ...calibration.evidence import Evidence
 
         anchors = sorted(self._anchors.items())
         frames: list[FrameObservation] = []
@@ -481,7 +473,7 @@ class CalibrationEditor(QDialog):
             self.status_label.setText(f"Calibration not saved: {error}")
 
     def _save_selection(self) -> None:
-        from ..archive import _archive_lock, _rewrite_members
+        from ...archive import _archive_lock, _rewrite_members
 
         try:
             if not self.confirm_identity.isChecked():

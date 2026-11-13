@@ -20,7 +20,7 @@ from tango_posture.archive import (
     store_analytics,
     store_movement_analysis,
 )
-from tango_posture.calibration import load_calibration_file, save_calibration_file
+from tango_posture.calibration.baseline import load_calibration_file, save_calibration_file
 from tango_posture.review import read_report, save_analysis, saved_analyses
 
 

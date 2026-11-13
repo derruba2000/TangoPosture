@@ -595,7 +595,10 @@ For webcams, a producer thread holds at most one queued frame. When newer frames
 | `quality.py` | Determine whether an individual landmark is finite, in bounds, and sufficiently confident |
 | `geometry.py` | Pixel conversion, wrapped angles, and the pure metric formulas |
 | `metrics.py` | Apply overall and per-metric gates before calculating available values |
-| `calibration.py` | Validate reference coverage/stability, calculate baselines, save capture identity, check compatibility |
+| `calibration/baseline.py` | Validate reference coverage/stability, calculate baselines, save capture identity, check compatibility |
+| `calibration/models.py`, `archives.py` | Define approved metric ranges and serialize portable, video-independent `.tpc` profiles |
+| `calibration/evidence.py`, `measurements.py`, `statistics.py` | Read cached raw landmarks, select dancer evidence, measure passages and check repeatability |
+| `references/` | Import/reference archives, source provenance, downloads, video decoding, cached analysis and comparison |
 
 These modules do not open a camera or display a GUI. Their inputs can be hand-authored landmark records, which is central to testing non-square images, sign conventions, missing data, and geometric invariance.
 
@@ -611,6 +614,17 @@ These modules do not open a camera or display a GUI. Their inputs can be hand-au
 | `app.py` | Coordinate the capture loop, controls, calibration acceptance, session states, worker lifecycle, and cleanup |
 
 A separate `scripts/smoke_video.py` exercises real inference and coverage on a user-supplied clip. It is a validation utility, not a second implementation of the session feedback logic.
+
+### Qt feature packages
+
+Qt workspace screens, including About and Splash, live in `desktop_qt/screens/`.
+The shared approval editor and camera guidance live in `desktop_qt/calibration/`.
+Practice workers, Review services, Library packaging and Analytics projections
+live in their respective feature subfolders. Reusable controls and charts live
+in `desktop_qt/components/`; shared engines do not depend on Qt.
+
+For source-checkout development, the [architecture and workflow guide](ARCHITECTURE.md)
+maps each use case to its modules and includes class, state and sequence diagrams.
 
 ## 13. The measurement mathematics
 

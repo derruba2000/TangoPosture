@@ -11,8 +11,8 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from ..config import Config
+from .screens.splash import SplashScreen
 from .shell import MainWindow
-from .splash import SplashScreen
 
 SPLASH_DURATION_MS = 3000
 

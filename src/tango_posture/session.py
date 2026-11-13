@@ -1,10 +1,10 @@
 from dataclasses import asdict
 from uuid import uuid4
 
-from .calibration import utc_now
+from .calibration.baseline import utc_now
+from .calibration.models import profile_from_calibration
 from .config import Config
 from .domain import METRICS, Calibration, MetricObservation, QualityResult
-from .range_profiles import profile_from_calibration
 from .reports import summary_dict
 from .storage import Storage
 from .temporal import Evaluator

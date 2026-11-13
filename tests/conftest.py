@@ -1,6 +1,6 @@
 import pytest
 
-from tango_posture.calibration import calibrate, profile
+from tango_posture.calibration.baseline import calibrate, profile
 from tango_posture.config import Config
 from tango_posture.domain import FrameObservation, Landmark
 from tango_posture.metrics import measure

@@ -16,30 +16,33 @@ import pytest
 
 from tango_posture.config import Config
 from tango_posture.domain import FrameObservation, Landmark
-from tango_posture.reference_import import (
+from tango_posture.references.coach import coach_notes_for_frame, render_coach_frame_overlay
+from tango_posture.references.companions import load_report_coach_data, load_report_movement_data
+from tango_posture.references.comparison import compare_clips, relink_report_video
+from tango_posture.references.constants import (
     MAX_IMPORT_RANGE_SECONDS,
     SOUNDTRACK_SAMPLE_RATE,
     SOUNDTRACK_SOURCE_LABEL,
-    ImportCancelledError,
-    YouTubeClockAlignment,
-    YouTubeSourceLink,
+)
+from tango_posture.references.downloads import (
     _download_with_subprocess,
-    analyse_imported_clip,
-    analyse_video_soundtrack,
-    build_youtube_open_url,
-    coach_notes_for_frame,
-    compare_clips,
     download_facebook_reel,
     download_youtube_video,
     imports_directory,
-    iter_virtual_clip_frames,
-    load_report_coach_data,
-    load_report_movement_data,
+)
+from tango_posture.references.errors import ImportCancelledError
+from tango_posture.references.links import (
+    YouTubeClockAlignment,
+    YouTubeSourceLink,
+    build_youtube_open_url,
     parse_facebook_reel_url,
     parse_youtube_url,
+)
+from tango_posture.references.pipeline import analyse_imported_clip
+from tango_posture.references.soundtrack import analyse_video_soundtrack
+from tango_posture.references.video import (
+    iter_virtual_clip_frames,
     probe_import_video,
-    relink_report_video,
-    render_coach_frame_overlay,
     validate_clip_range,
 )
 from tango_posture.review import read_report
@@ -286,7 +289,7 @@ def test_youtube_independent_clock_alignment():
 @pytest.mark.parametrize("duration,fps_label", [(0.0, "N/A"), (0.002, "500.0 FPS")])
 def test_import_processing_fps_handles_timer_resolution(tmp_path, monkeypatch, duration, fps_label):
     ticks = count(0.0, duration)
-    monkeypatch.setattr("tango_posture.reference_import.time.perf_counter", lambda: next(ticks))
+    monkeypatch.setattr('tango_posture.references.pipeline.time.perf_counter', lambda: next(ticks))
     video_path = _write_test_video(tmp_path / "short.avi", duration_seconds=1.0)
     result = analyse_imported_clip(
         video_path=video_path,
@@ -613,7 +616,7 @@ def test_direct_youtube_download_caching_and_full_open_coach_analysis(tmp_path, 
         )
 
     # Missing yt-dlp surfaces clear actionable error when no downloader is available
-    monkeypatch.setattr("tango_posture.reference_import._find_ytdlp_command", lambda: None)
+    monkeypatch.setattr('tango_posture.references.downloads._find_ytdlp_command', lambda: None)
     monkeypatch.setitem(__import__("sys").modules, "yt_dlp", None)
     with pytest.raises(ValueError, match="Cannot download from YouTube: 'yt-dlp' is not installed"):
         download_youtube_video("https://youtu.be/oHg5SJYRHA0", imp_dir)
@@ -682,7 +685,7 @@ def test_facebook_reel_download_uses_validated_cache_and_injected_downloader(tmp
 
 
 def test_ytdlp_subprocess_uses_ssl_cert_file_not_unsupported_ca_option(tmp_path, monkeypatch):
-    from tango_posture import reference_import
+    import tango_posture.references.downloads as reference_import
 
     ca_bundle = tmp_path / "ca-bundle.pem"
     ca_bundle.write_text("trusted test certificate bundle")

@@ -11,6 +11,9 @@ Visit the [TangoPosture community website](https://tangoposture-community.correi
 
 The desktop application uses **Qt / PySide6** exclusively.
 
+For developers, see the [architecture and workflow guide](docs/ARCHITECTURE.md)
+for the source layout, module responsibilities, use cases, UML and sequence diagrams.
+
 **Experimental movement observation, not medical assessment or a judgement of artistic tango quality.** See the [Tango Posture Coach Manual](docs/TANGO_POSTURE_GUIDE.md) for one guide to practice, references, reports, configuration, examples, and limitations. Open **Help & Guide** in the desktop navigation rail for the same guide with search and section navigation.
 
 ---

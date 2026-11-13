@@ -7,23 +7,15 @@ import pytest
 from conftest import frame
 
 from tango_posture.archive import read_calibration_archive, read_manifest, rename_archive
-from tango_posture.calibration import compatible, profile
+from tango_posture.calibration.archives import read_range_profile, save_range_profile
+from tango_posture.calibration.baseline import compatible, profile
+from tango_posture.calibration.evidence import Evidence, dancer_frames
+from tango_posture.calibration.measurements import measure_profile, metric_samples
+from tango_posture.calibration.models import ApprovedRange, Passage, RangeProfile
+from tango_posture.calibration.statistics import repeat_check, summarize_examples
 from tango_posture.config import Config
 from tango_posture.domain import MetricObservation, QualityResult
 from tango_posture.models import MANIFEST
-from tango_posture.range_profiles import (
-    ApprovedRange,
-    Evidence,
-    Passage,
-    RangeProfile,
-    dancer_frames,
-    measure_profile,
-    metric_samples,
-    read_range_profile,
-    repeat_check,
-    save_range_profile,
-    summarize_examples,
-)
 from tango_posture.session import Session
 from tango_posture.storage import Storage
 from tango_posture.temporal import Evaluator

@@ -25,10 +25,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Config
-from .about import AboutDialog
 from .components.status_strip import StatusStrip
 from .navigation_icons import navigation_icon
 from .router import Route, Router
+from .screens.about import AboutDialog
 from .screens.analytics import AnalyticsScreen
 from .screens.coach import CoachScreen
 from .screens.help import HelpScreen

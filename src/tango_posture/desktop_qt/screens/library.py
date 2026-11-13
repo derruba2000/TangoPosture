@@ -36,19 +36,16 @@ from PySide6.QtWidgets import (
 )
 
 from ...archive import PracticeArchive, _archive_lock, rename_archive
-from ...range_profiles import read_range_profile
-from ...reference_archives import promote_reference, reference_directory, reference_path
-from ...reference_import import (
-    MAX_IMPORT_RANGE_SECONDS,
-    ImportedClipResult,
-    ReferenceImportWorker,
-    parse_facebook_reel_url,
-    parse_youtube_url,
-    probe_import_video,
-)
+from ...calibration.archives import read_range_profile
+from ...references.archives import promote_reference, reference_directory, reference_path
+from ...references.constants import MAX_IMPORT_RANGE_SECONDS
+from ...references.links import parse_facebook_reel_url, parse_youtube_url
+from ...references.results import ImportedClipResult
+from ...references.video import probe_import_video
+from ...references.worker import ReferenceImportWorker
 from ...replay import VideoReader
 from ...review import report_directory
-from ..library_archives import archive_report, migrate_legacy_archives
+from ..library.archives import archive_report, migrate_legacy_archives
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
 
@@ -217,7 +214,7 @@ class LibraryScreen(QWidget):
             self.table.setCellWidget(row_idx, 3, actions)
 
     def _calibrate_reference(self, path: Path) -> None:
-        from ..calibration_editor import CalibrationEditor
+        from ..calibration.editor import CalibrationEditor
 
         try:
             editor = CalibrationEditor(path, self.bridge.config, self)
@@ -244,7 +241,7 @@ class LibraryScreen(QWidget):
             self.import_status.setText(f"Cannot read profile: {error}")
 
     def _camera_calibration(self, path: Path | None = None) -> None:
-        from ..guided_calibration import GuidedCalibration
+        from ..calibration.guided import GuidedCalibration
 
         try:
             dialog = GuidedCalibration(self.bridge, self, profile_path=path)

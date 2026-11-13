@@ -29,8 +29,22 @@ Latest automated verification:
   removed with their UI; Qt-entry-point, no-Tk startup and packaged-smoke
   regressions were added, while shared-engine tests remain.
 - `uv run --frozen ruff check .`: passed.
-- `uv run --frozen mypy src`: passed across 71 source files.
+- `uv run --frozen mypy src`: passed across 96 source files.
 - `git diff --check`: passed.
+- Wheel build and import smoke: every Python source file included; all 95
+  packaged submodules imported without Tk. Actual offscreen startup verified
+  the three-second splash, nine workspaces and About dialog.
+- Refactoring checks: 133 relocated functions/classes/constants have unchanged
+  syntax trees apart from imports; all 75 architecture-guide links resolve.
+
+The code is now organized into calibration and reference packages, with Qt
+feature-service packages and About/Splash under screens. The former reference
+import monolith is split into URL/download, video, analysis, coverage, soundtrack,
+rendering, persistence, comparison and worker responsibilities; range models,
+evidence, measurements, statistics and profile persistence are also separate.
+Behavior and portable-file formats are unchanged. See the
+[architecture and workflow guide](ARCHITECTURE.md) for the module map, use cases
+and UML/sequence diagrams.
 
 Remaining desktop scope and acceptance limits:
 
@@ -79,7 +93,7 @@ Remaining desktop scope and acceptance limits:
 | 1. Environment and licences | Completed | `pyproject.toml`, `uv.lock`, `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, `docs/licenses/`, `docs/wheel_compatibility.json`, `models/manifest.json`, `src/tango_posture/models.py`, `src/tango_posture/cli.py` |
 | 2. Observation | Completed | `src/tango_posture/capture.py`, `src/tango_posture/pose/constants.py`, `src/tango_posture/pose/mediapipe_backend.py`, `src/tango_posture/overlay.py`, `src/tango_posture/app.py` |
 | 3. Measurement | Completed | `src/tango_posture/domain.py`, `src/tango_posture/geometry.py`, `src/tango_posture/quality.py`, `src/tango_posture/metrics.py`, `tests/unit/test_geometry_quality.py` |
-| 4. Reference and feedback | Completed | `src/tango_posture/calibration.py`, `src/tango_posture/temporal.py`, `tests/unit/test_temporal_calibration.py` |
+| 4. Reference and feedback | Completed | `src/tango_posture/calibration/baseline.py`, `src/tango_posture/temporal.py`, `tests/unit/test_temporal_calibration.py` |
 | 5. Persistence | Completed | `src/tango_posture/storage.py`, `src/tango_posture/reports.py`, `src/tango_posture/session.py`, `tests/integration/test_storage_session.py`, `tests/integration/test_app.py`, `samples/synthetic/` |
 | 6. Validation | Software-complete; hardware & teacher checks pending | `scripts/smoke_video.py`, `docs/runtime_smoke.json`, `docs/manual_validation.md`, `README.md`, `docs/implementation_report.md` |
 

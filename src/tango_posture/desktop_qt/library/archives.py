@@ -14,7 +14,7 @@ from zipfile import ZipFile
 
 import cv2
 
-from ..archive import (
+from ...archive import (
     _archive_lock,
     append_segment,
     file_sha256,
@@ -24,24 +24,21 @@ from ..archive import (
     rename_archive,
     store_analytics,
 )
-from ..config import Config
-from ..movement import render_floor_guide, render_movement_overlay
-from ..reference_import import (
-    ImportCancelledError,
-    load_report_coach_data,
-    load_report_movement_data,
-    render_coach_frame_overlay,
-)
-from ..replay import VideoReader, save_overlay_video
-from ..review import read_report, report_directory
-from .analytics_data import session_payload
+from ...config import Config
+from ...movement import render_floor_guide, render_movement_overlay
+from ...references.coach import render_coach_frame_overlay
+from ...references.companions import load_report_coach_data, load_report_movement_data
+from ...references.errors import ImportCancelledError
+from ...replay import VideoReader, save_overlay_video
+from ...review import read_report, report_directory
+from ..analytics.data import session_payload
 
 
 def archive_report(
     report_path: Path, cfg: Config, cancel_check: Callable[[], bool], *,
     as_reference: bool = False,
 ) -> Path:
-    from ..reference_archives import mark_reference, reference_directory
+    from ...references.archives import mark_reference, reference_directory
 
     record = read_report(report_path)
     source = record.recorded_video
@@ -181,8 +178,8 @@ def migrate_legacy_archives(
     """Copy loose reports and compatible DB evidence; never remove legacy data."""
     count = 0
     errors: list[str] = []
-    from ..archive import calibration_directory
-    from ..reference_archives import promote_reference, reference_directory
+    from ...archive import calibration_directory
+    from ...references.archives import promote_reference, reference_directory
 
     for path in calibration_directory(cfg.data_dir).glob("*.tpc"):
         if cancel_check():

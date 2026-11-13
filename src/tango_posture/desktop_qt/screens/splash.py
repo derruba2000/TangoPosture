@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QProgressBar, QVBoxLayout, QWidget
 
-from .theme import COLOR_BASE, COLOR_BORDER, COLOR_COPPER, COLOR_TEXT_PRIMARY
+from ..theme import COLOR_BASE, COLOR_BORDER, COLOR_COPPER, COLOR_TEXT_PRIMARY
 
 
 class SplashScreen(QWidget):

@@ -14,14 +14,14 @@ from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 
 from tango_posture.archive import append_segment, file_sha256, read_analytics, read_manifest
 from tango_posture.config import Config
-from tango_posture.desktop_qt.library_archives import archive_report, migrate_legacy_archives
-from tango_posture.desktop_qt.review_analysis import ReviewAnalysis, analyse_review_clip
-from tango_posture.desktop_qt.review_playback import ReviewPlayback
+from tango_posture.desktop_qt.library.archives import archive_report, migrate_legacy_archives
+from tango_posture.desktop_qt.review.analysis import ReviewAnalysis, analyse_review_clip
+from tango_posture.desktop_qt.review.playback import ReviewPlayback
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.review import ReviewScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
 from tango_posture.movement import render_floor_guide
-from tango_posture.reference_import import render_coach_frame_overlay
+from tango_posture.references.coach import render_coach_frame_overlay
 from tango_posture.review import write_metadata
 
 
@@ -162,7 +162,7 @@ def test_review_analysis_uses_temporary_storage_and_shared_analyzer(
         return SimpleNamespace(coach_data=coach_data, movement_data={"steps": [{"frame": 1}]})
 
     monkeypatch.setattr(
-        "tango_posture.desktop_qt.review_analysis.analyse_imported_clip",
+        'tango_posture.desktop_qt.review.analysis.analyse_imported_clip',
         analyze_imported_clip,
     )
     result = analyse_review_clip(
@@ -266,10 +266,10 @@ def test_library_import_packages_matching_clips_and_rebased_analytics(
         "hip_frames": [], "cut_frames": [3], "width": 64, "height": 48,
     }
     monkeypatch.setattr(
-        "tango_posture.desktop_qt.library_archives.load_report_coach_data", lambda _: coach,
+        'tango_posture.desktop_qt.library.archives.load_report_coach_data', lambda _: coach,
     )
     monkeypatch.setattr(
-        "tango_posture.desktop_qt.library_archives.load_report_movement_data", lambda _: movement,
+        'tango_posture.desktop_qt.library.archives.load_report_movement_data', lambda _: movement,
     )
     source_bytes = video.read_bytes()
     path = archive_report(report, cfg, lambda: False, as_reference=as_reference)

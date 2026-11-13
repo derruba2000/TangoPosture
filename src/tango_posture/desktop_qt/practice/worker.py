@@ -9,12 +9,12 @@ from queue import SimpleQueue
 import cv2
 from PySide6.QtCore import QObject, QThread, Signal
 
-from ..app import Application
-from ..calibration import load_calibration_file
-from ..config import Config
-from ..domain import FrameObservation
-from ..practice import GuiDisplay
-from ..storage import Storage
+from ...app import Application
+from ...calibration.baseline import load_calibration_file
+from ...config import Config
+from ...domain import FrameObservation
+from ...practice import GuiDisplay
+from ...storage import Storage
 
 PRACTICE_ERRORS = (OSError, ValueError, RuntimeError, ImportError, sqlite3.Error, cv2.error)
 

@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
-from ..archive import practice_directory, read_analytics, read_manifest
-from ..domain import METRIC_VERSION, METRICS
-from ..range_profiles import METRIC_DETAILS, RANGE_VERSION
+from ...archive import practice_directory, read_analytics, read_manifest
+from ...calibration.models import METRIC_DETAILS, RANGE_VERSION
+from ...domain import METRIC_VERSION, METRICS
 
 Point = tuple[float, float | None]
 

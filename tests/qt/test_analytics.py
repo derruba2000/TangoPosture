@@ -9,12 +9,12 @@ from PySide6.QtWidgets import QApplication
 
 from tango_posture.archive import append_segment, read_analytics, store_analytics
 from tango_posture.config import Config
-from tango_posture.desktop_qt.analytics_data import (
+from tango_posture.desktop_qt.analytics.data import (
     load_archive_dataset,
     load_session,
     session_payload,
 )
-from tango_posture.desktop_qt.library_archives import migrate_legacy_archives
+from tango_posture.desktop_qt.library.archives import migrate_legacy_archives
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.analytics import AnalyticsScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
@@ -83,7 +83,7 @@ def test_indexed_analytics_survive_portable_copy_without_database(tmp_path, payl
     copied.write_bytes(path.read_bytes())
     def no_database(*args):
         pytest.fail("Displaying archived analytics must not read the database")
-    monkeypatch.setattr("tango_posture.desktop_qt.analytics_data._connect", no_database)
+    monkeypatch.setattr('tango_posture.desktop_qt.analytics.data._connect', no_database)
     for index in (0, 1):
         loaded = load_archive_dataset(copied, index)
         assert loaded.identifier == original.identifier

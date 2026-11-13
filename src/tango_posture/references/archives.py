@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from .archive import (
+from ..archive import (
     PracticeArchive,
     _archive_lock,
     _rewrite_members,
@@ -18,8 +18,8 @@ from .archive import (
     read_analytics,
     read_manifest,
 )
-from .reference_import import ImportCancelledError
-from .replay import VideoReader, save_overlay_video
+from ..replay import VideoReader, save_overlay_video
+from .errors import ImportCancelledError
 
 
 def reference_directory(data_dir: str) -> Path:

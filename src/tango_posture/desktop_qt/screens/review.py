@@ -36,17 +36,13 @@ from PySide6.QtWidgets import (
 
 from ...archive import file_sha256, read_analytics, read_movement_analysis, store_analytics
 from ...movement import render_floor_guide, render_movement_overlay, validate_movement_analysis
-from ...reference_import import (
-    MAX_IMPORT_RANGE_SECONDS,
-    coach_notes_for_frame,
-    load_report_coach_data,
-    load_report_movement_data,
-    render_coach_frame_overlay,
-)
+from ...references.coach import coach_notes_for_frame, render_coach_frame_overlay
+from ...references.companions import load_report_coach_data, load_report_movement_data
+from ...references.constants import MAX_IMPORT_RANGE_SECONDS
 from ...replay import time_label
 from ..components.video_stage import VideoStage
-from ..review_analysis import ReviewAnalysis, analyse_review_clip
-from ..review_playback import VIDEO_SUFFIXES, ReviewPlayback
+from ..review.analysis import ReviewAnalysis, analyse_review_clip
+from ..review.playback import VIDEO_SUFFIXES, ReviewPlayback
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
 from ..theme import (
@@ -395,7 +391,7 @@ class ReviewScreen(QWidget):
         )
         if not video:
             return
-        from ...reference_import import relink_report_video
+        from ...references.comparison import relink_report_video
 
         try:
             outcome = relink_report_video(report, Path(video))

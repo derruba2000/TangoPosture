@@ -6,9 +6,9 @@ from bisect import bisect_right
 from collections.abc import Callable
 from pathlib import Path
 
-from ..archive import PracticeArchive
-from ..replay import VideoReader
-from ..review import ReportRecord, read_report
+from ...archive import PracticeArchive
+from ...replay import VideoReader
+from ...review import ReportRecord, read_report
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm")
 

@@ -7,9 +7,9 @@ from uuid import uuid4
 
 import numpy as np
 
-from .config import Config
-from .domain import METRIC_VERSION, METRICS, Calibration, MetricObservation
-from .geometry import wrapped
+from ..config import Config
+from ..domain import METRIC_VERSION, METRICS, Calibration, MetricObservation
+from ..geometry import wrapped
 
 
 def utc_now() -> str:
@@ -35,7 +35,7 @@ def compatible(ref: Calibration, current: dict, model_hash: str) -> None:
         raise ValueError(
             "Reference capture profile, resolution, side or direction changed; recalibrate"
         )
-    from .range_profiles import profile_from_calibration
+    from .models import profile_from_calibration
 
     ranges = profile_from_calibration(ref)
     if ranges is not None and not any(target.camera_check_passed for target in ranges.metrics.values()):
@@ -134,7 +134,7 @@ def load_calibration_file(
     for cand in candidates:
         if cand.is_file():
             if cand.suffix.lower() == ".tpc":
-                from .archive import read_calibration_archive
+                from ..archive import read_calibration_archive
 
                 return read_calibration_archive(cand)
             data = json.loads(cand.read_text(encoding="utf-8"))
@@ -142,7 +142,7 @@ def load_calibration_file(
     if folder.is_dir():
         for archive_file in sorted(folder.glob("*.tpc"), reverse=True):
             try:
-                from .archive import read_calibration_archive
+                from ..archive import read_calibration_archive
 
                 reference = read_calibration_archive(archive_file)
                 if reference.id == identifier or reference.id.startswith(identifier):

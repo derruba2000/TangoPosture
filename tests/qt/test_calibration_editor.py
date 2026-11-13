@@ -7,16 +7,16 @@ from conftest import frame
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from tango_posture.archive import append_segment, read_analytics, read_manifest
-from tango_posture.calibration import profile
+from tango_posture.calibration.archives import read_range_profile
+from tango_posture.calibration.baseline import profile
 from tango_posture.config import Config
-from tango_posture.desktop_qt.calibration_editor import CalibrationEditor
-from tango_posture.desktop_qt.guided_calibration import GuidedCalibration
+from tango_posture.desktop_qt.calibration.editor import CalibrationEditor
+from tango_posture.desktop_qt.calibration.guided import GuidedCalibration
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.library import LibraryScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
 from tango_posture.models import MANIFEST
-from tango_posture.range_profiles import read_range_profile
-from tango_posture.reference_archives import promote_reference
+from tango_posture.references.archives import promote_reference
 
 
 @pytest.fixture(scope="session")
@@ -98,7 +98,7 @@ def test_library_distinguishes_profiles_from_replayable_references(qapp, tmp_pat
 def test_guided_dialog_never_opens_camera_until_requested(qapp, tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Opening the dialog must not open camera/model")
-    monkeypatch.setattr("tango_posture.desktop_qt.guided_calibration.QtPracticeWorker", forbidden)
+    monkeypatch.setattr('tango_posture.desktop_qt.calibration.guided.QtPracticeWorker', forbidden)
     dialog = GuidedCalibration(ServiceBridge(Config(data_dir=str(tmp_path))))
     assert dialog._thread is None
     assert not dialog.start.isEnabled()

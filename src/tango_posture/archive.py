@@ -211,7 +211,7 @@ def read_manifest(path: Path) -> dict:
         with ZipFile(path) as archive:
             data = json.loads(archive.read("manifest.json"))
             if isinstance(data, dict) and data.get("version") == 2:
-                from .range_profiles import read_range_profile
+                from .calibration.archives import read_range_profile
 
                 if path.suffix.lower() != ".tpc" or data.get("segments") != []:
                     raise ValueError("Invalid range calibration archive")
@@ -510,7 +510,7 @@ def read_calibration_archive(path: Path) -> Calibration:
     if path.suffix.lower() != ".tpc":
         raise ValueError("Practice scoring requires a .tpc calibration profile, not a reference video")
     if manifest["version"] == 2:
-        from .range_profiles import read_range_profile
+        from .calibration.archives import read_range_profile
 
         return read_range_profile(path).calibration()
     try:

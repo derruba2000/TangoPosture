@@ -8,9 +8,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from ..config import Config
-from ..reference_import import analyse_imported_clip
-from ..storage import Storage
+from ...config import Config
+from ...references.pipeline import analyse_imported_clip
+from ...storage import Storage
 
 
 @dataclass(frozen=True)

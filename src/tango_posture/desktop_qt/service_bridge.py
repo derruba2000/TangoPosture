@@ -52,8 +52,8 @@ class ServiceBridge(QObject):
 
     def list_references(self) -> list[ReferenceSummary]:
         """Discover existing .tpc and legacy JSON calibrations."""
-        from ..calibration import load_calibration_file
-        from ..range_profiles import profile_from_calibration
+        from ..calibration.baseline import load_calibration_file
+        from ..calibration.models import profile_from_calibration
         from ..storage import Storage
 
         data_dir = Path(self.cfg.data_dir)
@@ -128,7 +128,7 @@ class ServiceBridge(QObject):
 
     def list_library_archives(self) -> list[dict[str, Any]]:
         from ..archive import calibration_directory, read_manifest
-        from ..reference_archives import reference_directory
+        from ..references.archives import reference_directory
 
         items = self.list_practices()
         for folder, suffix, kind in (

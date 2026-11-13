@@ -26,7 +26,9 @@ from .archive import (
     save_calibration_archive,
 )
 from .beat import BeatTracker
-from .calibration import calibrate, compatible, profile, save_calibration_file
+from .calibration.baseline import calibrate, compatible, profile, save_calibration_file
+from .calibration.measurements import measure_profile
+from .calibration.models import profile_from_calibration
 from .capture import Capture
 from .config import Config
 from .display import PracticeDisplay
@@ -50,7 +52,6 @@ from .models import verify
 from .movement import render_floor_guide
 from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
-from .range_profiles import measure_profile, profile_from_calibration
 from .reports import write_markdown_report
 from .session import Session
 from .storage import Storage

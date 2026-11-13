@@ -11,7 +11,8 @@ from tango_posture.config import Config
 from tango_posture.desktop_qt.router import Route, Router
 from tango_posture.desktop_qt.screens.library import LibraryScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
-from tango_posture.reference_import import ImportCancelledError, ImportedClipResult
+from tango_posture.references.errors import ImportCancelledError
+from tango_posture.references.results import ImportedClipResult
 
 
 @pytest.fixture(scope="session")
