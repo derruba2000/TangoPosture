@@ -50,6 +50,7 @@ class ReferenceMode(StrEnum):
 
 class ArchiveKind(StrEnum):
     PRACTICE = "practice"
+    REFERENCE = "reference"
     CALIBRATION = "calibration"
     LEGACY_REPORT = "legacy_report"
 

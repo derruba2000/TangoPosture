@@ -152,15 +152,18 @@ Qt shows the TangoPosture splash screen for three seconds at startup. Select
 and usage information. **Help & Guide** renders the styled offline manual
 with hierarchical contents and searchable, highlighted matches.
 
-The Library lists practice `.tp` and reference `.tpc` archives. **Rename** saves
+The Library lists practice `.tp`, reference recording `.tpr`, and calibration
+profile `.tpc` files (including legacy neutral-baseline archives). **Rename** saves
 the display name inside the archive without changing its filename. **Delete**
 asks for confirmation before moving the archive, including its recordings and
 analytics, to the operating system's Trash; original imported media and legacy
 reports are retained. **Import & Analyze Video…** packages a selected local clip
-into a portable `.tp` without modifying the source video. Imports are available
+into a portable `.tpr` by default without modifying the source video; uncheck
+**Import as reference** to produce a `.tp`. Imports are available
 only through Library. **Migrate Legacy Data** copies loose reports with available
 media and compatible database analytics into archives, retains the originals,
-and reports unavailable media or incompatible data. Repeating migration does
+and copies legacy `.tpc` recordings into separate `.tpr` files without changing
+the original neutral baselines. It reports unavailable media or incompatible data. Repeating migration does
 not overwrite an already migrated report. **Export Video…** in Review copies
 the currently selected stream to a destination you choose.
 
@@ -177,7 +180,8 @@ cannot be observed remain unavailable rather than being presented as good.
 Review supports raw, overlay and (when archived) full-lines video streams,
 timestamp seeking, speed/frame-step controls and side-by-side comparison with
 a practice or reference archive from Library. **Open Library Archive…** and
-**Open Comparison…** list only Library `.tp`/`.tpc` entries, not loose media.
+**Open Comparison…** list only replayable Library `.tp`/`.tpr`/legacy `.tpc`
+entries, not loose media or profile-only files.
 Comparison follows the primary
 playhead's elapsed time; it does not calculate a biomechanical or musical
 alignment. For a raw or local video, click **Analyze posture & movement** to run a
@@ -185,7 +189,7 @@ cancellable background analysis of up to the first two minutes. The resulting
 skeleton overlay, head/shoulder/torso-hip/knee measurements and posture alerts
 stay synchronized with the current frame. The analysis uses the same thresholds
 as live practice, does not modify the raw video, and saves results inside the
-selected `.tp` recording so they return when reopened. Archived baked video
+selected `.tp` or `.tpr` recording so they return when reopened. Archived baked video
 streams remain unchanged.
 
 Enable **Pivot rings** and **Step footprints** to display the same
@@ -202,7 +206,8 @@ toggles let you compare overlays or lines against the comparison video.
 **Import YouTube / Facebook…** is available only in Library.
 Enter a supported HTTPS YouTube video or Facebook Reel URL, an optional title,
 and a clip range of up to 120 seconds. The shared background import worker downloads,
-analyzes and packages the clip, report and source provenance into a `.tp`, then
+analyzes and packages the clip, report and source provenance into a `.tpr`
+(or `.tp` when import-as-reference is unchecked), then
 opens the archive in Review.
 Imports require network access and `yt-dlp`; failures and cancellation are shown
 explicitly. Only import videos you have permission to use. Ordinary local review
@@ -220,7 +225,7 @@ unavailable when no archived frame timestamp covers the observation. Unknown
 periods remain gaps. Portable archived analytics do not require the original
 database. Older full-lines archive names remain readable.
 
-AI Coach accepts a Markdown report or a `.tp`/`.tpc` archive report. It makes no
+AI Coach accepts a Markdown report or a `.tp`/`.tpr`/legacy `.tpc` archive report. It makes no
 Ollama request until **Analyze Selected Report** is explicitly clicked, streams
 the local model response, supports cancellation, and saves each result with the
 source report hash, model and endpoint. Results for a report changed during
@@ -258,6 +263,67 @@ If you prefer a mirrored display, add `--mirror`. Setup remains unmirrored so th
 Mirroring only transforms rendered pixels and overlay coordinates. It never changes the pose coordinates used for calculations or the measurements saved to storage.
 
 ## 5. Choosing and calibrating a reference
+
+### Qt reference recordings and approved profiles
+
+| File | Meaning | Contents |
+| --- | --- | --- |
+| `.tp` | Practice session | Indexed original recordings, overlays, measurements and reports. **Promote to Reference** creates a separate `.tpr` from one recording or an excerpt. |
+| `.tpr` | Replayable reference recording | Video, source provenance, clip timestamps, cached landmarks/measurements where available, and optionally a saved numbered-dancer selection with explicit track anchors. |
+| `.tpc` | Calibration profile | Approved ranges per metric, units, views, practice context, example passages, reliable coverage, model/measurement versions and camera-check evidence. No video dependency. |
+
+Use **Create calibration** on a `.tpr` in Library. In the shared approval screen:
+
+1. Select the numbered dancer at the playhead. Ambiguous spatial tracking,
+   missing poses or long gaps end a track; it never silently switches people.
+   Add explicit restart anchors after excluded sections and confirm they show
+   the same dancer. **Save dancer selection** persists anchors in the reference.
+   This is conservative spatial association, not validated identity recognition.
+2. Review **Head → Shoulders → Hips → Torso → Knees** without rerunning inference.
+   An older reference with no trustworthy landmark/model cache must first be
+   reanalyzed in Review; legacy neutral baselines do not supply distributions.
+3. Enter example passages in the displayed timeline seconds, such as
+   `0-3; 5-9`. The histogram and timestamp chart show the cached evidence.
+   **Show low/high example** seeks to the relevant moment. The median, middle
+   80%, reliable duration and inside-range fraction describe those passages.
+4. Edit acceptable minimum/maximum independently from which moments count as
+   examples. The middle 80% is only a starting suggestion, not a normative
+   target. Separate standing/walking passages when their distributions differ.
+5. Explicitly approve or skip each metric, name the context and save a new
+   `.tpc`. Save different names for several profiles from the same reference.
+   Unapproved or unobservable metrics never become reassuring scores.
+
+The initial metric set is ear-to-nose head pitch, existing head-forward and
+head-inclination measurements, normalized ear-to-shoulder clearance, hip offset
+from the ankle-to-head axis, projected torso alignment and the least-bent
+reliably visible knee. Clearance is not left/right shoulder level; hip offset
+is not pelvic rotation. Head yaw/lateral tilt, separate shoulder/hip-level
+angles and support-leg ranges are not implemented or represented as validated.
+
+For **Guided camera calibration**, preview first, then explicitly begin a spoken
+and visible countdown. Each group captures comfortable neutral, changed,
+returned and freshly repeated holds with settling time. A repeat check requires
+at least 60% reliable hold coverage (and at least 0.5 seconds), both changes
+larger than twice the largest within-hold middle-80% spread, consistent change
+direction, and a return within twice that spread or 25% of the first change.
+These are engineering repeatability heuristics, not technique validation.
+Failures provide framing advice and **Retry / Skip**. A solo-walking context
+also records a walking drill. Both sources end in the same range approval screen;
+choose which hold or drill supplies target examples, independently of limits.
+
+A video-derived profile can be selected in Practice for measured-value/range
+comparison before live scoring is enabled. **Check camera** on that profile
+records fresh holds; explicitly approve camera use per responsive metric and
+confirm the applicable view is comparable. A repeat check alone does not prove
+cross-camera accuracy. The resulting profile records the checked capture setup
+and uses exact source/resolution/side/facing/profile and model compatibility for
+scoring. Loss of confidence or the approved view remains unknown. Profiles work
+offline without the source `.tpr`; source names and hashes are provenance only.
+
+The following legacy baseline and CLI workflow remains supported. Version-1
+`.tpc` archives are neutral baselines, not range profiles. **Migrate Legacy Data**
+copies their recordings to `.tpr`, keeps originals byte-for-byte, and never
+fabricates old measurement distributions.
 
 A reference is a saved description of the measurements observed during a deliberately selected stable interval. It is not a pretrained ideal pose or an automatically chosen teacher judgement.
 

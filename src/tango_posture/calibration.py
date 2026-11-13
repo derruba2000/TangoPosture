@@ -35,6 +35,11 @@ def compatible(ref: Calibration, current: dict, model_hash: str) -> None:
         raise ValueError(
             "Reference capture profile, resolution, side or direction changed; recalibrate"
         )
+    from .range_profiles import profile_from_calibration
+
+    ranges = profile_from_calibration(ref)
+    if ranges is not None and not any(target.camera_check_passed for target in ranges.metrics.values()):
+        raise ValueError("Comparison-only profile: use Library > Check camera before enabling scoring")
 
 
 def calibrate(

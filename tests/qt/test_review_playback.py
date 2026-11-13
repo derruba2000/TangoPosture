@@ -244,8 +244,9 @@ def test_archive_comparison_uses_raw_video_without_stream_selector(screen, video
     assert screen.stream_combo.currentText() == "Raw video"
 
 
+@pytest.mark.parametrize("as_reference", [False, True])
 def test_library_import_packages_matching_clips_and_rebased_analytics(
-    video, tmp_path, monkeypatch, screen
+    video, tmp_path, monkeypatch, screen, as_reference,
 ):
     cfg = Config(data_dir=str(tmp_path))
     report = tmp_path / "reports" / "report_import.md"
@@ -271,7 +272,8 @@ def test_library_import_packages_matching_clips_and_rebased_analytics(
         "tango_posture.desktop_qt.library_archives.load_report_movement_data", lambda _: movement,
     )
     source_bytes = video.read_bytes()
-    path = archive_report(report, cfg, lambda: False)
+    path = archive_report(report, cfg, lambda: False, as_reference=as_reference)
+    assert path.suffix == (".tpr" if as_reference else ".tp")
     analytics = read_analytics(path, 0)
     assert set(analytics["coach_data"]["frames"]) == {"0", "5"}
     assert analytics["movement_data"]["steps"][0]["frame"] == 2

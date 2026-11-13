@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...archive import read_manifest
-from ...domain import METRICS, UNITS
+from ...range_profiles import METRIC_DETAILS
 from ..analytics_data import (
     FRAME_METRICS,
     MetricData,
@@ -187,13 +187,13 @@ class AnalyticsScreen(QWidget):
         cards = QVBoxLayout(content)
         self.charts: dict[str, MetricChart] = {}
         self.coverage_labels: dict[str, QLabel] = {}
-        for metric in (*METRICS, *FRAME_METRICS):
+        for metric in (*METRIC_DETAILS, *FRAME_METRICS):
             card = QFrame()
             card.setProperty("class", "card")
             card_layout = QVBoxLayout(card)
             label = QLabel(
-                f"{METRIC_NAMES[metric]} — smoothed delta ({UNITS[metric].replace('_', ' ')})"
-                if metric in METRICS
+                f"{METRIC_DETAILS[metric][1]} — delta ({METRIC_DETAILS[metric][2].replace('_', ' ')})"
+                if metric in METRIC_DETAILS
                 else f"{FRAME_METRICS[metric][0]} — measurement ({FRAME_METRICS[metric][1]})"
             )
             card_layout.addWidget(label)
@@ -305,6 +305,9 @@ class AnalyticsScreen(QWidget):
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, event.onset)
                 self.event_table.setItem(row, column, item)
+        for metric in self.charts:
+            self.charts[metric].set_data(None)
+            self.coverage_labels[metric].setText("Unavailable: no approved / stored observations for this metric.")
         for metric, data in dataset.metrics.items():
             self.charts[metric].set_data(data, time_end, dataset.origin_timestamp)
             ratio = finite_number(data.summary.get("valid_coverage"))
@@ -316,7 +319,7 @@ class AnalyticsScreen(QWidget):
                 f"Valid coverage: {coverage} · Valid: {valid} · Unknown: {unknown} · "
                 f"Delta samples: {available}/{len(data.points)} · "
                 f"Persisted events: {data.event_count} ({data.open_event_count} open)"
-                if metric in METRICS else
+                if metric in METRIC_DETAILS else
                 f"Stored measurement samples: {available}/{len(data.points)}. "
                 "Missing observations remain unknown; these are not posture scores."
             )

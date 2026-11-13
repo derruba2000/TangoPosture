@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from ..app import Application
 from ..calibration import load_calibration_file
 from ..config import Config
+from ..domain import FrameObservation
 from ..practice import GuiDisplay
 from ..storage import Storage
 
@@ -23,10 +24,17 @@ class QtPracticeDisplay(GuiDisplay):
 
     requires_reference_acceptance = True
 
-    def __init__(self) -> None:
+    def __init__(self, *, capture_evidence: bool = False) -> None:
         super().__init__()
         self.calibration_candidates: SimpleQueue[str] = SimpleQueue()
         self.calibration_archives: SimpleQueue[Path] = SimpleQueue()
+        self.capture_evidence = capture_evidence
+        self.observations: SimpleQueue[FrameObservation] = SimpleQueue()
+        self.prompts: SimpleQueue[str] = SimpleQueue()
+
+    def observe(self, frame: FrameObservation) -> None:
+        if self.capture_evidence:
+            self.observations.put(frame)
 
     def candidate_ready(self, name: str) -> None:
         self.calibration_candidates.put(name)
@@ -69,7 +77,11 @@ class QtPracticeWorker(QObject):
             cfg = self.cfg
             if self.reference_id:
                 try:
-                    reference = storage.calibration(self.reference_id)
+                    reference = (
+                        load_calibration_file(str(self.reference_path), self.reference_path.parent)
+                        if self.reference_path is not None and self.reference_path.is_file()
+                        else storage.calibration(self.reference_id)
+                    )
                 except ValueError:
                     if self.reference_path is None:
                         raise
@@ -78,6 +90,8 @@ class QtPracticeWorker(QObject):
                     )
                     if reference is None:
                         raise ValueError(f"Reference not found: {self.reference_path.name}")
+                if reference is None:
+                    raise ValueError("Selected calibration could not be loaded")
                 cfg = self._config_for_reference(cfg, reference.profile)
 
             Application(

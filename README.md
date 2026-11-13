@@ -20,9 +20,9 @@ The desktop application uses **Qt / PySide6** exclusively.
 1. **All-Angle Calibration & 360° Pivot / Side-Step Support (`allow_all_angles=true`)**
    - Calibrate and practice **facing the camera**, in **side-on profile**, or while executing **side steps (*pasos al costado*), ochos, and 360° pivots** without losing tracking.
    - Uses your central spine axis (midpoint of shoulders to midpoint of hips) when both sides are visible, and seamlessly falls back to the visible side during pivots.
-2. **Dedicated Calibration Camera & Reference Archives (`calibrations/`)**
-   - Pressing `C` speaks **"Calibration starting"**, gives you a **3-second countdown** to get into position, plays a **1-second beep** throughout the 12-second capture window, and announces **"Calibration completed"** (or speaks the specific reason if calibration failed).
-   - **References > New Calibration** opens calibration in the Qt practice screen. A valid capture saves `calibrations/<reference name>.tpc`, containing raw video, overlay video, and `reference.json`. Capturing again with the same name replaces that archive rather than adding recordings; failed captures preserve the previous valid file.
+2. **Reference Recordings & Calibration Profiles**
+   - `.tpr` files contain replayable reference video and cached measurements; `.tpc` profiles contain approved metric ranges independently of the source video.
+   - **Library > Guided camera calibration** and **References > New Calibration** guide neutral/change/return/repeat holds and open the same approval editor used by a reference video's **Create calibration** action. New profiles require a distinct name; originals are not replaced.
 3. **Head Horizontal Alignment & Neutral Camera Offset**
    - Draws a cyan horizontal reference line from the ear and a live ear-to-nose pitch vector (`Head horiz: +0.0 deg`).
    - Compensates for natural ear-to-nose landmark geometry and camera tilt via `head_neutral_offset=-12.0` (or auto-zeroes to your calibrated straight posture) and triggers a red **`BAD HEAD ALIGNMENT`** alert when the head drops below `head_down_angle` (`-15.0 deg`) for longer than `head_down_duration` (`3.0s`).
@@ -157,9 +157,9 @@ rail opens **Practice**, **References**, **Library**, **Review**, **Analytics**,
 license, and repository link.
 
 In **Practice**, name the practice, select a camera or video source, then click
-**Start Preview**. Use **New Reference** and **Accept Reference** to calibrate
-before scoring. **References > New Calibration** also starts this workflow;
-saved `.tpc` references can be inspected and matched with **Match Camera Settings**.
+**Start Preview**. Use **New Calibration** for guided camera capture and explicit
+range approval. **References > New Calibration** also starts this workflow;
+saved `.tpc` profiles can be inspected and matched with **Match Camera Settings**.
 Confirm unchanged physical camera placement when reusing a reference.
 
 **Record (R)** starts video recording. **Start Scoring (S)** starts
@@ -197,16 +197,35 @@ Tk/Tcl is not required. Headless processing continues to use the CLI below.
 
 ### Read reports, replay recordings, and review with Ollama
 
-**Library** lists `.tp` practices and `.tpc` references. Import local videos,
-YouTube videos, or Facebook Reels here; results are packaged into portable `.tp`
-archives without changing the original media. Rename persists the display name;
+**Library** lists `.tp` practices, `.tpr` reference recordings and `.tpc`
+calibration profiles. Local, YouTube and Facebook imports default to **Import as
+reference (.tpr)**; uncheck it to create a practice archive. Imports retain raw,
+overlay, floor-lines and indexed analytics without changing the original media.
+**Promote to Reference** copies a selected practice recording or excerpt into a
+separate `.tpr`. Rename persists the display name;
 confirmed Delete moves an archive to Trash. **Migrate Legacy Data** copies
-compatible loose reports/database evidence while retaining originals.
+compatible loose reports/database evidence and copies legacy `.tpc` recordings
+into `.tpr` references while retaining every original neutral baseline.
+
+On a `.tpr`, choose **Create calibration**. Select the numbered dancer in the
+video; explicitly restart a track after ambiguity or occlusion and confirm linked
+passages show the same dancer. Save that selection in the reference if desired.
+Work through **Head → Shoulders → Hips → Torso → Knees**, review the histogram,
+timeline, median, middle 80%, reliable duration and extreme examples, and edit
+example passages separately from acceptable limits. Approve only supported
+metrics and save distinct profiles for different contexts.
+
+Video-derived profiles support comparison immediately, but do not enable scoring.
+Use **Check camera** on a profile for guided repeatability checks, retry or skip
+failed steps, and explicitly approve live use metric by metric. Walking contexts
+include a walking drill. Repeatability is an engineering check, not technique or
+cross-camera accuracy validation; confirm the view is comparable. Approved live
+profiles require matching model and capture settings and unchanged physical placement.
 
 In **Review**, use **Open Library Archive…**, select the recording and stream,
 then play, scrub, step frames, or change speed. Report timestamps seek to archived
 frames, including timing gaps. **Analyze posture & movement** saves results in
-the selected `.tp`; layer controls display skeletons, metrics, alerts, pivots,
+the selected `.tp` or `.tpr`; layer controls display skeletons, metrics, alerts, pivots,
 steps, and lines on a neutral floor. **Open Comparison…** selects another Library
 archive for synchronized side-by-side video. Archive contents are extracted
 temporarily and cleaned up when closed. Qt replay is currently video-only;
@@ -334,7 +353,8 @@ Common settings:
 ## Saved Artifacts & Output Directories
 
 - **`practice/<name>.tp`**: Portable ZIP archive containing `video_00.mp4`, `overlay_00.mp4`, `report_00.md`, `report_00.metadata.json`, and a manifest. Further recordings increment to `01`, `02`, and beyond, preserving earlier recordings. Observation-only runs have a report but no recorded videos.
-- **`calibrations/<name>.tpc`**: Calibration ZIP archive containing `reference.json`, `video_00.mp4`, `overlay_00.mp4`, a calibration summary, metadata, and manifest. A new accepted capture replaces the named archive. Reuse via `--calibration latest`, a `.tpc` path, or UUID; legacy JSON references remain readable.
+- **`references/<name>.tpr`**: Reference recording ZIP with raw/overlay/lines video where available, indexed measurements, report and source/selection metadata.
+- **`calibrations/<name>.tpc`**: Version-2 calibration ZIP with `profile.json` and a manifest: explicitly approved ranges, units, views, context, evidence coverage, provenance, model and measurement versions. It needs no source video to score. Version-1 `.tpc` files remain readable as neutral baselines, without invented distributions; migration creates separate `.tpr` copies. Legacy JSON baselines also remain readable.
 - **Legacy `reports/` and `videos/`**: Existing loose files remain untouched and readable; new practice reports and recordings are archived instead.
 - **`data/tango.sqlite3` & `data/exports/SESSION_ID/`**: SQLite session storage (`summary.json`, `observations.csv`, `events.csv`).
 

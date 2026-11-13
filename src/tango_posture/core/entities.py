@@ -95,3 +95,4 @@ class ReferenceSummary:
     camera: str
     created_at: str = ""
     is_archive: bool = True
+    scoring_ready: bool = True

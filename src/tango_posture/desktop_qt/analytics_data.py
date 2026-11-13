@@ -15,6 +15,7 @@ from zipfile import BadZipFile, ZipFile
 
 from ..archive import practice_directory, read_analytics, read_manifest
 from ..domain import METRIC_VERSION, METRICS
+from ..range_profiles import METRIC_DETAILS, RANGE_VERSION
 
 Point = tuple[float, float | None]
 
@@ -117,8 +118,8 @@ def load_session(data_dir: Path, identifier: str) -> SessionData:
             max_gap = None
         rows = db.execute(
             "SELECT timestamp,metric,delta,quality_state,state FROM observations "
-            "WHERE session_id=? AND metric IN (?,?,?) ORDER BY timestamp,metric",
-            (identifier, *METRICS),
+            "WHERE session_id=? ORDER BY timestamp,metric",
+            (identifier,),
         ).fetchall()
         events = db.execute(
             "SELECT id,metric,onset,detection,end,peak_deviation,end_reason "
@@ -143,7 +144,12 @@ def project_session(
     origin = finite_number(rows[0]["timestamp"])
     if origin is None:
         raise ValueError("Selected session contains an invalid observation timestamp.")
-    points: dict[str, list[Point]] = {metric: [] for metric in METRICS}
+    if summary.get("measurement_version", RANGE_VERSION) != RANGE_VERSION:
+        raise ValueError("Incompatible range measurement version")
+    keys = list(dict.fromkeys([*METRICS, *(row["metric"] for row in rows)]))
+    if any(key not in METRIC_DETAILS for key in keys):
+        raise ValueError("Selected session has no compatible persisted observations: unsupported metric")
+    points: dict[str, list[Point]] = {metric: [] for metric in keys}
     for observation in rows:
         timestamp = finite_number(observation["timestamp"])
         own = points[observation["metric"]]

@@ -210,6 +210,13 @@ def read_manifest(path: Path) -> dict:
     try:
         with ZipFile(path) as archive:
             data = json.loads(archive.read("manifest.json"))
+            if isinstance(data, dict) and data.get("version") == 2:
+                from .range_profiles import read_range_profile
+
+                if path.suffix.lower() != ".tpc" or data.get("segments") != []:
+                    raise ValueError("Invalid range calibration archive")
+                read_range_profile(path)
+                return data
             if not isinstance(data, dict) or data.get("version") != 1:
                 raise ValueError("Unsupported practice archive version")
             segments = data.get("segments")
@@ -220,6 +227,11 @@ def read_manifest(path: Path) -> dict:
                 or "reference.json" not in archive.namelist() or len(segments) != 1
             ):
                 raise ValueError("Invalid calibration archive")
+            if path.suffix.lower() == ".tpr" and (
+                data.get("kind") != "reference" or data.get("reference") != "reference.json"
+                or "reference.json" not in archive.namelist() or len(segments) != 1
+            ):
+                raise ValueError("Invalid reference recording archive")
             for index, segment in enumerate(segments):
                 if not isinstance(segment, dict) or segment.get("index") != index:
                     raise ValueError("Invalid practice segment index")
@@ -494,7 +506,13 @@ def save_calibration_archive(path: Path, reference: Calibration, video: Path,
 
 
 def read_calibration_archive(path: Path) -> Calibration:
-    read_manifest(path)
+    manifest = read_manifest(path)
+    if path.suffix.lower() != ".tpc":
+        raise ValueError("Practice scoring requires a .tpc calibration profile, not a reference video")
+    if manifest["version"] == 2:
+        from .range_profiles import read_range_profile
+
+        return read_range_profile(path).calibration()
     try:
         with ZipFile(path) as archive:
             return Calibration(**json.loads(archive.read("reference.json")))

@@ -152,7 +152,7 @@ def test_library_picker_only_offers_practice_and_reference_archives(
 def test_closing_library_cancels_owned_packaging_thread(qapp, tmp_path, monkeypatch):
     started = threading.Event()
     cancelled = threading.Event()
-    def package(path, cfg, cancel_check):
+    def package(path, cfg, cancel_check, *, as_reference=False):
         started.set()
         while not cancel_check():
             cancelled.wait(0.01)

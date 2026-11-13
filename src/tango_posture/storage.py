@@ -137,7 +137,7 @@ class Storage:
         session["export_schema_version"] = 1
         from .domain import UNITS
 
-        session["units"] = UNITS
+        session["units"] = (session["summary"] or {}).get("units", UNITS)
         output.mkdir(parents=True, exist_ok=True)
         (output / "summary.json").write_text(
             json.dumps(session, indent=2, allow_nan=False) + "\n", encoding="utf-8"

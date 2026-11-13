@@ -24,29 +24,47 @@ remain. Packaged smoke checks initialize Qt, and builds exclude Tk modules.
 
 Latest automated verification:
 
-- `uv run --frozen pytest -q`: **314 passed**. Tk-only integration tests were
+- `QT_QPA_PLATFORM=offscreen uv run --frozen pytest -q`: **330 passed** at the
+  first integrated range-profile checkpoint. Tk-only integration tests were
   removed with their UI; Qt-entry-point, no-Tk startup and packaged-smoke
   regressions were added, while shared-engine tests remain.
 - `uv run --frozen ruff check .`: passed.
-- `uv run --frozen mypy src`: passed across 67 source files.
+- `uv run --frozen mypy src`: passed across 71 source files.
 - `git diff --check`: passed.
 
 Remaining desktop scope and acceptance limits:
 
-- Library catalogues `.tp` practices and `.tpc` references. Display-name changes
+- Library catalogues `.tp` practices, `.tpr` reference recordings and `.tpc`
+  calibration profiles. Display-name changes
   persist in manifests; confirmed deletion moves archives to Trash. Local and
   YouTube/Facebook Reel imports are Library-only and package matching indexed
   raw, overlay, floor-lines, report and analytics members without changing the
   original media. Legacy migration copies compatible reports/database evidence,
   retains originals, reports failures, and is idempotent for migrated reports.
   Soundtrack analysis is not exposed by the Qt Library.
+- Reference imports default to `.tpr`, and practice recordings/excerpts can be
+  promoted without changing the original. Legacy baseline migration creates
+  `.tpr` copies and retains original `.tpc` files; no user archives are migrated
+  automatically. Version-2 `.tpc` files contain only approved ranges/provenance
+  and remain usable without source video.
+- Video and guided camera calibration share an evidence/range-approval editor:
+  numbered dancer selection, explicit track restart anchors, cached measurements,
+  video/timeline/histogram, separate examples and acceptable bounds, quantile
+  suggestions, coverage, extrema seeking and per-metric approval. Guided holds
+  use repeatability heuristics with retry/skip and an optional walking drill.
+  Video profiles allow comparison immediately; scoring requires explicit
+  per-metric camera approval and compatible capture/model identity.
+- Range sessions preserve legacy baseline behavior and use two-sided bounds,
+  persistence, unknown/gap accounting, matching units and portable indexed
+  analytics. Synthetic tests exercise a complete recorded range session,
+  export, Analytics reload and promotion to cached reference evidence.
 - Review archive/comparison pickers are restricted to Library entries. The
   comparison-stream selector is removed. Posture/movement reanalysis persists
   to `analytics_XX.json` after verifying the archived raw-video hash. Pivot rings,
   step footprints and lines-only floor rendering retain the shared algorithms.
 - Analytics reads each selected `.tp` recording's stored evidence without the
-  database. Four stored frame measurements remain separate from the three
-  reference-relative metric families and do not fabricate calibrated coverage.
+  database. Stored frame measurements remain separate from baseline/range
+  evaluation and do not fabricate calibrated coverage.
   Temporal alignment remains unavailable.
 - Reference comparison synchronizes by elapsed playback time; it does not
   calculate or claim a semantic/biomechanical alignment.

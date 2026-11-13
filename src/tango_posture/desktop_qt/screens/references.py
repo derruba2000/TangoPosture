@@ -39,9 +39,11 @@ class ReferencesScreen(QWidget):
         # Header with actions
         header = QHBoxLayout()
         title_box = QVBoxLayout()
-        title = QLabel("Movement References")
+        title = QLabel("Calibration Profiles")
         title.setProperty("class", "title")
-        subtitle = QLabel("Standing posture calibration baselines used for real-time comparison.")
+        subtitle = QLabel(
+            "Approved .tpc ranges and legacy neutral baselines. Replayable .tpr references are in Library."
+        )
         subtitle.setProperty("class", "subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)

@@ -43,10 +43,11 @@ def summarize(
     spans: list[tuple[float, float]],
     pause_duration: float,
     cfg: Config,
+    ranges: dict[str, tuple[float, float]] | None = None,
 ) -> SessionSummary:
     active = sum(end - start for start, end in spans)
     result = {}
-    for m in METRICS:
+    for m in (ranges if ranges is not None else METRICS):
         observations = [r for r in rows if r["metric"] == m]
         valid = above = confirmed = 0.0
         intervals = []
@@ -57,8 +58,8 @@ def summarize(
                 if 0 < dt <= cfg.max_gap and a["delta"] is not None and b["delta"] is not None:
                     valid += dt
                     intervals.append((a["timestamp"], b["timestamp"]))
-                    magnitude = a["delta"] if m == "head_forward" else abs(a["delta"])
-                    if magnitude > getattr(cfg, m).entry:
+                    magnitude = a["delta"] if ranges is None and m == "head_forward" else abs(a["delta"])
+                    if magnitude > (getattr(cfg, m).entry if ranges is None else 0):
                         above += dt
         own_events = [e for e in events if e["metric"] == m]
         lengths = []
@@ -763,10 +764,11 @@ def write_markdown_report(
         lines.append("| Metric | Onset Time | Confirmed At | End Time | Peak Deviation | End Reason |")
         lines.append("| --- | --- | --- | --- | --- | --- |")
         for ev in sorted(session_events, key=lambda x: x["onset"]):
+            units = session_summary.get("units", UNITS) if session_summary else UNITS
             end_val = ev["end"] if ev["end"] is not None else ev["detection"]
             lines.append(
                 f"| `{ev['metric']}` | `{_fmt_time(ev['onset'])}` | `{_fmt_time(ev['detection'])}` | "
-                f"`{_fmt_time(end_val)}` | `{ev['peak_deviation']:.3f} {UNITS[ev['metric']]}` | `{ev['end_reason']}` |"
+                f"`{_fmt_time(end_val)}` | `{ev['peak_deviation']:.3f} {units[ev['metric']]}` | `{ev['end_reason']}` |"
             )
         lines.append("")
 

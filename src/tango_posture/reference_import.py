@@ -2004,7 +2004,10 @@ def _build_coach_frame_entry(
     elif quality_reason:
         primary = quality_reason
     elif any(r.get("state") == "DEVIATION" for r in session_rows):
-        primary = next(MESSAGES[r["metric"]] for r in session_rows if r.get("state") == "DEVIATION")
+        primary = next(
+            MESSAGES.get(r["metric"], f"{r['metric']}: outside approved range")
+            for r in session_rows if r.get("state") == "DEVIATION"
+        )
     else:
         primary = "Coaching status: Posture & axis within target thresholds"
 
@@ -2525,7 +2528,13 @@ def analyse_imported_clip(
         in_cal = bool(
             cal_window is not None and cal_window[0] - 1e-6 <= source_time < cal_window[1] - 1e-6
         )
-        observation = measure(frame_obs, cfg, view_range if not in_cal else None)
+        from .range_profiles import measure_profile, profile_from_calibration
+
+        range_profile = profile_from_calibration(active_reference) if active_reference is not None else None
+        observation = (
+            measure_profile(frame_obs, cfg, range_profile) if range_profile is not None else
+            measure(frame_obs, cfg, view_range if not in_cal else None)
+        )
         session_rows: list[dict[str, Any]] = []
         if session is not None and not in_cal and source_time >= (session.start or clip_in):
             session_rows = session.update(observation)
@@ -2707,6 +2716,7 @@ def analyse_imported_clip(
             single_pose_ok=len(frame_obs.poses) == 1,
         )
         coach_pending[frame_index] = coach_entry
+        coach_entry["measurement_poses"] = [_serialise_pose(pose) for pose in frame_obs.poses]
         coach_frame_meta[frame_index] = coach_meta
 
         frame_log.append(
@@ -2764,6 +2774,8 @@ def analyse_imported_clip(
         ]
     coach_data: dict[str, Any] = {
         "version": 1,
+        "model_hash": model_hash,
+        "capture_profile": cap_profile,
         "source_sha256": source_sha,
         "width": probe.width,
         "height": probe.height,

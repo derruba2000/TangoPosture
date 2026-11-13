@@ -373,7 +373,7 @@ class ReviewScreen(QWidget):
     def _set_relink_availability(self) -> None:
         report = self._playback._report
         archive_backed = self.current_archive_path is not None and (
-            self.current_archive_path.suffix.lower() in (".tp", ".tpc")
+            self.current_archive_path.suffix.lower() in (".tp", ".tpc", ".tpr")
         )
         self.relink_btn.setEnabled(
             report is not None
@@ -604,7 +604,7 @@ class ReviewScreen(QWidget):
             return
         if path.suffix.lower() == ".md":
             self.router.navigate(Route.COACH, path)
-        elif index is not None and path.suffix.lower() in (".tp", ".tpc"):
+        elif index is not None and path.suffix.lower() in (".tp", ".tpc", ".tpr"):
             self.router.navigate(Route.COACH, {"archive_path": path, "segment_index": index})
         else:
             self.bridge.status_message.emit("Open a saved report first.")
@@ -805,12 +805,14 @@ class ReviewScreen(QWidget):
                 )
                 if (
                     not cancel_event.is_set() and archive_path is not None
-                    and archive_path.suffix.lower() == ".tp" and segment_index is not None
+                    and archive_path.suffix.lower() in (".tp", ".tpr") and segment_index is not None
                 ):
                     store_analytics(
                         archive_path, segment_index,
                         {"coach_data": coach_data.coach_data,
                          "movement_data": coach_data.movement_data, "max_gap": cfg.max_gap,
+                         "model_hash": coach_data.coach_data.get("model_hash"),
+                         "capture_profile": coach_data.coach_data.get("capture_profile"),
                          "frame_timestamps": timestamps},
                         expected_video_sha256=video_sha256,
                     )

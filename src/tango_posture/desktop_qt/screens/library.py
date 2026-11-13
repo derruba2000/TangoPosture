@@ -14,6 +14,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -34,7 +35,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...archive import _archive_lock, rename_archive
+from ...archive import PracticeArchive, _archive_lock, rename_archive
+from ...range_profiles import read_range_profile
+from ...reference_archives import promote_reference, reference_directory, reference_path
 from ...reference_import import (
     MAX_IMPORT_RANGE_SECONDS,
     ImportedClipResult,
@@ -43,6 +46,7 @@ from ...reference_import import (
     parse_youtube_url,
     probe_import_video,
 )
+from ...replay import VideoReader
 from ...review import report_directory
 from ..library_archives import archive_report, migrate_legacy_archives
 from ..router import Route, Router
@@ -64,6 +68,7 @@ class LibraryScreen(QWidget):
         self._import_worker = ReferenceImportWorker(self._import_events.worker_event.emit)
         self._import_job_id: str | None = None
         self._import_cfg = bridge.config.model_copy(deep=True)
+        self._import_as_reference = True
         self._package_cancel = Event()
         self._package_thread: Thread | None = None
         self._package_events: Queue[tuple[Any, ...]] = Queue()
@@ -117,6 +122,12 @@ class LibraryScreen(QWidget):
         self.search_input.setPlaceholderText("Search practices by name…")
         self.search_input.textChanged.connect(self._filter_table)
         search_row.addWidget(self.search_input)
+        self.import_reference_cb = QCheckBox("Import as reference (.tpr)")
+        self.import_reference_cb.setChecked(True)
+        search_row.addWidget(self.import_reference_cb)
+        self.calibration_btn = QPushButton("Guided camera calibration…")
+        self.calibration_btn.clicked.connect(lambda: self._camera_calibration())
+        search_row.addWidget(self.calibration_btn)
         layout.addLayout(search_row)
 
         # Table
@@ -125,8 +136,8 @@ class LibraryScreen(QWidget):
         tf_layout = QVBoxLayout(table_frame)
         tf_layout.setContentsMargins(12, 12, 12, 12)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Name", "Segments", "Date / Created", "Actions"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Name", "Recordings", "Date / Created", "Actions", "Type"])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -137,7 +148,10 @@ class LibraryScreen(QWidget):
         layout.addWidget(table_frame, 1)
 
         import_status = QHBoxLayout()
-        self.import_status = QLabel("Imports save raw, overlay, lines and indexed analytics in a .tp archive.")
+        self.import_status = QLabel(
+            ".tp practice · .tpr replayable reference · .tpc approved calibration profile. "
+            "Legacy .tpc recordings remain readable."
+        )
         self.import_status.setWordWrap(True)
         self.import_progress = QProgressBar()
         self.import_progress.setRange(0, 100)
@@ -169,9 +183,14 @@ class LibraryScreen(QWidget):
             segments = "Report" if p.get("kind") == "report" else str(p["segments_count"])
             self.table.setItem(row_idx, 1, QTableWidgetItem(segments))
             self.table.setItem(row_idx, 2, QTableWidgetItem(p["created_at"] or "Recent"))
+            self.table.setItem(row_idx, 4, QTableWidgetItem(p["path"].suffix))
 
-            btn = QPushButton("Open in Review")
-            btn.clicked.connect(lambda _, path=p["path"]: self.router.navigate(Route.REVIEW, path))
+            profile_only = p["segments_count"] == 0
+            btn = QPushButton("Profile details" if profile_only else "Open in Review")
+            btn.clicked.connect(
+                lambda _, path=p["path"], profile_only=profile_only:
+                self._profile_details(path) if profile_only else self.router.navigate(Route.REVIEW, path)
+            )
             rename_btn = QPushButton("Rename")
             rename_btn.clicked.connect(
                 lambda _, path=p["path"], name=p["name"]: self._rename(path, name)
@@ -183,7 +202,126 @@ class LibraryScreen(QWidget):
             actions_layout.setContentsMargins(0, 0, 0, 0)
             for button in (btn, rename_btn, delete_btn):
                 actions_layout.addWidget(button)
+            if p["path"].suffix.lower() == ".tpr":
+                calibrate_btn = QPushButton("Create calibration")
+                calibrate_btn.clicked.connect(lambda _, path=p["path"]: self._calibrate_reference(path))
+                actions_layout.addWidget(calibrate_btn)
+            elif p["path"].suffix.lower() == ".tp":
+                promote_btn = QPushButton("Promote to Reference")
+                promote_btn.clicked.connect(lambda _, path=p["path"]: self._promote(path))
+                actions_layout.addWidget(promote_btn)
+            elif profile_only:
+                check_btn = QPushButton("Check camera")
+                check_btn.clicked.connect(lambda _, path=p["path"]: self._camera_calibration(path))
+                actions_layout.addWidget(check_btn)
             self.table.setCellWidget(row_idx, 3, actions)
+
+    def _calibrate_reference(self, path: Path) -> None:
+        from ..calibration_editor import CalibrationEditor
+
+        try:
+            editor = CalibrationEditor(path, self.bridge.config, self)
+            if editor.exec() == QDialog.DialogCode.Accepted:
+                self.refresh()
+                self.import_status.setText(f"Approved calibration saved: {editor.saved_path}")
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            self.import_status.setText(f"Cannot create calibration: {error}")
+
+    def _profile_details(self, path: Path) -> None:
+        try:
+            profile = read_range_profile(path)
+            metrics = "\n".join(
+                f"• {key}: {value.lower:.4g} … {value.upper:.4g} {value.unit} · {value.view} · "
+                f"{'camera checked' if value.camera_check_passed else 'comparison only'}"
+                for key, value in profile.metrics.items()
+            )
+            QMessageBox.information(
+                self, profile.name,
+                f"{profile.context}\n{profile.measurement_version}\n\n{metrics}\n\n"
+                "Scoring uses these saved ranges; the original reference video is not required.",
+            )
+        except (OSError, ValueError, KeyError) as error:
+            self.import_status.setText(f"Cannot read profile: {error}")
+
+    def _camera_calibration(self, path: Path | None = None) -> None:
+        from ..guided_calibration import GuidedCalibration
+
+        try:
+            dialog = GuidedCalibration(self.bridge, self, profile_path=path)
+            dialog.exec()
+            self.refresh()
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            self.import_status.setText(f"Cannot open camera calibration: {error}")
+
+    def _promote(self, path: Path) -> None:
+        try:
+            replay = PracticeArchive(path)
+            try:
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Promote recording / excerpt to Reference")
+                form = QFormLayout(dialog)
+                name_input = QLineEdit(f"{path.stem} reference")
+                recording = QComboBox()
+                recording.addItems([str(i) for i in range(len(replay.manifest["segments"]))])
+                start, end = QDoubleSpinBox(), QDoubleSpinBox()
+                rates: dict[str, float] = {}
+                def select_recording() -> None:
+                    segment = replay.manifest["segments"][recording.currentIndex()]
+                    if not segment.get("video"):
+                        raise ValueError("This recording has no original video")
+                    reader = VideoReader(replay.folder / segment["video"])
+                    try:
+                        rates["fps"], rates["count"] = reader.fps, reader.count
+                        for field in (start, end):
+                            field.setRange(0, reader.duration)
+                            field.setDecimals(3)
+                        start.setValue(0)
+                        end.setValue(reader.duration)
+                    finally:
+                        reader.close()
+                recording.currentIndexChanged.connect(select_recording)
+                select_recording()
+                form.addRow("Reference name:", name_input)
+                form.addRow("Recording index:", recording)
+                form.addRow("Start seconds:", start)
+                form.addRow("End seconds:", end)
+                buttons = QDialogButtonBox(
+                    QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                )
+                buttons.accepted.connect(dialog.accept)
+                buttons.rejected.connect(dialog.reject)
+                form.addRow(buttons)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
+                destination = reference_path(reference_directory(self.bridge.config.data_dir),
+                                             name_input.text().strip())
+                first = round(start.value() * rates["fps"])
+                last = round(end.value() * rates["fps"])
+                if last <= first:
+                    raise ValueError("Choose a nonempty excerpt")
+                index = recording.currentIndex()
+                stop = None if last == rates["count"] else last
+                name = name_input.text().strip()
+            finally:
+                replay.close()
+            self._package_cancel.clear()
+            self._import_job_id = "promotion"
+            self._set_import_busy(True)
+            self.import_status.setText("Creating a separate reference; practice original retained…")
+            def work() -> None:
+                try:
+                    result = promote_reference(
+                        path, destination, name, index,
+                        start_frame=first, end_frame=stop, cancel_check=self._package_cancel.is_set,
+                    )
+                    self._package_events.put(("archive_done", "promotion", result))
+                except Exception as error:  # noqa: BLE001 - worker boundary reports failures
+                    self._package_events.put(("import_error", "promotion", str(error)))
+            self._package_thread = Thread(target=work, name="qt-reference-promotion", daemon=True)
+            self._package_thread.start()
+            self._package_timer.start()
+        except (OSError, ValueError, KeyError, RuntimeError) as error:
+            self.import_status.setText(f"Cannot promote reference: {error}")
 
     def _rename(self, path: Path, current_name: str) -> None:
         name, accepted = QInputDialog.getText(self, "Rename Library entry", "Name:", text=current_name)
@@ -334,6 +472,7 @@ class LibraryScreen(QWidget):
     ) -> None:
         self._package_cancel.clear()
         self._import_cfg = self.bridge.config.model_copy(deep=True)
+        self._import_as_reference = self.import_reference_cb.isChecked()
         try:
             self._import_job_id = self._import_worker.start(
                 video_path=path,
@@ -459,12 +598,16 @@ class LibraryScreen(QWidget):
             result = values[0]
             job = job_id
             cfg = self._import_cfg
+            as_reference = self._import_as_reference
             events = self._package_events
             self.import_status.setText("Saving indexed raw, overlay, lines and analytics in a .tp archive…")
 
             def package() -> None:
                 try:
-                    path = archive_report(result.report_path, cfg, self._package_cancel.is_set)
+                    path = archive_report(
+                        result.report_path, cfg, self._package_cancel.is_set,
+                        as_reference=as_reference,
+                    )
                     events.put(("archive_done", job, path))
                 except Exception as error:  # noqa: BLE001 - worker boundary reports failures
                     kind = "import_cancelled" if self._package_cancel.is_set() else "import_error"
@@ -516,3 +659,5 @@ class LibraryScreen(QWidget):
         self.open_btn.setEnabled(not busy)
         self.refresh_btn.setEnabled(not busy)
         self.migrate_btn.setEnabled(not busy)
+        self.import_reference_cb.setEnabled(not busy)
+        self.calibration_btn.setEnabled(not busy)

@@ -166,7 +166,7 @@ class CoachScreen(QWidget):
             self,
             "Choose a saved report or practice archive",
             "",
-            "Reports and archives (*.md *.tp *.tpc);;All files (*)",
+            "Reports and archives (*.md *.tp *.tpc *.tpr);;All files (*)",
         )
         if path:
             self.load_report(Path(path))
@@ -187,7 +187,7 @@ class CoachScreen(QWidget):
                 segment_index = index
             elif isinstance(source, Path):
                 path = source
-                if path.suffix.lower() in (".tp", ".tpc"):
+                if path.suffix.lower() in (".tp", ".tpc", ".tpr"):
                     archive = PracticeArchive(path)
                     labels = [
                         f"Recording {index + 1:02d}"

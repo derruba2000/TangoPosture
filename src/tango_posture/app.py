@@ -50,6 +50,7 @@ from .models import verify
 from .movement import render_floor_guide
 from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
+from .range_profiles import measure_profile, profile_from_calibration
 from .reports import write_markdown_report
 from .session import Session
 from .storage import Storage
@@ -117,6 +118,7 @@ class Application:
     ):
         self.cfg, self.storage, self.video, self.headless = cfg, storage, video, headless
         self.reference, self.interval, self.name, self.review = reference, interval, name, review
+        self.range_profile = profile_from_calibration(reference) if reference else None
         self.estimator = estimator
         self.capture = capture
         self.display = display
@@ -217,6 +219,14 @@ class Application:
     def start_session(self, timestamp: float) -> None:
         if self.reference is None:
             self.notice = "Record and accept a reference first (C)"
+            return
+        if self.range_profile is not None and not any(
+            target.camera_check_passed for target in self.range_profile.metrics.values()
+        ):
+            message = "Comparison only: complete the guided camera check before scoring"
+            if self.headless:
+                raise ValueError(message)
+            self.notice = message
             return
         self.session = Session(
             self.reference,
@@ -330,6 +340,8 @@ class Application:
                     self.record_overlay,
                     [float(row["timestamp"]) for row in self.frame_log],
                     analytics={
+                        "model_hash": self.model_hash,
+                        "capture_profile": self.capture_profile,
                         "max_gap": self.cfg.max_gap,
                         "frame_timestamps": [float(row["timestamp"]) for row in self.frame_log],
                         "frames": self.frame_log,
@@ -691,15 +703,33 @@ class Application:
                 if initialized and current_profile != self.capture_profile:
                     raise ValueError("Capture profile changed mid-run; recalibrate")
                 self.capture_profile = current_profile
+                observer = getattr(self.display, "observe", None)
+                if observer is not None:
+                    observer(frame)
+                prompts = getattr(self.display, "prompts", None)
+                if prompts is not None:
+                    while not prompts.empty():
+                        self._speak(prompts.get_nowait())
                 if not initialized:
                     if self.reference:
-                        compatible(self.reference, self.capture_profile, self.model_hash)
+                        comparison_only = self.range_profile is not None and not any(
+                            target.camera_check_passed for target in self.range_profile.metrics.values()
+                        )
+                        if comparison_only:
+                            if self.reference.model_hash != self.model_hash:
+                                raise ValueError("Reference measurement model changed; reanalyze the reference")
+                        else:
+                            compatible(self.reference, self.capture_profile, self.model_hash)
                     if self.headless and self.reference and not self.interval:
                         self.start_session(0.0 if self.video else timestamp)
                     initialized = True
-                view_range = tuple(self.reference.quality["view_range"]) if self.reference else None
-                observation = measure(
-                    frame, self.cfg, view_range if self.cal_start is None else None
+                view_range = (
+                    tuple(self.reference.quality["view_range"])
+                    if self.reference and "view_range" in self.reference.quality else None
+                )
+                observation = (
+                    measure_profile(frame, self.cfg, self.range_profile) if self.range_profile is not None else
+                    measure(frame, self.cfg, view_range if self.cal_start is None else None)
                 )
                 if self.cal_start is not None:
                     end = self.cal_start + self.cfg.calibration_duration
@@ -975,6 +1005,11 @@ class Application:
                 self.frame_log.append(
                     {
                         "timestamp": timestamp,
+                        "poses": [
+                            {name: [point.x, point.y, point.z, point.visibility, point.presence]
+                             for name, point in pose.items()}
+                            for pose in frame.poses
+                        ],
                         "head_angle": head_angle,
                         "shoulder_elev_pct": shoulder_elev_pct,
                         "knee_bend_deg": knee_bend_deg,
@@ -1082,6 +1117,10 @@ class Application:
                     else self.cfg.closed_embrace_min_knee_bend
                 )
                 message = self.notice
+                if self.range_profile is not None or getattr(self.display, "capture_evidence", False):
+                    bad_head = bad_shoulders = bad_knees = bad_axis = bad_ankles = False
+                    head_down_elapsed = shoulder_tension_elapsed = knee_straight_elapsed = axis_curve_elapsed = 0.0
+                    axis_curve_state = "UNKNOWN"
                 if bad_ankles:
                     lift_pct = (ankle_lift_ratio or self.cfg.ankle_high_lift_ratio) * 100.0
                     message = (
@@ -1116,11 +1155,16 @@ class Application:
                     )
                 elif self.state == "RUNNING":
                     message = next(
-                        (q.reason for q in observation.quality.values() if not q.valid), ""
+                        (q.reason for metric, q in observation.quality.items()
+                         if not q.valid and (self.range_profile is None or
+                                             (self.session is not None and metric in self.session.evaluators))),
+                        "",
                     )
                     if not message:
                         message = next(
-                            (MESSAGES[r["metric"]] for r in self.rows if r["state"] == "DEVIATION"),
+                            (MESSAGES.get(r["metric"], f"{r['metric']}: outside approved range")
+                             for r in self.rows if r["state"] == "DEVIATION"),
+                            "Within approved ranges / pending" if self.range_profile else
                             "Within reference / pending: experimental thresholds",
                         )
                 if not self.headless or self.record_overlay:
@@ -1224,6 +1268,14 @@ class Application:
                         val = "N/A" if r["smoothed"] is None else f"{r['smoothed']:.3f}"
                         delta = "N/A" if r["delta"] is None else f"{r['delta']:+.3f}"
                         lines.append(f"{r['metric']}: {val} | delta {delta} | {r['state']}")
+                    if self.range_profile is not None:
+                        for metric, target in self.range_profile.metrics.items():
+                            value = observation.values[metric]
+                            measured = f"{value:.4g}" if value is not None and observation.quality[metric].valid else "Unknown"
+                            lines.append(
+                                f"{metric}: {measured} | target {target.lower:.4g} .. {target.upper:.4g} "
+                                f"{target.unit} | {'camera checked' if target.camera_check_passed else 'comparison only'}"
+                            )
                     if self.state != "RUNNING" and not self.candidate:
                         reason = next(
                             (q.reason for q in observation.quality.values() if not q.valid),

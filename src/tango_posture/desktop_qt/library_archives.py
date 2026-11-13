@@ -14,6 +14,7 @@ from zipfile import ZipFile
 import cv2
 
 from ..archive import (
+    _archive_lock,
     append_segment,
     file_sha256,
     practice_directory,
@@ -35,12 +36,20 @@ from ..review import read_report, report_directory
 from .analytics_data import session_payload
 
 
-def archive_report(report_path: Path, cfg: Config, cancel_check: Callable[[], bool]) -> Path:
+def archive_report(
+    report_path: Path, cfg: Config, cancel_check: Callable[[], bool], *,
+    as_reference: bool = False,
+) -> Path:
+    from ..reference_archives import mark_reference, reference_directory
+
     record = read_report(report_path)
     source = record.recorded_video
     if source is None or not source.is_file():
         raise ValueError(f"{report_path.name}: linked video is unavailable")
-    destination = practice_directory(cfg.data_dir) / f"{report_path.stem}.tp"
+    destination = (
+        reference_directory(cfg.data_dir) / f"{report_path.stem}.tpr" if as_reference
+        else practice_directory(cfg.data_dir) / f"{report_path.stem}.tp"
+    )
     if destination.exists():
         read_manifest(destination)
         stored = read_analytics(destination, 0)
@@ -75,7 +84,11 @@ def archive_report(report_path: Path, cfg: Config, cancel_check: Callable[[], bo
             step_history_seconds=cfg.replay_step_history_seconds,
         )
 
-    with TemporaryDirectory(prefix="tango-library-archive-") as temporary:
+    if as_reference:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(
+        prefix="tango-library-archive-", dir=destination.parent if as_reference else None,
+    ) as temporary:
         folder = Path(temporary)
         raw = folder / "raw.mp4"
         overlay = folder / "overlay.mp4"
@@ -123,10 +136,12 @@ def archive_report(report_path: Path, cfg: Config, cancel_check: Callable[[], bo
                 if start <= frame <= end
             ]
         timestamps = (
-            record.timestamps if start == 0 and len(record.timestamps) == end + 1
+            record.timestamps if len(record.timestamps) == end - start + 1
             else [frame / fps for frame in range(start, end + 1)]
         )
         analytics: dict[str, Any] = {
+            "model_hash": coach.get("model_hash") if coach else None,
+            "capture_profile": coach.get("capture_profile") if coach else None,
             "max_gap": cfg.max_gap,
             "frame_timestamps": timestamps,
             "coach_data": indexed_coach, "movement_data": indexed_movement,
@@ -139,11 +154,23 @@ def archive_report(report_path: Path, cfg: Config, cancel_check: Callable[[], bo
         }
         if cancel_check():
             raise ImportCancelledError("Archive import canceled")
+        output = folder / "reference.tp" if as_reference else destination
         append_segment(
-            destination, report_path, raw, overlay, timestamps,
+            output, report_path, raw, overlay, timestamps,
             analytics=analytics, lines=lines,
         )
-    rename_archive(destination, record.title)
+        rename_archive(output, record.title)
+        if as_reference:
+            mark_reference(output, record.title, {
+                "provenance": analytics["source_provenance"],
+                "camera_view": analytics.get("capture_profile"),
+                "clip_start": record.clip_in, "clip_end": record.clip_out,
+            })
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with _archive_lock(destination):
+                if destination.exists():
+                    raise FileExistsError(f"Reference already exists: {destination.name}")
+                output.replace(destination)
     return destination
 
 
@@ -153,10 +180,37 @@ def migrate_legacy_archives(
     """Copy loose reports and compatible DB evidence; never remove legacy data."""
     count = 0
     errors: list[str] = []
+    from ..archive import calibration_directory
+    from ..reference_archives import promote_reference, reference_directory
+
+    for path in calibration_directory(cfg.data_dir).glob("*.tpc"):
+        if cancel_check():
+            return count, errors
+        try:
+            manifest = read_manifest(path)
+            if manifest["version"] != 1:
+                continue
+            destination = reference_directory(cfg.data_dir) / f"{path.stem}.tpr"
+            if not destination.exists():
+                promote_reference(path, destination, manifest.get("name", path.stem),
+                                  cancel_check=cancel_check)
+                count += 1
+            else:
+                with ZipFile(destination) as archive:
+                    descriptor = json.loads(archive.read("reference.json"))
+                if descriptor.get("source_sha256") != file_sha256(path):
+                    raise FileExistsError(f"{destination.name} belongs to a different source; choose a new name")
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            errors.append(f"{path.name}: {error}")
     for report in report_directory(cfg.data_dir).glob("report_*.md"):
         if cancel_check():
             return count, errors
         try:
+            reference = reference_directory(cfg.data_dir) / f"{report.stem}.tpr"
+            if reference.exists():
+                stored = read_analytics(reference, 0)
+                if stored is not None and stored.get("original_report_sha256") == read_report(report).digest:
+                    continue
             existed = (practice_directory(cfg.data_dir) / f"{report.stem}.tp").exists()
             archive_report(report, cfg, cancel_check)
             count += int(not existed)

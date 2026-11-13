@@ -37,7 +37,7 @@ class ReviewPlayback:
         path = path.expanduser().resolve()
         if not path.is_file():
             raise ValueError(f"File not found: {path}")
-        if path.suffix.lower() in (".tp", ".tpc"):
+        if path.suffix.lower() in (".tp", ".tpc", ".tpr"):
             self.archive = PracticeArchive(path)
             if not self.segment_count:
                 self.close()

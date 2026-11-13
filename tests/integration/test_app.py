@@ -53,6 +53,68 @@ class FakeEstimator:
         self.closed = True
 
 
+def test_range_scoring_records_reusable_landmarks_and_portable_analytics(tmp_path, cfg, monkeypatch):
+    from tango_posture.archive import read_analytics
+    from tango_posture.desktop_qt.analytics_data import load_archive_dataset
+    from tango_posture.desktop_qt.practice_worker import QtPracticeDisplay
+    from tango_posture.range_profiles import (
+        ApprovedRange,
+        Passage,
+        RangeProfile,
+        cached_evidence,
+    )
+    from tango_posture.reference_archives import promote_reference
+
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    cfg.data_dir = str(tmp_path)
+    cfg.beat_tracking = False
+    target = RangeProfile(
+        name="Checked camera", context="Neutral posture", model_hash=MANIFEST["sha256"],
+        capture_profile=profile(cfg, 640, 480, "camera:0"), source={"archive": "missing.tpr"},
+        metrics={"head_pitch": ApprovedRange(
+            lower=-5, upper=5, unit="degrees", view="side",
+            passages=[Passage(start=0, end=2)], median=0, p10=-3, p90=3,
+            valid_duration=1.8, selected_duration=2, samples=20, inside_fraction=1,
+            camera_check_passed=True,
+        )},
+    )
+
+    class Buttons(QtPracticeDisplay):
+        def __init__(self):
+            super().__init__(capture_evidence=True)
+            self.count = 0
+            self.recording.set()
+            self.request("s")
+
+        def show(self, image):
+            super().show(image)
+            self.count += 1
+            if self.count == 30:
+                self.request("q")
+
+    storage = Storage(tmp_path)
+    capture, estimator = FakeCapture(), FakeEstimator()
+    app = Application(
+        cfg, storage, reference=target.calibration(), capture=capture,
+        estimator=estimator, display=Buttons(), practice_name="Range scoring",
+    )
+    try:
+        app.run()
+        assert capture.closed and estimator.closed
+        assert app.last_summary["metrics"]["head_pitch"]["event_count"] == 1
+        assert set(app.last_summary["metrics"]) == {"head_pitch"}
+        analytics = read_analytics(app.practice_file, 0)
+        assert len(analytics["frames"]) == 30
+        assert analytics["frames"][0]["poses"]
+        dataset = load_archive_dataset(app.practice_file, 0)
+        assert dataset.metrics["head_pitch"].event_count == 1
+        reference = tmp_path / "references" / "Promoted.tpr"
+        promote_reference(app.practice_file, reference, "Reusable camera evidence")
+        assert len(cached_evidence(reference).frames) == 30
+    finally:
+        storage.close()
+
+
 def test_zero_duration_processing_has_unavailable_fps(tmp_path, cfg, monkeypatch):
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     monkeypatch.setattr("tango_posture.app.time.perf_counter", lambda: 10.0)

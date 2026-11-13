@@ -53,6 +53,7 @@ class ServiceBridge(QObject):
     def list_references(self) -> list[ReferenceSummary]:
         """Discover existing .tpc and legacy JSON calibrations."""
         from ..calibration import load_calibration_file
+        from ..range_profiles import profile_from_calibration
         from ..storage import Storage
 
         data_dir = Path(self.cfg.data_dir)
@@ -84,6 +85,7 @@ class ServiceBridge(QObject):
                     ref = load_calibration_file(str(path), folder)
                     if ref:
                         prof = getattr(ref, "profile", {})
+                        ranges = profile_from_calibration(ref)
                         results[ref.id] = ReferenceSummary(
                             id=ref.id,
                             name=getattr(ref, "name", path.stem),
@@ -92,6 +94,9 @@ class ServiceBridge(QObject):
                             facing=prof.get("facing", "right"),
                             camera=str(prof.get("camera", 0)),
                             is_archive=path.suffix.lower() == ".tpc",
+                            scoring_ready=ranges is None or any(
+                                value.camera_check_passed for value in ranges.metrics.values()
+                            ),
                         )
                 except (OSError, ValueError, KeyError):
                     continue
@@ -123,17 +128,21 @@ class ServiceBridge(QObject):
 
     def list_library_archives(self) -> list[dict[str, Any]]:
         from ..archive import calibration_directory, read_manifest
+        from ..reference_archives import reference_directory
 
         items = self.list_practices()
-        folder = calibration_directory(self.cfg.data_dir)
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.tpc")):
+        for folder, suffix, kind in (
+            (calibration_directory(self.cfg.data_dir), "*.tpc", ArchiveKind.CALIBRATION),
+            (reference_directory(self.cfg.data_dir), "*.tpr", ArchiveKind.REFERENCE),
+        ):
+            for path in sorted(folder.glob(suffix)):
                 try:
                     manifest = read_manifest(path)
                     items.append({
                         "name": manifest.get("name", path.stem),
                         "path": path.resolve(),
-                        "kind": ArchiveKind.CALIBRATION,
+                        "kind": kind,
+                        "version": manifest["version"],
                         "created_at": manifest.get("created_at_utc", ""),
                         "segments_count": len(manifest["segments"]),
                     })
@@ -144,7 +153,7 @@ class ServiceBridge(QObject):
     def choose_library_archive(self, parent: Any, title: str) -> Path | None:
         from PySide6.QtWidgets import QInputDialog
 
-        items = self.list_library_archives()
+        items = [item for item in self.list_library_archives() if item["segments_count"]]
         if not items:
             self.status_message.emit("Library is empty. Import a video through Library first.")
             return None

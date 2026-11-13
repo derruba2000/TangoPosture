@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -110,7 +111,7 @@ class PracticeScreen(QWidget):
         setup_layout.addLayout(practice_row)
 
         reference_row = QHBoxLayout()
-        reference_row.addWidget(QLabel("Reference:"))
+        reference_row.addWidget(QLabel("Calibration profile:"))
         self.reference_combo = QComboBox()
         self.reference_combo.currentIndexChanged.connect(self._reference_changed)
         reference_row.addWidget(self.reference_combo, 1)
@@ -161,7 +162,7 @@ class PracticeScreen(QWidget):
         self.preview_btn.clicked.connect(self._toggle_preview)
         control_row.addWidget(self.preview_btn)
 
-        self.calibrate_btn = QPushButton("New Reference")
+        self.calibrate_btn = QPushButton("New Calibration")
         self.calibrate_btn.clicked.connect(self._calibration_action)
         control_row.addWidget(self.calibrate_btn)
 
@@ -303,7 +304,12 @@ class PracticeScreen(QWidget):
         if not name:
             self.status_label.setText("Enter a name for the new reference.")
             return
-        self._launch_worker(calibration_only=True, reference_name=name)
+        from ..guided_calibration import GuidedCalibration
+
+        dialog = GuidedCalibration(self.bridge, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
+            self.status_label.setText(f"Approved calibration saved: {dialog.saved_path}")
 
     def stop_for_navigation(self) -> None:
         if self.worker_running and self._display is not None:
@@ -326,7 +332,9 @@ class PracticeScreen(QWidget):
         else:
             self.ref_info.setText(
                 f"Reference: {reference.name} ({reference.side} side, "
-                f"{reference.facing} facing). Confirm unchanged camera placement before scoring."
+                f"{reference.facing} facing). "
+                + ("Confirm unchanged camera placement before scoring." if reference.scoring_ready else
+                   "Comparison only: use Library > Check camera to enable selected metric alerts.")
             )
         self._sync_controls()
 
@@ -368,7 +376,10 @@ class PracticeScreen(QWidget):
             return
 
         selected = self._selected_reference()
-        reference = selected if selected and self.confirm_camera_cb.isChecked() else None
+        reference = (
+            selected if selected and (self.confirm_camera_cb.isChecked() or not selected.scoring_ready)
+            else None
+        )
         if selected and reference is None:
             self.bridge.status_message.emit(
                 "Camera placement is not confirmed. Preview and recording will start without scoring."
@@ -459,6 +470,9 @@ class PracticeScreen(QWidget):
             self.status_label.setText(
                 "Select a saved reference, confirm camera placement, and restart preview before scoring."
             )
+            return
+        if not self._active_reference.scoring_ready:
+            self.status_label.setText("Comparison only: complete Library > Check camera before scoring.")
             return
         if self.state.scoring.value != "off":
             return
@@ -703,7 +717,7 @@ class PracticeScreen(QWidget):
         self.preview_btn.setText("Close Preview" if running and not calibrating else "Start Preview")
         self.preview_btn.setEnabled(not calibrating)
         self.calibrate_btn.setText(
-            "Start Calibration (C)" if calibrating else "New Reference"
+            "Start Calibration (C)" if calibrating else "New Calibration"
         )
         self.calibrate_btn.setEnabled(not running or calibrating)
         if calibrating and self._calibration_candidate:
@@ -719,7 +733,8 @@ class PracticeScreen(QWidget):
         self.auto_song_cb.setEnabled(running and not calibrating)
         active = running and not calibrating
         self.score_btn.setEnabled(
-            active and self._active_reference is not None and self.state.scoring.value == "off"
+            active and self._active_reference is not None and self._active_reference.scoring_ready
+            and self.state.scoring.value == "off"
         )
         self.pause_btn.setEnabled(
             active and self.state.scoring.value in ("active", "paused")

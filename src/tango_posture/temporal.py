@@ -8,9 +8,17 @@ from .geometry import wrapped
 
 
 class Evaluator:
-    def __init__(self, metric: str, baseline: float, cfg: Config):
+    def __init__(
+        self, metric: str, baseline: float, cfg: Config, *,
+        bounds: tuple[float, float] | None = None,
+    ):
         self.metric, self.baseline, self.cfg = metric, baseline, cfg
-        self.threshold = getattr(cfg, metric)
+        if bounds is not None and (
+            not all(math.isfinite(value) for value in bounds) or bounds[0] > bounds[1]
+        ):
+            raise ValueError("Approved range limits must be finite and ordered")
+        self.bounds = bounds
+        self.threshold = getattr(cfg, metric) if bounds is None else None
         self.smoothed: float | None = None
         self.last_valid: float | None = None
         self.last_timestamp: float | None = None
@@ -46,24 +54,32 @@ class Evaluator:
         else:
             alpha = 1 - math.exp(-(timestamp - self.last_valid) / self.cfg.smoothing)
             step = raw - self.smoothed
-            if self.metric != "head_forward":
+            if self.bounds is None and self.metric != "head_forward":
                 step = wrapped(step)
             self.smoothed += alpha * step
         self.last_valid = timestamp
-        delta = self.smoothed - self.baseline
-        if self.metric != "head_forward":
-            delta = wrapped(delta)
-        magnitude = delta if self.metric == "head_forward" else abs(delta)
+        if self.bounds is not None:
+            lower, upper = self.bounds
+            delta = self.smoothed - min(upper, max(lower, self.smoothed))
+            magnitude = abs(delta)
+            entry, clearing = 0.0, magnitude == 0
+        else:
+            assert self.threshold is not None
+            delta = self.smoothed - self.baseline
+            if self.metric != "head_forward":
+                delta = wrapped(delta)
+            magnitude = delta if self.metric == "head_forward" else abs(delta)
+            entry, clearing = self.threshold.entry, magnitude < self.threshold.clear
         if self.event:
             self.event.peak_deviation = max(self.event.peak_deviation, magnitude)
-            if magnitude < self.threshold.clear:
+            if clearing:
                 if self.clearing is None:
                     self.clearing = timestamp
                 if timestamp - self.clearing + 1e-9 >= self.cfg.clear_duration:
                     self.close("cleared")
             else:
                 self.clearing = None
-        elif magnitude > self.threshold.entry:
+        elif magnitude > entry:
             if self.pending is None:
                 self.pending = timestamp
             self.pending_peak = max(self.pending_peak, magnitude)
