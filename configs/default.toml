@@ -53,6 +53,8 @@ axis_neutral_offset = 0.0
 replay_audio = false
 replay_auto_analyse_movement = true
 replay_step_history_seconds = 5.0
+replay_joint_interpolation = "linear"
+replay_joint_max_gap = 3.0
 ollama_base_url = "http://127.0.0.1:11434"
 ollama_model = "llama3.2"
 ollama_timeout = 120.0
@@ -73,5 +75,7 @@ clear = 6.0
 [trunk_inclination]
 entry = 8.0
 clear = 5.0
+
+[calibration_defaults]
 
 

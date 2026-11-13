@@ -9,19 +9,24 @@ from zipfile import ZipFile
 import cv2
 import numpy as np
 import pytest
+from conftest import frame
 from PySide6.QtCore import QCoreApplication, QEvent, QUrl
 from PySide6.QtWidgets import QApplication, QStackedWidget, QWidget
 
 from tango_posture.archive import append_segment, file_sha256, read_analytics, read_manifest
+from tango_posture.calibration.archives import save_range_profile
+from tango_posture.calibration.baseline import profile
+from tango_posture.calibration.models import ApprovedRange, Passage, RangeProfile
 from tango_posture.config import Config
-from tango_posture.desktop_qt.library.archives import archive_report, migrate_legacy_archives
+from tango_posture.desktop_qt.library.archives import archive_report
 from tango_posture.desktop_qt.review.analysis import ReviewAnalysis, analyse_review_clip
 from tango_posture.desktop_qt.review.playback import ReviewPlayback
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.review import ReviewScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
+from tango_posture.models import MANIFEST
 from tango_posture.movement import render_floor_guide
-from tango_posture.references.coach import render_coach_frame_overlay
+from tango_posture.references.coach import _serialise_pose, render_coach_frame_overlay
 from tango_posture.review import write_metadata
 
 
@@ -72,6 +77,118 @@ def test_empty_review_has_no_fake_playback_or_insights(screen):
     screen._toggle_playback()
     assert not screen.is_playing
     assert not screen.timer.isActive()
+
+
+def test_review_calibration_picker_compares_cached_ranges_without_settings_fallback(
+    qapp, tmp_path, video,
+):
+    cfg = Config(data_dir=str(tmp_path), entry_duration=0.1, smoothing=0.0001)
+    target = RangeProfile(
+        name="Head only", context="Walking", model_hash=MANIFEST["sha256"],
+        capture_profile=profile(cfg, 64, 48, "video"), source={"archive": "reference.tpr"},
+        metrics={"head_pitch": ApprovedRange(
+            lower=-180, upper=180, unit="degrees", view="all",
+            passages=[Passage(start=0, end=1)], median=0, p10=-10, p90=10,
+            valid_duration=1, selected_duration=1, samples=10, inside_fraction=1,
+        )},
+    )
+    calibration = tmp_path / "calibrations" / "Head.tpc"
+    save_range_profile(calibration, target)
+    raw_pose = _serialise_pose(frame().poses[0])
+    raw_pose["nose"] = [0.65, 0.05, 0, 0.99, 0.99]
+    data = {
+        "width": 64, "height": 48, "model_hash": MANIFEST["sha256"],
+        "capture_profile": target.capture_profile, "frames": {
+            str(index): {
+                "timestamp": index / 10, "message": "BEND YOUR KNEES",
+                "poses": [raw_pose],
+                "measurement_poses": [raw_pose],
+            }
+            for index in range(3)
+        },
+    }
+    widget = ReviewScreen(ServiceBridge(cfg), Router())
+    try:
+        widget.load_archive(video)
+        widget._coach_data = data
+        widget._update_calibration_comparison()
+        widget._show_frame(2)
+        assert widget.alerts_text.text() == "BEND YOUR KNEES"
+        widget.reference_combo.setCurrentIndex(widget.reference_combo.findData(str(calibration.resolve())))
+        assert widget.alerts_text.text() == "No active posture alert on this frame."
+        assert "No approved" in widget.metric_values["shoulder_elev_pct"].text()
+        assert "Head only" in widget.insights_text.text()
+        assert "normalized_clearance" not in widget.insights_text.text()
+        target.metrics["head_pitch"].lower = -180
+        target.metrics["head_pitch"].upper = -170
+        second = tmp_path / "calibrations" / "Narrow.tpc"
+        save_range_profile(second, target.model_copy(update={"id": "narrow", "name": "Narrow"}))
+        widget.refresh()
+        widget.reference_combo.setCurrentIndex(widget.reference_combo.findData(str(second.resolve())))
+        assert "outside approved range" in widget.alerts_text.text()
+        assert "BEND YOUR KNEES" not in widget.alerts_text.text()
+        defaults = Config.model_validate({
+            **cfg.model_dump(exclude={"axis_curve"}),
+            "calibration_defaults": {
+                "head_pitch": {"lower": -180, "upper": 180, "unit": "degrees", "view": "all"},
+            },
+        })
+        widget.bridge.update_config(defaults)
+        assert "outside approved range" in widget.alerts_text.text()
+        widget.reference_combo.setCurrentIndex(0)
+        widget._show_frame(2)
+        assert widget.alerts_text.text() == "No active posture alert on this frame."
+        assert "Settings default ranges" in widget.insights_text.text()
+        assert "No approved" in widget.metric_values["shoulder_elev_pct"].text()
+        widget.reference_combo.setCurrentIndex(widget.reference_combo.findData(str(second.resolve())))
+        widget.bridge.update_config(cfg)
+        widget._coach_data["model_hash"] = "0" * 64
+        widget._calibration_changed()
+        assert "different measurement models" in widget.alerts_text.text()
+        assert widget._display_coach_data() is None
+        widget.reference_combo.setCurrentIndex(0)
+        assert widget.alerts_text.text() == "BEND YOUR KNEES"
+        widget._release()
+        assert widget._compared_coach_data is None
+    finally:
+        widget.close()
+
+
+def test_review_interpolation_settings_refresh_display_without_changing_raw_alerts(
+    screen, video, monkeypatch,
+):
+    observations = []
+
+    def render(image, observation, *args, **kwargs):
+        observations.append(observation)
+        return image
+
+    monkeypatch.setattr("tango_posture.references.coach.draw", render)
+    screen.load_archive(video)
+    screen._coach_data = {"width": 64, "height": 48, "frames": {
+        str(index): {
+            "timestamp": index / 10, "message": "Tracking unavailable",
+            "measurement_poses": [
+                {"left_hip": [x, 0.5, 0, 1, 1]} if x is not None else {},
+            ],
+        }
+        for index, x in enumerate((0.1, 0.2, None, 1.0))
+    }}
+    screen.refresh()
+    screen._show_frame(2)
+    assert observations[-1].poses[0]["left_hip"].x == pytest.approx(0.6)
+    assert screen.alerts_text.text() == "Tracking unavailable"
+    screen.bridge.update_config(screen.bridge.config.model_copy(update={
+        "replay_joint_interpolation": "quadratic",
+    }))
+    screen._show_frame(2)
+    assert observations[-1].poses[0]["left_hip"].x == pytest.approx(0.5)
+    assert observations[-1].timestamp == 0.2
+    assert screen.alerts_text.text() == "Tracking unavailable"
+    assert screen._coach_data["frames"]["2"]["measurement_poses"] == [{}]
+    screen.bridge.update_config(screen.bridge.config.model_copy(update={"replay_joint_max_gap": 0}))
+    screen._show_frame(2)
+    assert not observations[-1].poses
 
 
 @pytest.mark.parametrize("archived", [False, True])
@@ -219,6 +336,8 @@ def test_lines_only_uses_floor_and_skeleton_without_text(screen, video, monkeypa
         }], "message": "LOWER YOUR SHOULDERS"}},
     }
 
+    screen._update_calibration_comparison()
+
     def no_text(*args, **kwargs):
         pytest.fail("Lines-only replay must not draw text")
 
@@ -289,12 +408,6 @@ def test_library_import_packages_matching_clips_and_rebased_analytics(
         assert screen._playback.select_variant(label).count == 6
         assert len(screen._playback.timestamps) == 6
     assert read_manifest(path)["segments"][0]["lines"] == "lines_00.mp4"
-    before = path.read_bytes()
-    count, errors = migrate_legacy_archives(cfg, lambda: False)
-    assert count == 0 and errors == []
-    assert path.read_bytes() == before
-
-
 def test_review_posture_analysis_can_be_cancelled(screen, video, monkeypatch, qapp):
     started = threading.Event()
 

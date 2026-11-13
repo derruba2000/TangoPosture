@@ -100,8 +100,9 @@ def test_main_window_instantiation_and_navigation(qapp):
     window.router.navigate(Route.REFERENCES)
     assert window.stack.currentWidget() == window.screens[Route.REFERENCES]
 
-    window.router.navigate(Route.LIBRARY)
+    window.nav_buttons[Route.LIBRARY].click()
     assert window.stack.currentWidget() == window.screens[Route.LIBRARY]
+    assert window.nav_buttons[Route.LIBRARY].isChecked()
 
     window.router.navigate(Route.SETTINGS)
     assert window.stack.currentWidget() == window.screens[Route.SETTINGS]
@@ -178,7 +179,8 @@ def test_help_renders_styled_manual_with_hierarchical_contents_and_search(qapp):
 def test_navigation_buttons_have_icons_and_accessible_labels(qapp):
     window = MainWindow(Config())
 
-    assert len(window.nav_buttons) == 9
+    assert len(window.nav_buttons) == 8
+    assert Route.REFERENCES not in window.nav_buttons
     for button in window.nav_buttons.values():
         assert not button.icon().isNull()
         assert button.iconSize().width() == 20
@@ -312,7 +314,7 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
     assert settings_screen.ollama_model.text() == "custom-model"
     assert settings_screen.field_widgets["calibration_duration"].value() == 15.0
     assert settings_screen.field_widgets["ollama_num_ctx"].value() == 8192
-    assert settings_screen.tabs.count() == 11
+    assert settings_screen.tabs.count() == 12
     window.close()
 
 

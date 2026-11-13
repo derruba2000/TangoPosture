@@ -125,26 +125,27 @@ def draw(
     verbose_skeleton: bool = True,
     show_vertical_axis: bool = True,
     show_footer: bool = True,
+    settings_coaching: bool = True,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
     disp_h = round(observation.height * disp_w / observation.width)
     if (disp_w, disp_h) != (image.shape[1], image.shape[0]):
         image = cv2.resize(image, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
-    bad_head = head_down_elapsed >= head_down_duration
-    bad_shoulders = shoulder_tension_elapsed >= shoulder_tension_duration
-    bad_knees = knee_straight_elapsed >= knee_straight_duration
-    bad_axis = axis_curve_state == "DEVIATION" or (
+    bad_head = settings_coaching and head_down_elapsed >= head_down_duration
+    bad_shoulders = settings_coaching and shoulder_tension_elapsed >= shoulder_tension_duration
+    bad_knees = settings_coaching and knee_straight_elapsed >= knee_straight_duration
+    bad_axis = settings_coaching and (axis_curve_state == "DEVIATION" or (
         axis_curve_elapsed >= axis_curve_duration
         and (axis_curve_smoothed is None or axis_curve_smoothed >= axis_curve_clear)
-    )
-    bad_ankles = bool(ankle_high_alert)
+    ))
+    bad_ankles = settings_coaching and bool(ankle_high_alert)
     detected_role = role
     detected_embrace = embrace_type
     for pose in observation.poses:
         if detected_role is None:
             detected_role = detect_role(pose)
-        if detected_embrace is None and detected_role in ("LEADER", "FOLLOWER"):
+        if settings_coaching and detected_embrace is None and detected_role in ("LEADER", "FOLLOWER"):
             detected_embrace = detect_embrace_type(
                 pose, detected_role, closed_threshold=embrace_closed_threshold
             )
@@ -180,7 +181,7 @@ def draw(
         head_info = head_horizontal_alignment(
             pose, observation.width, observation.height, neutral_offset=head_neutral_offset
         )
-        if head_info is not None:
+        if settings_coaching and head_info is not None:
             raw_angle, ear, nose = head_info
             angle = head_angle_smoothed if head_angle_smoothed is not None else raw_angle
             ex, ey = screen_point(ear.x, ear.y, disp_w, disp_h, mirror)
@@ -234,7 +235,7 @@ def draw(
             observation.height,
             neutral_clearance=shoulder_neutral_clearance,
         )
-        if sh_info is not None:
+        if settings_coaching and sh_info is not None:
             raw_elev_pct, raw_clear, sh_ear, sh_lm = sh_info
             elev_pct = shoulder_elev_smoothed if shoulder_elev_smoothed is not None else raw_elev_pct
             _sex, sey = screen_point(sh_ear.x, sh_ear.y, disp_w, disp_h, mirror)
@@ -280,7 +281,7 @@ def draw(
         knee_info = knee_bend_alignment(
             pose, observation.width, observation.height, side=side
         )
-        if knee_info is not None:
+        if settings_coaching and knee_info is not None:
             raw_knee_bend_deg, vis_legs = knee_info
             knee_bend_deg = (
                 knee_bend_smoothed if knee_bend_smoothed is not None else raw_knee_bend_deg
@@ -326,7 +327,7 @@ def draw(
         if show_vertical_axis:
             _draw_torso_axis(image, pose, mirror, confidence)
         ankle_info = ankle_lift_alignment(pose, observation.width, observation.height)
-        if ankle_info is not None:
+        if settings_coaching and ankle_info is not None:
             raw_ankle_lift, lifted_lm, grounded_lm = ankle_info
             shown_lift = (
                 ankle_lift_smoothed if ankle_lift_smoothed is not None else raw_ankle_lift
@@ -395,7 +396,7 @@ def draw(
         cv2.LINE_AA,
     )
     alert_y = 62
-    if detected_role in ("LEADER", "FOLLOWER") and detected_embrace in ("CLOSED", "OPEN"):
+    if settings_coaching and detected_role in ("LEADER", "FOLLOWER") and detected_embrace in ("CLOSED", "OPEN"):
         embrace_label = f"Embrace: {detected_embrace} EMBRACE"
         embrace_color = (0, 230, 255) if detected_embrace == "CLOSED" else (120, 240, 120)
         cv2.putText(
@@ -409,6 +410,11 @@ def draw(
             cv2.LINE_AA,
         )
         alert_y = 88
+    if not settings_coaching and message:
+        cv2.putText(
+            image, message, (12, alert_y), cv2.FONT_HERSHEY_SIMPLEX,
+            0.55, (0, 165, 255), 2, cv2.LINE_AA,
+        )
     if bad_head:
         cv2.putText(
             image,

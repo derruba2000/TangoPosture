@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...config import SETTING_GROUPS, Config, set_setting, setting_value
+from ...calibration.models import METRIC_DETAILS
+from ...config import SETTING_GROUPS, Config, RangeDefault, set_setting, setting_value
 from ..router import Router
 from ..service_bridge import ServiceBridge
 
@@ -40,6 +41,7 @@ class SettingsScreen(QScrollArea):
         self.bridge = bridge
         self.router = router
         self.field_widgets: dict[str, QWidget] = {}
+        self.range_widgets: dict[str, tuple[QCheckBox, QDoubleSpinBox, QDoubleSpinBox, QComboBox]] = {}
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
 
@@ -80,11 +82,46 @@ class SettingsScreen(QScrollArea):
             page = QWidget()
             form = QFormLayout(page)
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+            if group in {"Head & shoulders", "Embrace & knees", "Torso & hip offset"}:
+                hint = QLabel(
+                    "Used only when no calibration is selected. With a calibration, coaching "
+                    "uses its approved ranges; missing metrics do not fall back to these settings."
+                )
+                hint.setWordWrap(True)
+                form.addRow(hint)
             for field in fields:
                 editor, row_widget = self._create_editor(field, setting_value(cfg, field))
                 self.field_widgets[field] = editor
                 form.addRow(self._field_label(field), row_widget)
             self.tabs.addTab(page, group)
+        ranges_page = QWidget()
+        ranges_form = QFormLayout(ranges_page)
+        ranges_hint = QLabel(
+            "Exact ranges copied from calibration, used when no calibration is selected. "
+            "Enabled ranges replace the legacy posture thresholds; disabled metrics stay unavailable. "
+            "They do not grant camera-scoring approval."
+        )
+        ranges_hint.setWordWrap(True)
+        ranges_form.addRow(ranges_hint)
+        for key, (_group, label, unit) in METRIC_DETAILS.items():
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            enabled = QCheckBox("Use")
+            lower, upper = QDoubleSpinBox(), QDoubleSpinBox()
+            view = QComboBox()
+            view.addItems(["side", "front", "all"])
+            for spin, description in ((lower, "minimum"), (upper, "maximum")):
+                spin.setDecimals(12)
+                spin.setRange(-1e9, 1e9)
+                spin.setAccessibleName(f"{label} {description}")
+                enabled.toggled.connect(spin.setEnabled)
+            enabled.toggled.connect(view.setEnabled)
+            for widget in (enabled, lower, upper, view):
+                row_layout.addWidget(widget)
+            ranges_form.addRow(f"{label} ({unit})", row)
+            self.range_widgets[key] = (enabled, lower, upper, view)
+        self.tabs.addTab(ranges_page, "Calibration defaults")
         layout.addWidget(self.tabs, 1)
 
         self.save_btn = QPushButton("Apply Settings")
@@ -92,8 +129,13 @@ class SettingsScreen(QScrollArea):
         self.save_btn.setFixedHeight(38)
         self.save_btn.clicked.connect(self._save_settings)
         layout.addWidget(self.save_btn)
+        self.save_toml_btn = QPushButton("Apply && Save settings.toml")
+        self.save_toml_btn.clicked.connect(self._save_toml)
+        layout.addWidget(self.save_toml_btn)
 
         self._set_legacy_widget_aliases()
+        self._apply_config(cfg)
+        self.bridge.config_changed.connect(self._apply_config)
 
     def _create_editor(self, field: str, value: object) -> tuple[QWidget, QWidget]:
         editor: QWidget
@@ -101,9 +143,11 @@ class SettingsScreen(QScrollArea):
             checkbox = QCheckBox("Enabled")
             checkbox.setChecked(value)
             editor = checkbox
-        elif field in {"side", "facing"}:
+        elif field in {"side", "facing", "replay_joint_interpolation"}:
             combo = QComboBox()
-            combo.addItems(["left", "right"])
+            combo.addItems(
+                ["linear", "quadratic"] if field == "replay_joint_interpolation" else ["left", "right"]
+            )
             combo.setCurrentText(str(value))
             editor = combo
         elif isinstance(value, int):
@@ -151,6 +195,8 @@ class SettingsScreen(QScrollArea):
             "data_dir": "Data folder",
             "confidence": "Minimum landmark confidence",
             "smoothing": "Measurement smoothing (seconds)",
+            "replay_joint_interpolation": "Review joint interpolation",
+            "replay_joint_max_gap": "Maximum joint gap to fill (seconds; 0 disables)",
             "head_down_angle": "Head down angle limit (degrees)",
             "shoulder_raise_threshold": "Shoulder tension limit (%)",
             "tango_bpm": "Starting tempo (BPM)",
@@ -226,6 +272,14 @@ class SettingsScreen(QScrollArea):
                 else:
                     raise TypeError(f"Unsupported settings editor for {field}")
                 set_setting(data, field, value)
+            data["calibration_defaults"] = {
+                key: RangeDefault.model_validate({
+                    "lower": lower.value(), "upper": upper.value(), "unit": METRIC_DETAILS[key][2],
+                    "view": view.currentText(),
+                }).model_dump()
+                for key, (enabled, lower, upper, view) in self.range_widgets.items()
+                if enabled.isChecked()
+            }
             cfg = Config.model_validate(data)
         except (TypeError, ValueError, ValidationError) as error:
             self.bridge.status_message.emit(f"Could not apply settings: {error}")
@@ -250,6 +304,33 @@ class SettingsScreen(QScrollArea):
                 editor.setValue(value)
             elif isinstance(editor, QLineEdit):
                 editor.setText(str(value))
+        for key, (enabled, lower, upper, view) in self.range_widgets.items():
+            target = cfg.calibration_defaults.get(key)
+            enabled.setChecked(target is not None)
+            lower.setValue(target.lower if target else 0)
+            upper.setValue(target.upper if target else 0)
+            view.setCurrentText(target.view if target else "side")
+            for widget in (lower, upper, view):
+                widget.setEnabled(target is not None)
+
+    def _save_toml(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        destination = Path("settings.toml").resolve()
+        if QMessageBox.question(
+            self, "Save Settings", f"Apply these Settings and overwrite {destination}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if not self._save_settings():
+            return
+        try:
+            self.bridge.save_settings(self.bridge.config, destination)
+        except OSError as error:
+            self.bridge.status_message.emit(f"Could not save settings.toml: {error}")
+            return
+        self.bridge.status_message.emit(f"Settings saved to {destination}")
 
     def _export_toml(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

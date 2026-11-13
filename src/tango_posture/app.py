@@ -27,7 +27,7 @@ from .archive import (
 )
 from .beat import BeatTracker
 from .calibration.baseline import calibrate, compatible, profile, save_calibration_file
-from .calibration.measurements import measure_profile
+from .calibration.measurements import measure_profile, measure_targets
 from .calibration.models import profile_from_calibration
 from .capture import Capture
 from .config import Config
@@ -52,9 +52,11 @@ from .models import verify
 from .movement import render_floor_guide
 from .overlay import MESSAGES, draw
 from .pose.mediapipe_backend import MediaPipeEstimator
+from .references.coach import range_feedback, target_feedback
 from .reports import write_markdown_report
 from .session import Session
 from .storage import Storage
+from .temporal import Evaluator
 
 GUIDANCE = (
     "Fixed, level camera; whole body in frame; adequate light; uncluttered background.\n"
@@ -120,6 +122,10 @@ class Application:
         self.cfg, self.storage, self.video, self.headless = cfg, storage, video, headless
         self.reference, self.interval, self.name, self.review = reference, interval, name, review
         self.range_profile = profile_from_calibration(reference) if reference else None
+        self.default_evaluators = {
+            key: Evaluator(key, 0, cfg, bounds=(target.lower, target.upper))
+            for key, target in cfg.calibration_defaults.items()
+        }
         self.estimator = estimator
         self.capture = capture
         self.display = display
@@ -730,8 +736,18 @@ class Application:
                 )
                 observation = (
                     measure_profile(frame, self.cfg, self.range_profile) if self.range_profile is not None else
+                    measure_targets(frame, self.cfg, self.cfg.calibration_defaults)
+                    if self.reference is None and self.cfg.calibration_defaults and self.cal_start is None else
                     measure(frame, self.cfg, view_range if self.cal_start is None else None)
                 )
+                default_rows = [
+                    {"metric": key, "reason": observation.quality[key].reason, **evaluator.update(
+                        timestamp,
+                        observation.values[key] if observation.quality[key].valid else None,
+                    )}
+                    for key, evaluator in self.default_evaluators.items()
+                    if self.reference is None and self.cal_start is None
+                ]
                 if self.cal_start is not None:
                     end = self.cal_start + self.cfg.calibration_duration
                     if self.cal_start <= timestamp < end:
@@ -1118,10 +1134,18 @@ class Application:
                     else self.cfg.closed_embrace_min_knee_bend
                 )
                 message = self.notice
-                if self.range_profile is not None or getattr(self.display, "capture_evidence", False):
+                settings_coaching = self.reference is None and not self.cfg.calibration_defaults and not getattr(
+                    self.display, "capture_evidence", False
+                )
+                if not settings_coaching:
                     bad_head = bad_shoulders = bad_knees = bad_axis = bad_ankles = False
                     head_down_elapsed = shoulder_tension_elapsed = knee_straight_elapsed = axis_curve_elapsed = 0.0
                     axis_curve_state = "UNKNOWN"
+                    self.frame_log[-1]["alerts"] = {
+                        "head": False, "shoulders": False, "knees": False, "axis": False,
+                    }
+                    self.frame_log[-1]["axis_curve_alert"] = False
+                    self.frame_log[-1]["ankle_high_alert"] = False
                 if bad_ankles:
                     lift_pct = (ankle_lift_ratio or self.cfg.ankle_high_lift_ratio) * 100.0
                     message = (
@@ -1153,6 +1177,24 @@ class Application:
                     message = (
                         f"BAD HEAD ALIGNMENT: head pointing down ({head_disp_deg:+.1f} deg for "
                         f"{head_down_elapsed:.1f}s)"
+                    )
+                elif self.state == "RUNNING" and self.range_profile is not None:
+                    message = range_feedback(self.rows, self.range_profile)[0] or next(
+                        (row.get("reason") or "Approved-range measurement unavailable (tracking/view)."
+                         for row in self.rows if row["state"] == "UNKNOWN"),
+                        "Within approved ranges / pending",
+                    )
+                elif self.reference is not None:
+                    message = self.notice or (
+                        "Selected calibration: coaching uses approved ranges only."
+                        if self.range_profile is not None else
+                        "Selected calibration has no approved ranges for posture coaching."
+                    )
+                elif default_rows and not getattr(self.display, "capture_evidence", False):
+                    message = target_feedback(default_rows, self.cfg.calibration_defaults)[0] or next(
+                        (row["reason"] or "Default-range measurement unavailable (tracking/view)."
+                         for row in default_rows if row["state"] == "UNKNOWN"),
+                        "Within Settings default ranges / pending",
                     )
                 elif self.state == "RUNNING":
                     message = next(
@@ -1261,11 +1303,15 @@ class Application:
                             else "C calibrate | A accept | R retry | S start | P pause | E end | V verbose | Y torso/vertical | B beat-1 | Q quit"
                         ),
                     ]
+                    if not settings_coaching:
+                        lines[1] = f"Role: {self.role} | Beat: {beat_str}"
+                    if default_rows:
+                        lines.extend(target_feedback(default_rows, self.cfg.calibration_defaults)[1])
                     if not self.setup_confirmed:
                         lines.append(
                             "SETUP UNMIRRORED: check facing direction; V confirms / enables display mirror"
                         )
-                    for r in self.rows:
+                    for r in self.rows if settings_coaching or self.range_profile is not None else []:
                         val = "N/A" if r["smoothed"] is None else f"{r['smoothed']:.3f}"
                         delta = "N/A" if r["delta"] is None else f"{r['delta']:+.3f}"
                         lines.append(f"{r['metric']}: {val} | delta {delta} | {r['state']}")
@@ -1334,6 +1380,7 @@ class Application:
                         verbose_skeleton=self.verbose_skeleton,
                         show_vertical_axis=self.show_vertical_axis,
                         show_footer=self.display is None,
+                        settings_coaching=settings_coaching,
                     )
                     if self.record_overlay and (not self.calibration_only or calibration_frame):
                         if self.overlay_writer is None:
@@ -1355,6 +1402,7 @@ class Application:
                                 verbose_skeleton=True,
                                 show_vertical_axis=True,
                                 show_footer=False,
+                                settings_coaching=settings_coaching,
                             )
                             if self.overlay_lines_writer is None:
                                 lines_path = self.record_overlay.with_name(

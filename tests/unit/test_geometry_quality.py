@@ -24,7 +24,33 @@ from tango_posture.geometry import (
     wrapped,
 )
 from tango_posture.metrics import measure
-from tango_posture.overlay import screen_point
+from tango_posture.overlay import draw, screen_point
+
+
+@pytest.mark.parametrize("settings_coaching", [False, True])
+def test_overlay_does_not_apply_settings_judgements_with_calibration(monkeypatch, settings_coaching):
+    observation = frame()
+    observation.poses[0]["left_knee"] = Landmark(
+        x=0.5, y=0.8, visibility=0.99, presence=0.99,
+    )
+    labels = []
+    monkeypatch.setattr(
+        "tango_posture.overlay.cv2.putText",
+        lambda image, text, *args, **kwargs: labels.append(text) or image,
+    )
+    draw(
+        np.zeros((480, 640, 3), np.uint8), observation, False, [],
+        "Head pitch: outside approved range" if not settings_coaching else "",
+        0.7, head_down_elapsed=10, shoulder_tension_elapsed=10, knee_straight_elapsed=10,
+        axis_curve_elapsed=10, settings_coaching=settings_coaching, show_footer=False,
+    )
+    legacy = [
+        label for label in labels
+        if label.startswith(("Head horiz", "Shoulders:", "LOWER", "BEND", "BAD HEAD", "HIP OFFSET"))
+    ]
+    assert bool(legacy) is settings_coaching
+    if not settings_coaching:
+        assert "Head pitch: outside approved range" in labels
 
 
 @pytest.mark.parametrize("side", ["left", "right"])

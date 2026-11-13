@@ -19,6 +19,20 @@ class Threshold(BaseModel):
         return self
 
 
+class RangeDefault(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    lower: float
+    upper: float
+    unit: str
+    view: Literal["side", "front", "all"]
+
+    @model_validator(mode="after")
+    def ordered(self) -> "RangeDefault":
+        if self.lower > self.upper:
+            raise ValueError("Range minimum must not exceed maximum")
+        return self
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
     camera: int = Field(default=0, ge=0)
@@ -75,6 +89,9 @@ class Config(BaseModel):
     replay_audio: bool = False
     replay_auto_analyse_movement: bool = True
     replay_step_history_seconds: float = Field(default=5.0, ge=0.5, le=30.0)
+    replay_joint_interpolation: Literal["linear", "quadratic"] = "linear"
+    replay_joint_max_gap: float = Field(default=3.0, ge=0)
+    calibration_defaults: dict[str, RangeDefault] = Field(default_factory=dict)
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = Field(default="llama3.2", min_length=1)
     ollama_timeout: float = Field(default=120.0, gt=0, le=1800)
@@ -92,6 +109,12 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def durations(self) -> "Config":
+        if self.calibration_defaults:
+            from .calibration.models import METRIC_DETAILS
+
+            for key, target in self.calibration_defaults.items():
+                if key not in METRIC_DETAILS or target.unit != METRIC_DETAILS[key][2]:
+                    raise ValueError(f"Unknown default metric or incompatible unit: {key}")
         if self.calibration_valid_duration > self.calibration_duration:
             raise ValueError("valid calibration duration exceeds capture window")
         if self.axis_curve is not None:
@@ -188,6 +211,8 @@ SETTING_GROUPS = {
     "Replay movement": (
         "replay_auto_analyse_movement",
         "replay_step_history_seconds",
+        "replay_joint_interpolation",
+        "replay_joint_max_gap",
     ),
     "Review & Ollama": (
         "replay_audio",
@@ -243,13 +268,19 @@ def setting_value(cfg: Config, field: str):
 
 def export_toml(cfg: Config) -> str:
     data = cfg.model_dump(exclude={"axis_curve"})
-    lines = [
-        f"{key} = {json.dumps(value)}" for key, value in data.items() if not isinstance(value, dict)
-    ]
-    for key, value in data.items():
-        if isinstance(value, dict):
-            lines.extend(("", f"[{key}]"))
-            lines.extend(f"{name} = {json.dumps(number)}" for name, number in value.items())
+    lines: list[str] = []
+
+    def table(values: dict, path: tuple[str, ...] = ()) -> None:
+        for key, value in values.items():
+            if not isinstance(value, dict):
+                lines.append(f"{key} = {json.dumps(value)}")
+        for key, value in values.items():
+            if isinstance(value, dict):
+                child = (*path, key)
+                lines.extend(("", f"[{'.'.join(child)}]"))
+                table(value, child)
+
+    table(data)
     return "\n".join(lines) + "\n"
 
 

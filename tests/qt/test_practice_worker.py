@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from tango_posture.config import Config
+from tango_posture.core.entities import ReferenceSummary
 from tango_posture.desktop_qt.practice.worker import QtPracticeDisplay, QtPracticeWorker
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.practice import PracticeScreen
@@ -145,6 +146,32 @@ def test_practice_screen_is_idle_until_user_starts_preview(qapp, tmp_path):
     assert not screen.score_btn.isEnabled()
     assert "only after you start preview" in screen.status_label.text()
     screen.close()
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_selected_calibration_never_silently_falls_back_to_settings(
+    qapp, tmp_path, monkeypatch, confirmed,
+):
+    bridge = ServiceBridge(Config(data_dir=str(tmp_path)))
+    selected = ReferenceSummary(
+        id="reference-id", name="Selected calibration", path=tmp_path / "reference.tpc",
+        side="left", facing="right", camera="0",
+    )
+    monkeypatch.setattr(bridge, "list_references", lambda: [selected])
+    screen = PracticeScreen(bridge, Router())
+    launched = []
+    monkeypatch.setattr(screen, "_launch_worker", lambda **kwargs: launched.append(kwargs))
+    try:
+        screen.reference_combo.setCurrentIndex(1)
+        screen.confirm_camera_cb.setChecked(confirmed)
+        screen._start_preview()
+        if confirmed:
+            assert launched[0]["reference"] is selected
+        else:
+            assert not launched
+            assert "Confirm unchanged camera placement" in screen.status_label.text()
+    finally:
+        screen.close()
 
 
 def test_practice_screen_starts_and_releases_worker_without_blocking(

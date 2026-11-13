@@ -153,24 +153,35 @@ and usage information. **Help & Guide** renders the styled offline manual
 with hierarchical contents and searchable, highlighted matches.
 
 The Library lists practice `.tp`, reference recording `.tpr`, and calibration
-profile `.tpc` files (including legacy neutral-baseline archives). **Rename** saves
+profile `.tpc` files (including legacy neutral-baseline archives). Use **File type**
+to show all types or only `.tpr`, `.tpc` or `.tp`; it combines with name search,
+and both filters stay selected when you refresh. **Rename** saves
 the display name inside the archive without changing its filename. **Delete**
 asks for confirmation before moving the archive, including its recordings and
 analytics, to the operating system's Trash; original imported media and legacy
 reports are retained. **Import & Analyze Video…** packages a selected local clip
 into a portable `.tpr` by default without modifying the source video; uncheck
 **Import as reference** to produce a `.tp`. Imports are available
-only through Library. **Migrate Legacy Data** copies loose reports with available
-media and compatible database analytics into archives, retains the originals,
-and copies legacy `.tpc` recordings into separate `.tpr` files without changing
-the original neutral baselines. It reports unavailable media or incompatible data. Repeating migration does
-not overwrite an already migrated report. **Export Video…** in Review copies
-the currently selected stream to a destination you choose.
+only through Library. **Export Video…** in Review copies the currently selected
+stream to a destination you choose.
 
 Settings are organized into groups covering
 camera and view, calibration, tracking, movement, music, replay and Ollama.
 **Apply Settings** validates and applies changes for the current app session;
-use **Export TOML…** to save them to a configuration file.
+use **Apply & Save settings.toml** to confirm and overwrite that file, or
+**Export TOML…** to choose a different destination.
+
+In the calibration editor, **Use approved ranges as Settings defaults...** copies
+the exact approved minimum/maximum, units and views into **Settings → Calibration
+defaults** and saves `settings.toml` after confirmation. Existing `.tpc` profiles
+also have **Use as Settings defaults** in Library. This replaces the previous
+default ranges, not unrelated settings. Edit or disable individual metrics in
+Settings, then use **Apply & Save settings.toml** to persist your changes.
+With no calibration selected, enabled default ranges replace legacy posture
+thresholds; missing metrics have no fallback. Disable all default ranges to restore
+the legacy thresholds. A selected calibration takes priority, and copying defaults
+does not enable calibrated camera scoring. Load the saved file next time with
+`--config settings.toml`, or use **Import TOML…**.
 
 Calibration and Live Practice use the shared pose pipeline: the video shows
 skeleton tracking and the inspector reports head, shoulder, torso/hip and knee
@@ -187,10 +198,38 @@ playhead's elapsed time; it does not calculate a biomechanical or musical
 alignment. For a raw or local video, click **Analyze posture & movement** to run a
 cancellable background analysis of up to the first two minutes. The resulting
 skeleton overlay, head/shoulder/torso-hip/knee measurements and posture alerts
-stay synchronized with the current frame. The analysis uses the same thresholds
-as live practice, does not modify the raw video, and saves results inside the
+stay synchronized with the current frame. The analysis does not modify the raw
+video and saves results inside the
 selected `.tp` or `.tpr` recording so they return when reopened. Archived baked video
 streams remain unchanged.
+
+Select a `.tpc` in Review's **Calibration profile** picker to compare the
+recording with its approved ranges. In both Live Practice and Review, selecting
+a calibration disables the Settings-based head, shoulder, knee and torso/hip
+warnings: only metrics with approved ranges can produce calibrated feedback.
+Missing metrics do not fall back to Settings. Review displays the saved units
+and limits; unreliable or incompatible measurements remain unavailable.
+Review comparison does not enable a profile for live camera scoring.
+Choose **No calibration (use Settings)** to use your Settings default ranges, or
+the legacy Settings thresholds if no default ranges are enabled.
+Live Practice still requires the camera checks and placement confirmation for
+a camera-ready calibration; an unconfirmed selection is not silently discarded.
+
+For closer skeleton tracking, use the raw/source stream: Review draws the
+current frame's raw cached landmarks rather than lagging display-smoothed
+landmarks. Old display-only caches require **Analyze posture & movement** again
+for calibration comparison. Existing baked overlay streams cannot be corrected;
+calibrated playback uses raw/source video.
+
+For joints that briefly disappear, **Settings → Replay movement** offers
+**Review joint interpolation** (`linear` by default, or `quadratic`) and
+**Maximum joint gap to fill** (default 3 seconds; 0 disables it). Review fills
+bracketed gaps using nearby reliable joints without delaying playback.
+Quadratic interpolation falls back to linear with insufficient nearby samples
+or an out-of-frame curve. Longer gaps, clip edges and ambiguous multi-dancer
+tracking remain unfilled. Interpolated joints are visual estimates only:
+measurements, alerts and calibration evidence still use the original raw data.
+This applies to analyzed raw/source Review streams, not live capture or baked overlays.
 
 Enable **Pivot rings** and **Step footprints** to display the same
 confidence-qualified movement evidence from the shared analysis pipeline. Existing archive movement
@@ -321,9 +360,8 @@ scoring. Loss of confidence or the approved view remains unknown. Profiles work
 offline without the source `.tpr`; source names and hashes are provenance only.
 
 The following legacy baseline and CLI workflow remains supported. Version-1
-`.tpc` archives are neutral baselines, not range profiles. **Migrate Legacy Data**
-copies their recordings to `.tpr`, keeps originals byte-for-byte, and never
-fabricates old measurement distributions.
+`.tpc` archives are neutral baselines, not range profiles, and remain readable
+without conversion to `.tpr`.
 
 A reference is a saved description of the measurements observed during a deliberately selected stable interval. It is not a pretrained ideal pose or an automatically chosen teacher judgement.
 

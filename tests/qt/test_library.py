@@ -2,6 +2,7 @@
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
@@ -11,6 +12,7 @@ from tango_posture.config import Config
 from tango_posture.desktop_qt.router import Route, Router
 from tango_posture.desktop_qt.screens.library import LibraryScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
+from tango_posture.references.archives import promote_reference
 from tango_posture.references.errors import ImportCancelledError
 from tango_posture.references.results import ImportedClipResult
 
@@ -38,6 +40,15 @@ def test_library_lists_archives_and_opens_them_in_review(qapp, tmp_path):
     open_button = screen.table.cellWidget(0, 3).findChildren(QPushButton)[0]
     open_button.click()
     assert navigations[-1] == (Route.REVIEW, archive.resolve())
+    screen.close()
+
+
+def test_library_has_no_legacy_migration_control(qapp, tmp_path):
+    screen = LibraryScreen(ServiceBridge(Config(data_dir=str(tmp_path))), Router())
+    assert all(
+        button.text() != "Migrate Legacy Data"
+        for button in screen.findChildren(QPushButton)
+    )
     screen.close()
 
 
@@ -94,35 +105,103 @@ def test_rename_persists_manifest_name_without_breaking_path(qapp, tmp_path, mon
     second.close()
 
 
-def test_delete_requires_confirmation_and_uses_trash(qapp, tmp_path, monkeypatch):
+@pytest.mark.parametrize("suffix", [".tp", ".tpr", ".tpc"])
+def test_delete_requires_confirmation_and_uses_trash(
+    qapp, tmp_path, monkeypatch, reference, suffix
+):
     report = tmp_path / "report.md"
     report.write_text("# Report\n")
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"fixture video")
     path = tmp_path / "practice" / "practice.tp"
-    append_segment(path, report, None, None, [])
+    append_segment(path, report, video, None, [])
+    if suffix == ".tpr":
+        destination = tmp_path / "references" / "reference.tpr"
+        promote_reference(path, destination, "Reference")
+        path = destination
+    elif suffix == ".tpc":
+        path = tmp_path / "calibrations" / "calibration.tpc"
+        save_calibration_archive(path, reference, video, video, [])
     screen = LibraryScreen(ServiceBridge(Config(data_dir=str(tmp_path))), Router())
+    trash = tmp_path / "trash"
+    trash.mkdir()
     moved = []
+
+    def move_to_trash(filename):
+        source = Path(filename)
+        moved.append(str(source))
+        source.replace(trash / source.name)
+        return True
+
     monkeypatch.setattr(
-        "tango_posture.desktop_qt.screens.library.QFile.moveToTrash",
-        lambda name: moved.append(name) or (True, "trash-path"),
+        "tango_posture.desktop_qt.screens.library.QFile",
+        lambda filename: SimpleNamespace(
+            moveToTrash=lambda: move_to_trash(filename),
+            errorString=lambda: "Permission denied",
+        ),
     )
     monkeypatch.setattr(
         QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No,
     )
     screen._delete(path)
     assert not moved
+    assert path.is_file()
     monkeypatch.setattr(
         QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes,
     )
-    screen._delete(path)
+    row = next(i for i, item in enumerate(screen.practices) if item["path"] == path.resolve())
+    delete = next(
+        button for button in screen.table.cellWidget(row, 3).findChildren(QPushButton)
+        if button.text() == "Delete"
+    )
+    delete.click()
     assert moved == [str(path)]
+    assert not path.exists()
+    assert (trash / path.name).is_file()
+    assert all(item["path"] != path.resolve() for item in screen.practices)
+    assert "moved to Trash" in screen.import_status.text()
     assert report.is_file()
+    (trash / path.name).replace(path)
+    screen.refresh()
     monkeypatch.setattr(
-        "tango_posture.desktop_qt.screens.library.QFile.moveToTrash",
-        lambda name: (False, ""),
+        "tango_posture.desktop_qt.screens.library.QFile",
+        lambda filename: SimpleNamespace(
+            moveToTrash=lambda: False, errorString=lambda: "Permission denied",
+        ),
     )
     screen._delete(path)
     assert "Could not move" in screen.import_status.text()
+    assert "Permission denied" in screen.import_status.text()
     assert path.is_file()
+    screen.close()
+
+
+def test_library_type_filter_combines_with_search_and_survives_refresh(qapp, tmp_path, monkeypatch):
+    bridge = ServiceBridge(Config(data_dir=str(tmp_path)))
+    entries = [
+        {"name": name, "path": tmp_path / f"{name}{suffix}",
+         "segments_count": 0 if suffix == ".tpc" else 1, "created_at": ""}
+        for suffix in (".tpr", ".tpc", ".tp")
+        for name in ("Walking", "Turn")
+    ]
+    monkeypatch.setattr(bridge, "list_library_archives", lambda: entries)
+    screen = LibraryScreen(bridge, Router())
+    assert screen.table.rowCount() == 6
+    for suffix in (".tpr", ".tpc", ".tp"):
+        screen.type_filter.setCurrentIndex(screen.type_filter.findData(suffix))
+        assert screen.table.rowCount() == 2
+        assert all(screen.table.item(row, 4).text() == suffix for row in range(2))
+        screen.search_input.setText(" WALK ")
+        assert screen.table.rowCount() == 1
+        assert screen.table.item(0, 0).text() == "Walking"
+        screen.refresh()
+        assert screen.type_filter.currentData() == suffix
+        assert screen.table.rowCount() == 1
+        screen.search_input.setText("missing")
+        assert screen.table.rowCount() == 0
+        screen.search_input.clear()
+    screen.type_filter.setCurrentIndex(0)
+    assert screen.table.rowCount() == 6
     screen.close()
 
 
@@ -169,9 +248,6 @@ def test_closing_library_cancels_owned_packaging_thread(qapp, tmp_path, monkeypa
     screen.close()
     assert cancelled.is_set()
     assert not screen._package_thread.is_alive()
-    screen._import_job_id = "migration"
-    screen._handle_import_event(("migration_done", "migration", 0, []))
-    assert "Migration cancelled" in screen.import_status.text()
 
 
 def test_started_import_can_be_cancelled_and_recovers_controls(qapp, tmp_path, monkeypatch):

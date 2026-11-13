@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QIODevice, QObject, QSaveFile, Signal
 from PySide6.QtGui import QImage
 
-from ..config import Config, export_toml
+from ..config import Config, RangeDefault, export_toml
 from ..core.entities import ReferenceSummary
 from ..core.session_state import SessionState
 from ..core.types import ArchiveKind
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
+
+    from ..calibration.models import RangeProfile
 
 
 def numpy_to_qimage(image_bgr: Any) -> QImage:
@@ -31,6 +36,7 @@ class ServiceBridge(QObject):
     """Coordinates local storage, config, and background tasks."""
 
     status_message = Signal(str)
+    config_changed = Signal(object)
     session_state_changed = Signal(object)  # SessionState
     frame_emitted = Signal(QImage, str)     # video frame, frame note summary
     beat_emitted = Signal(float, int, bool) # bpm, beat_num, is_active
@@ -48,7 +54,52 @@ class ServiceBridge(QObject):
 
     def update_config(self, new_cfg: Config) -> None:
         self.cfg = new_cfg
+        self.config_changed.emit(new_cfg)
         self.status_message.emit("Settings updated.")
+
+    def use_calibration_defaults(self, profile: RangeProfile, parent: QWidget) -> bool:
+        from PySide6.QtWidgets import QMessageBox
+
+        destination = Path("settings.toml").resolve()
+        names = ", ".join(profile.metrics)
+        answer = QMessageBox.question(
+            parent, "Overwrite Settings defaults?",
+            f"Replace the default ranges with {profile.name} ({names}) and save all current "
+            f"Settings to:\n{destination}\n\nAny existing settings.toml will be overwritten. "
+            "Skipped metrics stay unavailable; camera scoring approval is not transferred.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        try:
+            data = self.cfg.model_dump(exclude={"axis_curve"})
+            data["calibration_defaults"] = {
+                key: RangeDefault(
+                    lower=target.lower, upper=target.upper, unit=target.unit, view=target.view,
+                ).model_dump()
+                for key, target in profile.metrics.items()
+            }
+            cfg = Config.model_validate(data)
+            self.save_settings(cfg, destination)
+        except (OSError, ValueError) as error:
+            self.status_message.emit(f"Could not save calibration defaults: {error}")
+            return False
+        self.status_message.emit(f"Calibration defaults saved to {destination}")
+        return True
+
+    def save_settings(self, cfg: Config, destination: Path) -> None:
+        payload = export_toml(cfg).encode("utf-8")
+        output = QSaveFile(str(destination))
+        if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise OSError(output.errorString())
+        if output.write(payload) != len(payload):
+            error = output.errorString()
+            output.cancelWriting()
+            raise OSError(error)
+        if not output.commit():
+            raise OSError(output.errorString())
+        self.update_config(cfg)
 
     def list_references(self) -> list[ReferenceSummary]:
         """Discover existing .tpc and legacy JSON calibrations."""
@@ -176,5 +227,5 @@ class ServiceBridge(QObject):
     def import_settings_toml(self, source: Path) -> None:
         import tomllib
 
-        self.cfg = Config.model_validate(tomllib.loads(source.read_text(encoding="utf-8")))
+        self.update_config(Config.model_validate(tomllib.loads(source.read_text(encoding="utf-8"))))
         self.status_message.emit(f"Loaded settings from {source.name}")

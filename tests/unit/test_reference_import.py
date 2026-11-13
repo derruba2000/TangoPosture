@@ -48,6 +48,24 @@ from tango_posture.references.video import (
 from tango_posture.review import read_report
 
 
+def test_review_skeleton_uses_same_frame_measurements_instead_of_lagging_display_pose(monkeypatch):
+    seen = {}
+    data = {"width": 160, "height": 120, "frames": {
+        "5": {"timestamp": 0.5, "poses": [{"nose": [0.2, 0.3, 0, 1, 1]}],
+              "measurement_poses": [{"nose": [0.8, 0.3, 0, 1, 1]}]},
+    }}
+
+    def render(image, observation, *args, **kwargs):
+        seen["observation"] = observation
+        return image
+
+    monkeypatch.setattr("tango_posture.references.coach.draw", render)
+    render_coach_frame_overlay(np.zeros((120, 160, 3), np.uint8), data, 5, Config())
+    assert seen["observation"].timestamp == 0.5
+    assert seen["observation"].poses[0]["nose"].x == 0.8
+    assert data["frames"]["5"]["poses"][0]["nose"][0] == 0.2
+
+
 def _write_test_video(
     path: Path,
     *,

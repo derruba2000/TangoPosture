@@ -10,7 +10,9 @@ from conftest import frame
 from tango_posture.app import Application
 from tango_posture.archive import PracticeArchive, read_manifest
 from tango_posture.calibration.baseline import load_calibration_file, profile
+from tango_posture.calibration.measurements import measure_ranges
 from tango_posture.capture import Captured
+from tango_posture.config import Config
 from tango_posture.models import MANIFEST, fetch, verify
 from tango_posture.movement import render_floor_guide
 from tango_posture.practice import GuiDisplay
@@ -53,6 +55,42 @@ class FakeEstimator:
         self.closed = True
 
 
+def test_settings_range_defaults_coach_without_granting_session_scoring(tmp_path, monkeypatch):
+    monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    value = measure_ranges(frame(0, forward=0.2), Config()).values["head_pitch"]
+    cfg = Config(data_dir=str(tmp_path), beat_tracking=False, entry_duration=0.1, smoothing=0.0001,
+                 calibration_defaults={
+                     "head_pitch": {"lower": value + 10, "upper": value + 20,
+                                    "unit": "degrees", "view": "all"},
+                 })
+    labels = []
+    monkeypatch.setattr(
+        "tango_posture.overlay.cv2.putText",
+        lambda image, text, *args, **kwargs: labels.append(text) or image,
+    )
+
+    class Buttons(GuiDisplay):
+        def show(self, image):
+            pass
+
+    storage = Storage(tmp_path)
+    app = Application(
+        cfg, storage, video="fixture", capture=FakeCapture(count=5),
+        estimator=FakeEstimator(), display=Buttons(),
+    )
+    try:
+        app.run()
+        assert "Head pitch (ear-to-nose)" in app.display.notes
+        assert "outside approved range" in app.display.notes
+        assert app.session is None and app.reference is None
+        assert not any(
+            label.startswith(("Head horiz:", "Shoulders:", "LOWER SHOULDERS", "BEND KNEES"))
+            for label in labels
+        )
+    finally:
+        storage.close()
+
+
 @pytest.mark.parametrize("camera_checked", [False, True])
 def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
     tmp_path, cfg, monkeypatch, camera_checked,
@@ -65,6 +103,11 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
     from tango_posture.references.archives import promote_reference
 
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
+    labels = []
+    monkeypatch.setattr(
+        "tango_posture.overlay.cv2.putText",
+        lambda image, text, *args, **kwargs: labels.append(text) or image,
+    )
     cfg.data_dir = str(tmp_path)
     cfg.beat_tracking = False
     cfg.head_down_duration = 0.1
@@ -110,6 +153,11 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
             assert app.last_summary is None and app.session is None
             assert "comparison only" in app.display.notes.lower()
         assert "BAD HEAD ALIGNMENT" not in app.display.notes
+        assert not any(
+            label.startswith(("Head horiz:", "Shoulders:", "LOWER SHOULDERS", "BEND KNEES"))
+            for label in labels
+        )
+        assert all(not any(entry["alerts"].values()) for entry in app.frame_log)
         analytics = read_analytics(app.practice_file, 0)
         assert len(analytics["frames"]) == 30
         assert analytics["frames"][0]["poses"]

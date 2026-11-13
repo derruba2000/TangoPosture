@@ -155,13 +155,13 @@ uv run tango-posture qt
 ```
 
 Qt startup shows a branded splash screen for three seconds. The left navigation
-rail opens **Practice**, **References**, **Library**, **Review**, **Analytics**,
+rail opens **Home**, **Practice**, **Library**, **Review**, **Analytics**,
 **AI Coach**, **Settings**, and **Help & Guide**. **About** shows the version,
 license, and repository link.
 
 In **Practice**, name the practice, select a camera or video source, then click
 **Start Preview**. Use **New Calibration** for guided camera capture and explicit
-range approval. **References > New Calibration** also starts this workflow;
+range approval. **Home > Manage References > New Calibration** also starts this workflow;
 saved `.tpc` profiles can be inspected and matched with **Match Camera Settings**.
 Confirm unchanged physical camera placement when reusing a reference.
 
@@ -206,9 +206,7 @@ reference (.tpr)**; uncheck it to create a practice archive. Imports retain raw,
 overlay, floor-lines and indexed analytics without changing the original media.
 **Promote to Reference** copies a selected practice recording or excerpt into a
 separate `.tpr`. Rename persists the display name;
-confirmed Delete moves an archive to Trash. **Migrate Legacy Data** copies
-compatible loose reports/database evidence and copies legacy `.tpc` recordings
-into `.tpr` references while retaining every original neutral baseline.
+confirmed Delete moves an archive to Trash.
 
 On a `.tpr`, choose **Create calibration**. Select the numbered dancer in the
 video; explicitly restart a track after ambiguity or occlusion and confirm linked
@@ -357,7 +355,7 @@ Common settings:
 
 - **`practice/<name>.tp`**: Portable ZIP archive containing `video_00.mp4`, `overlay_00.mp4`, `report_00.md`, `report_00.metadata.json`, and a manifest. Further recordings increment to `01`, `02`, and beyond, preserving earlier recordings. Observation-only runs have a report but no recorded videos.
 - **`references/<name>.tpr`**: Reference recording ZIP with raw/overlay/lines video where available, indexed measurements, report and source/selection metadata.
-- **`calibrations/<name>.tpc`**: Version-2 calibration ZIP with `profile.json` and a manifest: explicitly approved ranges, units, views, context, evidence coverage, provenance, model and measurement versions. It needs no source video to score. Version-1 `.tpc` files remain readable as neutral baselines, without invented distributions; migration creates separate `.tpr` copies. Legacy JSON baselines also remain readable.
+- **`calibrations/<name>.tpc`**: Version-2 calibration ZIP with `profile.json` and a manifest: explicitly approved ranges, units, views, context, evidence coverage, provenance, model and measurement versions. It needs no source video to score. Version-1 `.tpc` files remain readable as neutral baselines, without invented distributions. Legacy JSON baselines also remain readable.
 - **Legacy `reports/` and `videos/`**: Existing loose files remain untouched and readable; new practice reports and recordings are archived instead.
 - **`data/tango.sqlite3` & `data/exports/SESSION_ID/`**: SQLite session storage (`summary.json`, `observations.csv`, `events.csv`).
 

@@ -377,16 +377,14 @@ class PracticeScreen(QWidget):
             return
 
         selected = self._selected_reference()
-        reference = (
-            selected if selected and (self.confirm_camera_cb.isChecked() or not selected.scoring_ready)
-            else None
-        )
-        if selected and reference is None:
-            self.bridge.status_message.emit(
-                "Camera placement is not confirmed. Preview and recording will start without scoring."
+        if selected and selected.scoring_ready and not self.confirm_camera_cb.isChecked():
+            self.status_label.setText(
+                "Confirm unchanged camera placement for the selected calibration, "
+                "or select No reference to use Settings."
             )
+            return
         self._launch_worker(
-            reference=reference,
+            reference=selected,
             video=video,
             practice_name=name,
         )

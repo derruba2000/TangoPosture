@@ -1,19 +1,21 @@
 import json
+import tomllib
 
 import cv2
 import numpy as np
 import pytest
 from conftest import frame
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from tango_posture.archive import append_segment, read_analytics, read_manifest
 from tango_posture.calibration.archives import read_range_profile
 from tango_posture.calibration.baseline import profile
-from tango_posture.config import Config
+from tango_posture.config import Config, export_toml
 from tango_posture.desktop_qt.calibration.editor import CalibrationEditor
 from tango_posture.desktop_qt.calibration.guided import GuidedCalibration
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.library import LibraryScreen
+from tango_posture.desktop_qt.screens.settings import SettingsScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
 from tango_posture.models import MANIFEST
 from tango_posture.references.archives import promote_reference
@@ -75,6 +77,85 @@ def test_shared_editor_reuses_cache_and_saves_independent_profiles(qapp, tmp_pat
     assert saved[0].metrics["head_pitch"].lower == -100
     assert len(saved[0].metrics["head_pitch"].passages) == 2
     assert not saved[0].metrics["head_pitch"].camera_check_passed
+
+
+def test_calibration_defaults_require_confirmation_and_round_trip_through_settings(
+    qapp, tmp_path, cached_reference, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = Config(data_dir=str(tmp_path), camera=2, tango_bpm=135, calibration_defaults={
+        "head_forward": {"lower": 0.01, "upper": 0.2, "unit": "torso_lengths", "view": "side"},
+    })
+    bridge = ServiceBridge(cfg)
+    settings = SettingsScreen(bridge, Router())
+    destination = tmp_path / "settings.toml"
+    destination.write_text(export_toml(cfg))
+    before = destination.read_bytes()
+    editor = CalibrationEditor(cached_reference, cfg, bridge=bridge)
+    try:
+        editor.lower_spin.setValue(-23.123456)
+        editor.upper_spin.setValue(17.654321)
+        editor._approve()
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
+        editor._use_defaults()
+        assert destination.read_bytes() == before
+        assert bridge.config == cfg
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+        editor.defaults_button.click()
+        saved = Config.model_validate(tomllib.loads(destination.read_text()))
+        assert saved == bridge.config
+        assert saved.camera == 2 and saved.tango_bpm == 135
+        assert set(saved.calibration_defaults) == {"head_pitch"}
+        approved = editor.approved["head_pitch"]
+        target = saved.calibration_defaults["head_pitch"]
+        assert (target.lower, target.upper, target.unit, target.view) == (
+            approved.lower, approved.upper, approved.unit, approved.view,
+        )
+        enabled, lower, upper, _view = settings.range_widgets["head_pitch"]
+        assert enabled.isChecked() and lower.value() == target.lower
+        assert not settings.range_widgets["head_forward"][0].isChecked()
+        lower.setValue(-15)
+        upper.setValue(12.5)
+        settings.field_widgets["replay_joint_interpolation"].setCurrentText("quadratic")
+        settings.field_widgets["replay_joint_max_gap"].setValue(1.25)
+        settings.save_toml_btn.click()
+        saved = Config.model_validate(tomllib.loads(destination.read_text()))
+        assert saved.calibration_defaults["head_pitch"].lower == -15
+        assert saved.calibration_defaults["head_pitch"].upper == 12.5
+        assert saved.replay_joint_interpolation == "quadratic"
+        assert saved.replay_joint_max_gap == 1.25
+        assert saved.camera == 2 and saved.tango_bpm == 135
+    finally:
+        editor.reject()
+        settings.close()
+
+
+def test_failed_default_settings_save_preserves_current_config_and_file(
+    qapp, tmp_path, cached_reference, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = Config(data_dir=str(tmp_path))
+    bridge = ServiceBridge(cfg)
+    messages = []
+    bridge.status_message.connect(messages.append)
+    destination = tmp_path / "settings.toml"
+    destination.write_text(export_toml(cfg))
+    before = destination.read_bytes()
+    editor = CalibrationEditor(cached_reference, cfg, bridge=bridge)
+    try:
+        editor._approve()
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+
+        def fail(*args):
+            raise OSError("Disk full")
+
+        monkeypatch.setattr(bridge, "save_settings", fail)
+        editor._use_defaults()
+        assert bridge.config == cfg
+        assert destination.read_bytes() == before
+        assert "Could not save calibration defaults: Disk full" in messages
+    finally:
+        editor.reject()
 
 
 def test_library_distinguishes_profiles_from_replayable_references(qapp, tmp_path, cached_reference):

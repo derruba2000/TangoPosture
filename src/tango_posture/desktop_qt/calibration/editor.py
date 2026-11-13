@@ -43,7 +43,7 @@ from ...replay import VideoReader
 from ..analytics.data import MetricData
 from ..components.metric_chart import MetricChart
 from ..components.video_stage import VideoStage
-from ..service_bridge import numpy_to_qimage
+from ..service_bridge import ServiceBridge, numpy_to_qimage
 
 
 class CalibrationEditor(QDialog):
@@ -51,13 +51,15 @@ class CalibrationEditor(QDialog):
         self, path: Path, cfg: Config, parent: QWidget | None = None, *,
         holds: dict[str, list[Passage]] | None = None,
         base_profile: RangeProfile | None = None,
+        bridge: ServiceBridge | None = None,
     ) -> None:
         super().__init__(parent)
         if path.suffix.lower() != ".tpr":
-            raise ValueError("Create / migrate a .tpr reference before approving calibration ranges")
+            raise ValueError("Create a .tpr reference before approving calibration ranges")
         self.setWindowTitle("Review evidence & approve calibration ranges")
         self.resize(1180, 800)
         self.cfg = cfg.model_copy(deep=True)
+        self.bridge = bridge
         self.evidence = cached_evidence(path)
         self._source_hash = self.evidence.source["archive_sha256"]
         self.holds = holds or {}
@@ -241,6 +243,10 @@ class CalibrationEditor(QDialog):
         save = QPushButton("Save approved .tpc profile")
         save.clicked.connect(self._save)
         controls.addWidget(save)
+        self.defaults_button = QPushButton("Use approved ranges as Settings defaults...")
+        self.defaults_button.setEnabled(bridge is not None)
+        self.defaults_button.clicked.connect(self._use_defaults)
+        controls.addWidget(self.defaults_button)
         inspector_scroll = QScrollArea()
         inspector_scroll.setWidgetResizable(True)
         inspector_scroll.setMinimumWidth(340)
@@ -441,15 +447,14 @@ class CalibrationEditor(QDialog):
         self.approved.pop(self.metric_combo.currentData(), None)
         self.approved_label.setText("Approved: " + ", ".join(METRIC_DETAILS[k][1] for k in self.approved))
 
-    def _save(self) -> None:
-        try:
-            if file_sha256(self._archive.path) != self._source_hash:
-                raise ValueError("Reference changed while reviewing; reopen it before saving a profile")
-            if not self.confirm_identity.isChecked():
-                raise ValueError("Confirm that manually linked passages follow the same dancer")
-            if not self.approved:
-                raise ValueError("Approve at least one metric; skipped metrics will remain unavailable")
-            result = RangeProfile(
+    def _approved_profile(self) -> RangeProfile:
+        if file_sha256(self._archive.path) != self._source_hash:
+            raise ValueError("Reference changed while reviewing; reopen it before saving a profile")
+        if not self.confirm_identity.isChecked():
+            raise ValueError("Confirm that manually linked passages follow the same dancer")
+        if not self.approved:
+            raise ValueError("Approve at least one metric; skipped metrics will remain unavailable")
+        return RangeProfile(
                 name=self.name_input.text().strip(), context=self.context_combo.currentText(),
                 model_hash=self.evidence.model_hash, capture_profile=self.evidence.capture_profile,
                 source={
@@ -464,7 +469,21 @@ class CalibrationEditor(QDialog):
                 camera_checks={"holds": {
                     key: [hold.model_dump() for hold in holds] for key, holds in self.holds.items()
                 }},
-            )
+        )
+
+    def _use_defaults(self) -> None:
+        if self.bridge is None:
+            self.status_label.setText("Settings bridge is unavailable.")
+            return
+        try:
+            if self.bridge.use_calibration_defaults(self._approved_profile(), self):
+                self.status_label.setText("Default ranges saved to settings.toml.")
+        except (OSError, ValueError, TypeError) as error:
+            self.status_label.setText(f"Could not use calibration defaults: {error}")
+
+    def _save(self) -> None:
+        try:
+            result = self._approved_profile()
             path = calibration_path(calibration_directory(self.cfg.data_dir), result.name)
             save_range_profile(path, result)
             self.saved_path = path

@@ -111,7 +111,6 @@ class MainWindow(QMainWindow):
         nav_items = [
             (Route.HOME, "Home", "home"),
             (Route.PRACTICE, "Live Practice", "practice"),
-            (Route.REFERENCES, "References", "references"),
             (Route.LIBRARY, "Library", "library"),
             (Route.REVIEW, "Review", "review"),
             (Route.ANALYTICS, "Analytics", "analytics"),
@@ -174,7 +173,7 @@ class MainWindow(QMainWindow):
         if isinstance(practice_screen, PracticeScreen):
             practice_screen.stopped.connect(self._finish_close_if_ready)
 
-        # Setup Shortcuts (Ctrl+1 to Ctrl+9 / Cmd+1 to Cmd+9)
+        # Setup Shortcuts (Ctrl+1 to Ctrl+8 / Cmd+1 to Cmd+8)
         for idx, (route, _, _) in enumerate(nav_items, start=1):
             modifier = "Meta" if sys.platform == "darwin" else "Ctrl"
             shortcut = QShortcut(QKeySequence(f"{modifier}+{idx}"), self)

@@ -53,14 +53,12 @@ Remaining desktop scope and acceptance limits:
   persist in manifests; confirmed deletion moves archives to Trash. Local and
   YouTube/Facebook Reel imports are Library-only and package matching indexed
   raw, overlay, floor-lines, report and analytics members without changing the
-  original media. Legacy migration copies compatible reports/database evidence,
-  retains originals, reports failures, and is idempotent for migrated reports.
-  Soundtrack analysis is not exposed by the Qt Library.
+  original media. The legacy migration feature is not provided. Soundtrack
+  analysis is not exposed by the Qt Library.
 - Reference imports default to `.tpr`, and practice recordings/excerpts can be
-  promoted without changing the original. Legacy baseline migration creates
-  `.tpr` copies and retains original `.tpc` files; no user archives are migrated
-  automatically. Version-2 `.tpc` files contain only approved ranges/provenance
-  and remain usable without source video.
+  promoted without changing the original. Version-1 `.tpc` files remain
+  readable as neutral baselines. Version-2 `.tpc` files contain only approved
+  ranges/provenance and remain usable without source video.
 - Video and guided camera calibration share an evidence/range-approval editor:
   numbered dancer selection, explicit track restart anchors, cached measurements,
   video/timeline/histogram, separate examples and acceptable bounds, quantile

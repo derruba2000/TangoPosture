@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
-from ..config import Config
+from ..config import Config, RangeDefault
 from ..domain import (
     FrameObservation,
     MetricObservation,
@@ -20,7 +20,7 @@ from ..geometry import (
 )
 from ..metrics import measure
 from ..quality import reliable
-from .models import CYCLIC_METRICS, METRIC_DETAILS, RangeProfile
+from .models import CYCLIC_METRICS, METRIC_DETAILS, ApprovedRange, RangeProfile
 
 
 def measure_ranges(frame: FrameObservation, cfg: Config) -> MetricObservation:
@@ -56,12 +56,18 @@ def measure_ranges(frame: FrameObservation, cfg: Config) -> MetricObservation:
 
 def measure_profile(frame: FrameObservation, cfg: Config, profile: RangeProfile) -> MetricObservation:
     """Use the same per-view measurement path in approval and subsequent scoring."""
+    return measure_targets(frame, cfg, profile.metrics)
+
+
+def measure_targets(
+    frame: FrameObservation, cfg: Config, targets: Mapping[str, RangeDefault | ApprovedRange],
+) -> MetricObservation:
     observations = {
         view: measure_ranges(frame, cfg.model_copy(update={"allow_all_angles": view != "side"}))
-        for view in {target.view for target in profile.metrics.values()}
+        for view in {target.view for target in targets.values()}
     }
     result = measure_ranges(frame, cfg.model_copy(update={"allow_all_angles": True}))
-    for key, target in profile.metrics.items():
+    for key, target in targets.items():
         observation = observations[target.view]
         result.values[key] = observation.values[key]
         result.quality[key] = observation.quality[key]

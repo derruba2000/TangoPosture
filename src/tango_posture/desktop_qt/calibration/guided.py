@@ -285,6 +285,7 @@ class GuidedCalibration(QDialog):
             editor = CalibrationEditor(
                 destination, self.bridge.config, self, holds=self._holds,
                 base_profile=self.base_profile,
+                bridge=self.bridge,
             )
             editor.context_combo.setCurrentText(self.context.currentText())
             if self._profile_name is not None:

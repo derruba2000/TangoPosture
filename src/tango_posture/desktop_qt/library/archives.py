@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import copy
-import json
-import re
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from zipfile import ZipFile
 
 import cv2
 
@@ -22,7 +18,6 @@ from ...archive import (
     read_analytics,
     read_manifest,
     rename_archive,
-    store_analytics,
 )
 from ...config import Config
 from ...movement import render_floor_guide, render_movement_overlay
@@ -30,8 +25,7 @@ from ...references.coach import render_coach_frame_overlay
 from ...references.companions import load_report_coach_data, load_report_movement_data
 from ...references.errors import ImportCancelledError
 from ...replay import VideoReader, save_overlay_video
-from ...review import read_report, report_directory
-from ..analytics.data import session_payload
+from ...review import read_report
 
 
 def archive_report(
@@ -170,71 +164,3 @@ def archive_report(
                     raise FileExistsError(f"Reference already exists: {destination.name}")
                 output.replace(destination)
     return destination
-
-
-def migrate_legacy_archives(
-    cfg: Config, cancel_check: Callable[[], bool]
-) -> tuple[int, list[str]]:
-    """Copy loose reports and compatible DB evidence; never remove legacy data."""
-    count = 0
-    errors: list[str] = []
-    from ...archive import calibration_directory
-    from ...references.archives import promote_reference, reference_directory
-
-    for path in calibration_directory(cfg.data_dir).glob("*.tpc"):
-        if cancel_check():
-            return count, errors
-        try:
-            manifest = read_manifest(path)
-            if manifest["version"] != 1:
-                continue
-            destination = reference_directory(cfg.data_dir) / f"{path.stem}.tpr"
-            if not destination.exists():
-                promote_reference(path, destination, manifest.get("name", path.stem),
-                                  cancel_check=cancel_check)
-                count += 1
-            else:
-                with ZipFile(destination) as archive:
-                    descriptor = json.loads(archive.read("reference.json"))
-                if not isinstance(descriptor, dict):
-                    raise ValueError(f"{destination.name} contains invalid reference details")
-                if descriptor.get("source_sha256") != file_sha256(path):
-                    raise FileExistsError(f"{destination.name} belongs to a different source; choose a new name")
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
-            errors.append(f"{path.name}: {error}")
-    for report in report_directory(cfg.data_dir).glob("report_*.md"):
-        if cancel_check():
-            return count, errors
-        try:
-            reference = reference_directory(cfg.data_dir) / f"{report.stem}.tpr"
-            if reference.exists():
-                stored = read_analytics(reference, 0)
-                if stored is not None and stored.get("original_report_sha256") == read_report(report).digest:
-                    continue
-            existed = (practice_directory(cfg.data_dir) / f"{report.stem}.tp").exists()
-            archive_report(report, cfg, cancel_check)
-            count += int(not existed)
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError, cv2.error) as error:
-            errors.append(f"{report.name}: {error}")
-    for path in practice_directory(cfg.data_dir).glob("*.tp"):
-        if cancel_check():
-            break
-        try:
-            manifest = read_manifest(path)
-            with ZipFile(path) as archive:
-                reports = [
-                    archive.read(segment["report"]).decode("utf-8")
-                    for segment in manifest["segments"]
-                ]
-            for index, report_text in enumerate(reports):
-                current = read_analytics(path, index)
-                if current is not None and current.get("session") is not None:
-                    continue
-                match = re.search(r"^\| Session ID \| `([^`]+)` \|$", report_text, re.MULTILINE)
-                if match is not None:
-                    store_analytics(
-                        path, index, {"session": session_payload(Path(cfg.data_dir), match[1])}
-                    )
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error) as error:
-            errors.append(f"{path.name}: {error}")
-    return count, errors

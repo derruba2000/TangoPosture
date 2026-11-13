@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
 import cv2
 import numpy as np
 
-from ..config import Config
+from ..calibration.measurements import measure_targets
+from ..calibration.models import (
+    METRIC_DETAILS,
+    ApprovedRange,
+    RangeProfile,
+    profile_from_calibration,
+)
+from ..config import Config, RangeDefault
 from ..domain import (
+    Calibration,
     FrameObservation,
     Landmark,
 )
@@ -19,8 +28,171 @@ from ..geometry import (
 )
 from ..overlay import MESSAGES, draw, screen_point
 from ..pose.constants import CONNECTIONS
+from ..pose.interpolation import interpolate_poses
 from ..quality import reliable
+from ..temporal import Evaluator
 from .constants import SOUNDTRACK_SOURCE_LABEL
+
+
+def range_feedback(
+    rows: list[dict[str, Any]], profile: RangeProfile,
+) -> tuple[str, list[str]]:
+    return target_feedback(rows, profile.metrics)
+
+
+def target_feedback(
+    rows: list[dict[str, Any]], targets: Mapping[str, RangeDefault | ApprovedRange],
+) -> tuple[str, list[str]]:
+    messages = []
+    lines = []
+    for row in rows:
+        key = row["metric"]
+        target = targets[key]
+        label = METRIC_DETAILS[key][1]
+        value = row.get("smoothed")
+        measured = "Unknown" if value is None else f"{value:.3g}"
+        limits = f"{target.lower:.3g} .. {target.upper:.3g} {target.unit}"
+        reason = f" | {row['reason']}" if row.get("reason") else ""
+        lines.append(f"{label}: {measured} | approved {limits} | {row['state']}{reason}")
+        if row["state"] == "DEVIATION":
+            messages.append(f"{label}: {measured} outside approved range {limits}")
+    return "; ".join(messages), lines
+
+
+def _coach_observation(
+    entry: dict[str, Any], width: int, height: int, *, require_measurements: bool = False,
+    use_display_poses: bool = False,
+) -> FrameObservation:
+    if require_measurements and "measurement_poses" not in entry:
+        raise ValueError("This cache has display landmarks only. Analyze posture again before comparing.")
+    raw_poses = entry.get("measurement_poses", entry.get("poses"))
+    if use_display_poses and not require_measurements and "display_poses" in entry:
+        raw_poses = entry["display_poses"]
+    if require_measurements and not isinstance(raw_poses, list):
+        raise TypeError("Invalid cached measurement poses. Analyze posture again.")
+    if not isinstance(raw_poses, list):
+        raw_poses = [entry.get("pose")]
+    poses = []
+    for raw_pose in raw_poses:
+        if require_measurements and not isinstance(raw_pose, dict):
+            raise TypeError("Invalid cached measurement pose. Analyze posture again.")
+        if not isinstance(raw_pose, dict) or not raw_pose:
+            continue
+        pose = {}
+        for name, coords in raw_pose.items():
+            if require_measurements and (
+                not isinstance(coords, list | tuple) or len(coords) < 3
+            ):
+                raise ValueError("Invalid cached measurement landmark. Analyze posture again.")
+            if isinstance(coords, list | tuple) and len(coords) >= 3:
+                pose[str(name)] = Landmark(
+                    x=float(coords[0]), y=float(coords[1]), z=float(coords[2]),
+                    visibility=float(coords[3]) if len(coords) >= 4 and coords[3] is not None else None,
+                    presence=float(coords[4]) if len(coords) >= 5 and coords[4] is not None else None,
+                )
+        if pose:
+            poses.append(pose)
+    return FrameObservation(float(entry.get("timestamp", 0.0)), width, height, poses)
+
+
+def compare_coach_data(
+    data: dict[str, Any], cfg: Config, reference: Calibration,
+) -> dict[str, Any]:
+    """Compare raw cached landmarks with approved ranges, without rerunning inference."""
+    profile = profile_from_calibration(reference)
+    if profile is None:
+        raise ValueError("This legacy calibration has no approved ranges. Select a range profile.")
+    if data.get("model_hash") != profile.model_hash:
+        raise ValueError("Calibration and recording use different measurement models. Reanalyze the recording.")
+    capture = data.get("capture_profile")
+    if not isinstance(capture, dict) or any(
+        capture.get(key) != profile.capture_profile[key] for key in ("side", "facing")
+    ):
+        raise ValueError("Recording side/facing does not match the selected calibration.")
+    comparison_cfg = cfg.model_copy(update={
+        "side": profile.capture_profile["side"], "facing": profile.capture_profile["facing"],
+    })
+    return _compare_targets(data, comparison_cfg, profile.metrics, profile.name, {
+        "calibration_id": profile.id, "calibration_name": profile.name,
+    })
+
+
+def compare_default_coach_data(data: dict[str, Any], cfg: Config) -> dict[str, Any]:
+    capture = data.get("capture_profile")
+    if not isinstance(capture, dict) or any(
+        capture.get(key) not in ("left", "right") for key in ("side", "facing")
+    ):
+        raise ValueError("Cached recording side/facing is missing. Analyze posture again.")
+    cfg = cfg.model_copy(update={key: capture[key] for key in ("side", "facing")})
+    return _compare_targets(data, cfg, cfg.calibration_defaults, "Settings default ranges", {
+        "calibration_name": "Settings default ranges",
+    })
+
+
+def _compare_targets(
+    data: dict[str, Any], cfg: Config, targets: Mapping[str, RangeDefault | ApprovedRange],
+    name: str, metadata: dict[str, Any],
+) -> dict[str, Any]:
+    frames = data.get("frames")
+    if not isinstance(frames, dict):
+        raise TypeError("No cached posture frames. Analyze posture before comparing.")
+    if not frames:
+        raise ValueError("No cached posture frames. Analyze posture before comparing.")
+    width, height = data.get("width"), data.get("height")
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        raise ValueError("Cached frame dimensions are missing or invalid. Analyze posture again.")
+    evaluators = {
+        key: Evaluator(key, 0, cfg, bounds=(target.lower, target.upper))
+        for key, target in targets.items()
+    }
+    compared = {}
+    for index in sorted(frames, key=int):
+        entry = frames[index]
+        if not isinstance(entry, dict):
+            raise TypeError("Invalid cached posture frame")
+        observation = _coach_observation(entry, width, height, require_measurements=True)
+        measured = measure_targets(observation, cfg, targets)
+        rows = [
+            {"metric": key, "unit": targets[key].unit,
+             "reason": measured.quality[key].reason, **evaluator.update(
+                observation.timestamp,
+                measured.values[key] if measured.quality[key].valid else None,
+            )}
+            for key, evaluator in evaluators.items()
+        ]
+        message, lines = target_feedback(rows, targets)
+        compared[index] = {
+            **entry, "message": message, "lines": lines,
+            "notes": [name, *lines],
+            "calibration_rows": rows,
+        }
+    return {
+        **data, "frames": compared, "settings_coaching": False,
+        **metadata,
+    }
+
+
+def interpolate_coach_data(data: dict[str, Any], cfg: Config) -> dict[str, Any]:
+    """Prepare a separate display layer, leaving raw evidence and coaching untouched."""
+    frames = data.get("frames")
+    if cfg.replay_joint_max_gap <= 0 or not isinstance(frames, dict) or not frames:
+        return data
+    width, height = int(data.get("width", 0)), int(data.get("height", 0))
+    indices = sorted(frames, key=int)
+    observations = [_coach_observation(frames[index], width, height) for index in indices]
+    interpolated = interpolate_poses(
+        observations, method=cfg.replay_joint_interpolation,
+        max_gap=cfg.replay_joint_max_gap, confidence=cfg.confidence,
+    )
+    return {
+        **data, "frames": {
+            index: {
+                **frames[index],
+                "display_poses": [_serialise_pose(pose) for pose in observation.poses],
+            }
+            for index, observation in zip(indices, interpolated, strict=True)
+        },
+    }
 
 
 def render_coach_frame_overlay(
@@ -52,29 +224,8 @@ def render_coach_frame_overlay(
     if image.shape[1] != width or image.shape[0] != height:
         return image
 
-    poses: list[dict[str, Landmark]] = []
-    raw_poses = entry.get("poses")
-    if not isinstance(raw_poses, list):
-        raw_poses = [entry.get("pose")]
-    for raw_pose in raw_poses:
-        if not isinstance(raw_pose, dict) or not raw_pose:
-            continue
-        pose_dict: dict[str, Landmark] = {}
-        for name, coords in raw_pose.items():
-            if isinstance(coords, list | tuple) and len(coords) >= 3:
-                pose_dict[str(name)] = Landmark(
-                    x=float(coords[0]),
-                    y=float(coords[1]),
-                    z=float(coords[2]),
-                    visibility=(
-                        float(coords[3]) if len(coords) >= 4 and coords[3] is not None else None
-                    ),
-                    presence=(
-                        float(coords[4]) if len(coords) >= 5 and coords[4] is not None else None
-                    ),
-                )
-        if pose_dict:
-            poses.append(pose_dict)
+    observation = _coach_observation(entry, width, height, use_display_poses=True)
+    poses = observation.poses
 
     if lines_only:
         canvas = image.copy()
@@ -98,9 +249,6 @@ def render_coach_frame_overlay(
         value = entry.get(key)
         return float(value) if isinstance(value, int | float) else None
 
-    observation = FrameObservation(
-        timestamp=float(entry.get("timestamp", 0.0)), width=width, height=height, poses=poses
-    )
     beat_state = entry.get("beat_state")
     return cast(
         np.ndarray,
@@ -151,6 +299,7 @@ def render_coach_frame_overlay(
             verbose_skeleton=verbose_skeleton,
             show_vertical_axis=show_vertical_axis,
             show_footer=show_footer,
+            settings_coaching=bool(coach_data.get("settings_coaching", True)),
         ),
     )
 

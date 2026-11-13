@@ -244,7 +244,7 @@ def session_payload(data_dir: Path, identifier: str) -> dict[str, Any]:
 def load_archive_session(path: Path, index: int) -> SessionData:
     payload = read_analytics(path, index)
     if payload is None:
-        raise ValueError("This recording has no stored analytics. Analyze it in Review or migrate legacy data.")
+        raise ValueError("This recording has no stored analytics. Analyze it in Review.")
     session = payload.get("session")
     if not isinstance(session, dict):
         raise TypeError("No reference-relative analytics were stored for this recording.")
@@ -275,7 +275,7 @@ FRAME_METRICS = {
 def load_archive_dataset(path: Path, index: int) -> SessionData:
     payload = read_analytics(path, index)
     if payload is None:
-        raise ValueError("No stored analytics for this recording. Analyze in Review or migrate legacy data.")
+        raise ValueError("No stored analytics for this recording. Analyze it in Review.")
     if isinstance(payload.get("session"), dict):
         dataset = load_archive_session(path, index)
     else:

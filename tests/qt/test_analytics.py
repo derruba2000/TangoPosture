@@ -14,7 +14,6 @@ from tango_posture.desktop_qt.analytics.data import (
     load_session,
     session_payload,
 )
-from tango_posture.desktop_qt.library.archives import migrate_legacy_archives
 from tango_posture.desktop_qt.router import Router
 from tango_posture.desktop_qt.screens.analytics import AnalyticsScreen
 from tango_posture.desktop_qt.service_bridge import ServiceBridge
@@ -146,25 +145,6 @@ def test_reanalysis_preserves_other_indices_and_original_session(tmp_path, paylo
     assert read_analytics(path, 0)["session"] == data
 
 
-def test_legacy_database_evidence_migrates_without_removing_originals(tmp_path, payload):
-    data, _, _ = payload
-    path = make_archive(tmp_path, data)
-    with ZipFile(path) as archive:
-        report_text = archive.read("report_00.md").decode()
-    legacy = tmp_path / "practice" / "legacy.tp"
-    report = tmp_path / "legacy-report.md"
-    report.write_text(report_text)
-    append_segment(legacy, report, None, None, [10.0, 10.1])
-    _, errors = migrate_legacy_archives(Config(data_dir=str(tmp_path)), lambda: False)
-    assert errors == []
-    assert read_analytics(legacy, 0)["session"]["id"] == data["id"]
-    assert (tmp_path / "tango.sqlite3").is_file()
-    assert report.is_file()
-    before = legacy.read_bytes()
-    assert migrate_legacy_archives(Config(data_dir=str(tmp_path)), lambda: False) == (0, [])
-    assert legacy.read_bytes() == before
-
-
 def test_unanalyzed_archive_shows_actionable_status(qapp, tmp_path):
     report = tmp_path / "report.md"
     report.write_text("# Old recording\n")
@@ -172,7 +152,7 @@ def test_unanalyzed_archive_shows_actionable_status(qapp, tmp_path):
     screen = AnalyticsScreen(ServiceBridge(Config(data_dir=str(tmp_path))), Router())
     screen.session_combo.setCurrentIndex(1)
     assert screen.dataset is None
-    assert "Analyze in Review or migrate" in screen.state_label.text()
+    assert "Analyze it in Review" in screen.state_label.text()
     screen.close()
 
 

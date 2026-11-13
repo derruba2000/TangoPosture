@@ -45,7 +45,7 @@ from ...references.video import probe_import_video
 from ...references.worker import ReferenceImportWorker
 from ...replay import VideoReader
 from ...review import report_directory
-from ..library.archives import archive_report, migrate_legacy_archives
+from ..library.archives import archive_report
 from ..router import Route, Router
 from ..service_bridge import ServiceBridge
 
@@ -103,14 +103,10 @@ class LibraryScreen(QWidget):
         self.open_btn.clicked.connect(self._import_video)
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(self.refresh)
-        self.migrate_btn = QPushButton("Migrate Legacy Data")
-        self.migrate_btn.clicked.connect(self._migrate_legacy)
-
         header.addWidget(self.import_btn)
         header.addWidget(self.url_import_btn)
         self.open_btn.hide()
         header.addWidget(self.refresh_btn)
-        header.addWidget(self.migrate_btn)
         layout.addLayout(header)
 
         # Search Bar
@@ -119,6 +115,16 @@ class LibraryScreen(QWidget):
         self.search_input.setPlaceholderText("Search practices by name…")
         self.search_input.textChanged.connect(self._filter_table)
         search_row.addWidget(self.search_input)
+        search_row.addWidget(QLabel("File type:"))
+        self.type_filter = QComboBox()
+        self.type_filter.addItem("All types", "")
+        self.type_filter.addItem("References (.tpr)", ".tpr")
+        self.type_filter.addItem("Calibrations (.tpc)", ".tpc")
+        self.type_filter.addItem("Practices (.tp)", ".tp")
+        self.type_filter.currentIndexChanged.connect(
+            lambda _: self._filter_table(self.search_input.text())
+        )
+        search_row.addWidget(self.type_filter)
         self.import_reference_cb = QCheckBox("Import as reference (.tpr)")
         self.import_reference_cb.setChecked(True)
         search_row.addWidget(self.import_reference_cb)
@@ -171,7 +177,11 @@ class LibraryScreen(QWidget):
 
     def _filter_table(self, query: str) -> None:
         q = query.strip().lower()
-        filtered = [p for p in self.practices if q in p["name"].lower()] if q else self.practices
+        suffix = self.type_filter.currentData()
+        filtered = [
+            p for p in self.practices
+            if q in p["name"].lower() and (not suffix or p["path"].suffix.lower() == suffix)
+        ]
 
         self.table.setRowCount(0)
         for row_idx, p in enumerate(filtered):
@@ -211,18 +221,27 @@ class LibraryScreen(QWidget):
                 check_btn = QPushButton("Check camera")
                 check_btn.clicked.connect(lambda _, path=p["path"]: self._camera_calibration(path))
                 actions_layout.addWidget(check_btn)
+                defaults_btn = QPushButton("Use as Settings defaults")
+                defaults_btn.clicked.connect(lambda _, path=p["path"]: self._use_defaults(path))
+                actions_layout.addWidget(defaults_btn)
             self.table.setCellWidget(row_idx, 3, actions)
 
     def _calibrate_reference(self, path: Path) -> None:
         from ..calibration.editor import CalibrationEditor
 
         try:
-            editor = CalibrationEditor(path, self.bridge.config, self)
+            editor = CalibrationEditor(path, self.bridge.config, self, bridge=self.bridge)
             if editor.exec() == QDialog.DialogCode.Accepted:
                 self.refresh()
                 self.import_status.setText(f"Approved calibration saved: {editor.saved_path}")
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
             self.import_status.setText(f"Cannot create calibration: {error}")
+
+    def _use_defaults(self, path: Path) -> None:
+        try:
+            self.bridge.use_calibration_defaults(read_range_profile(path), self)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            self.import_status.setText(f"Cannot use calibration defaults: {error}")
 
     def _profile_details(self, path: Path) -> None:
         try:
@@ -342,37 +361,20 @@ class LibraryScreen(QWidget):
         )
         if decision != QMessageBox.StandardButton.Yes:
             return
+        archive = QFile(str(path))
         try:
             with _archive_lock(path):
-                success, _trash_path = QFile.moveToTrash(str(path))
+                success = archive.moveToTrash()
         except OSError as error:
             self.import_status.setText(f"Could not move {path.name} to Trash: {error}")
             return
         if not success:
-            self.import_status.setText(f"Could not move {path.name} to Trash. Nothing was deleted.")
+            self.import_status.setText(
+                f"Could not move {path.name} to Trash: {archive.errorString()}. Nothing was deleted."
+            )
             return
         self.refresh()
         self.import_status.setText(f"{path.name} moved to Trash.")
-
-    def _migrate_legacy(self) -> None:
-        self._package_cancel.clear()
-        self._import_job_id = "migration"
-        self._set_import_busy(True)
-        self.cancel_import_btn.setEnabled(True)
-        self.import_status.setText("Copying legacy reports and compatible analytics into archives…")
-        cfg = self.bridge.config.model_copy(deep=True)
-        events = self._package_events
-
-        def work() -> None:
-            try:
-                count, errors = migrate_legacy_archives(cfg, self._package_cancel.is_set)
-                events.put(("migration_done", "migration", count, errors))
-            except Exception as error:  # noqa: BLE001 - worker boundary reports failures
-                events.put(("import_error", "migration", str(error)))
-
-        self._package_thread = Thread(target=work, name="qt-library-migration", daemon=True)
-        self._package_thread.start()
-        self._package_timer.start()
 
     def _shutdown_import(self) -> None:
         self._package_cancel.set()
@@ -622,17 +624,6 @@ class LibraryScreen(QWidget):
             self.bridge.status_message.emit("Local video analysis completed.")
             self.refresh()
             self.router.navigate(Route.REVIEW, values[0])
-        elif kind == "migration_done" and len(values) == 2:
-            self._finish_import()
-            self.refresh()
-            self.import_status.setText(
-                (
-                    f"Migration cancelled after {values[0]} reports. Originals retained."
-                    if self._package_cancel.is_set()
-                    else f"Migrated {values[0]} reports. Originals retained."
-                )
-                + ("\nIssues: " + "; ".join(values[1]) if values[1] else "")
-            )
         elif kind == "import_cancelled":
             self.import_status.setText("Import cancelled. You can select another video.")
             self._finish_import()
@@ -658,6 +649,5 @@ class LibraryScreen(QWidget):
         self.url_import_btn.setEnabled(not busy)
         self.open_btn.setEnabled(not busy)
         self.refresh_btn.setEnabled(not busy)
-        self.migrate_btn.setEnabled(not busy)
         self.import_reference_cb.setEnabled(not busy)
         self.calibration_btn.setEnabled(not busy)

@@ -10,12 +10,18 @@ from tango_posture.archive import read_calibration_archive, read_manifest, renam
 from tango_posture.calibration.archives import read_range_profile, save_range_profile
 from tango_posture.calibration.baseline import compatible, profile
 from tango_posture.calibration.evidence import Evidence, dancer_frames
-from tango_posture.calibration.measurements import measure_profile, metric_samples
-from tango_posture.calibration.models import ApprovedRange, Passage, RangeProfile
+from tango_posture.calibration.measurements import measure_profile, measure_ranges, metric_samples
+from tango_posture.calibration.models import METRIC_DETAILS, ApprovedRange, Passage, RangeProfile
 from tango_posture.calibration.statistics import repeat_check, summarize_examples
 from tango_posture.config import Config
-from tango_posture.domain import MetricObservation, QualityResult
+from tango_posture.domain import Landmark, MetricObservation, QualityResult
 from tango_posture.models import MANIFEST
+from tango_posture.references.coach import (
+    _serialise_pose,
+    compare_coach_data,
+    compare_default_coach_data,
+    interpolate_coach_data,
+)
 from tango_posture.session import Session
 from tango_posture.storage import Storage
 from tango_posture.temporal import Evaluator
@@ -33,6 +39,98 @@ def range_profile(*, checked=False, name="Walking"):
         capture_profile=profile(Config(), 640, 480, "camera:0"),
         source={"archive": "unavailable.tpr"}, metrics={"head_pitch": target},
     )
+
+
+@pytest.fixture
+def coaching_cache():
+    observations = [frame(timestamp) for timestamp in (0, 0.1, 0.2)]
+    for observation in observations:
+        for side, x in (("left", 320), ("right", 330)):
+            observation.poses[0][f"{side}_knee"] = Landmark(
+                x=x / 640, y=385 / 480, visibility=0.99, presence=0.99,
+            )
+    return {
+        "width": 640, "height": 480, "model_hash": MANIFEST["sha256"],
+        "capture_profile": profile(Config(), 640, 480, "video"),
+        "frames": {
+            str(index): {
+                "timestamp": observation.timestamp,
+                "poses": [_serialise_pose(observation.poses[0])],
+                "measurement_poses": [_serialise_pose(observation.poses[0])],
+                "message": "LOWER YOUR SHOULDERS / BEND YOUR KNEES / BAD HEAD ALIGNMENT",
+            }
+            for index, observation in enumerate(observations)
+        },
+    }, observations
+
+
+@pytest.mark.parametrize("key", ["head_pitch", "shoulder_clearance", "hip_offset", "knee_flexion"])
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_cached_coaching_uses_both_approved_limits_not_settings(coaching_cache, key, direction):
+    data, observations = coaching_cache
+    cfg = Config(entry_duration=0.1, smoothing=0.0001)
+    measured = measure_ranges(observations[0], cfg).values[key]
+    assert measured is not None
+    target = range_profile()
+    limits = target.metrics["head_pitch"].model_copy(update={
+        "lower": measured + direction * 10 - 1, "upper": measured + direction * 10 + 1,
+        "unit": METRIC_DETAILS[key][2], "view": "all",
+    })
+    target.metrics = {key: limits}
+    compared = compare_coach_data(data, cfg, target.calibration())
+    entry = compared["frames"]["2"]
+    assert "outside approved range" in entry["message"]
+    assert METRIC_DETAILS[key][1] in entry["message"]
+    assert entry["calibration_rows"][0]["state"] == "DEVIATION"
+    assert len(entry["calibration_rows"]) == 1
+    assert all(
+        text not in entry["message"]
+        for text in ("LOWER YOUR SHOULDERS", "BEND YOUR KNEES", "BAD HEAD ALIGNMENT")
+    )
+    assert data["frames"]["2"]["message"].startswith("LOWER YOUR SHOULDERS")
+    limits.lower, limits.upper = measured - 1, measured + 1
+    inside = compare_coach_data(data, cfg, target.calibration())
+    assert inside["frames"]["2"]["message"] == ""
+    assert inside["frames"]["2"]["calibration_rows"][0]["state"] == "WITHIN_REFERENCE"
+
+
+def test_cached_comparison_rejects_unverified_evidence_and_abstains_on_tracking_loss(coaching_cache):
+    data, _ = coaching_cache
+    target = range_profile()
+    target.metrics["head_pitch"].view = "all"
+    data["frames"]["1"]["measurement_poses"] = []
+    compared = compare_coach_data(data, Config(entry_duration=0.1), target.calibration())
+    assert compared["frames"]["1"]["message"] == ""
+    assert compared["frames"]["1"]["calibration_rows"][0]["state"] == "UNKNOWN"
+    data["model_hash"] = "0" * 64
+    with pytest.raises(ValueError, match="different measurement models"):
+        compare_coach_data(data, Config(), target.calibration())
+    data["model_hash"] = target.model_hash
+    del data["frames"]["0"]["measurement_poses"]
+    with pytest.raises(ValueError, match="display landmarks only"):
+        compare_coach_data(data, Config(), target.calibration())
+
+
+def test_settings_default_ranges_apply_without_calibration_and_ignore_interpolated_evidence(coaching_cache):
+    data, observations = coaching_cache
+    value = measure_ranges(observations[0], Config()).values["head_pitch"]
+    cfg = Config(entry_duration=0.1, smoothing=0.0001, calibration_defaults={
+        "head_pitch": {"lower": value + 10, "upper": value + 20, "unit": "degrees", "view": "all"},
+    })
+    data["frames"]["1"]["measurement_poses"] = []
+    displayed = interpolate_coach_data(data, cfg)
+    assert displayed["frames"]["1"]["display_poses"]
+    compared = compare_default_coach_data(displayed, cfg)
+    assert compared["frames"]["1"]["calibration_rows"][0]["state"] == "UNKNOWN"
+    assert compared["frames"]["1"]["calibration_rows"][0]["smoothed"] is None
+    assert set(row["metric"] for row in compared["frames"]["0"]["calibration_rows"]) == {"head_pitch"}
+    assert not compared["settings_coaching"]
+    assert compared["calibration_name"] == "Settings default ranges"
+    cfg.calibration_defaults["head_pitch"].lower = value - 1
+    cfg.calibration_defaults["head_pitch"].upper = value + 1
+    compared = compare_default_coach_data(data, cfg)
+    assert compared["frames"]["2"]["message"] == ""
+    assert data["frames"]["2"]["message"].startswith("LOWER YOUR SHOULDERS")
 
 
 def test_profile_is_video_independent_and_rename_persists(tmp_path):

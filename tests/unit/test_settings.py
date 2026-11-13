@@ -18,6 +18,7 @@ def test_every_setting_has_a_toml_name_and_editor_group():
         "head_inclination",
         "trunk_inclination",
         "axis_curve",
+        "calibration_defaults",
     }
     expected |= {
         f"{metric}.{threshold}"
@@ -53,8 +54,28 @@ def test_full_toml_round_trip(tmp_path):
         auto_record_start_delay=2.0,
         auto_record_stop_delay=5.0,
         max_recordings=3,
+        replay_joint_interpolation="quadratic",
+        replay_joint_max_gap=2.75,
+        calibration_defaults={
+            "head_pitch": {"lower": -23.125, "upper": 7.5, "unit": "degrees", "view": "all"},
+            "hip_offset": {"lower": -0.02, "upper": 0.11, "unit": "axis_lengths", "view": "side"},
+        },
     )
     assert Config.model_validate(tomllib.loads(export_toml(cfg))) == cfg
+
+
+@pytest.mark.parametrize("change", [
+    {"replay_joint_interpolation": "cubic"}, {"replay_joint_max_gap": -1},
+    {"calibration_defaults": {
+        "head_pitch": {"lower": 2, "upper": 1, "unit": "degrees", "view": "all"},
+    }},
+    {"calibration_defaults": {
+        "shoulder_clearance": {"lower": 0, "upper": 1, "unit": "degrees", "view": "all"},
+    }},
+])
+def test_invalid_interpolation_and_default_ranges_are_rejected(change):
+    with pytest.raises(ValueError):
+        Config.model_validate(change)
 
 
 def test_environment_is_ignored_and_toml_cli_precedence_is_preserved(tmp_path, monkeypatch):
