@@ -10,18 +10,25 @@ and provides real archive/video Review, synchronized comparison, timestamp
 seeking, frame stepping, speed control, on-demand background posture analysis
 with synchronized skeleton, metric and alert insights, report-to-Coach handoff,
 local video export, archive-contained Analytics charts/events, and an
-explicitly invoked Ollama Coach. Settings now expose the shared Tk
-configuration groups in the Qt interface, the navigation rail has a custom
-vector icon for every destination, and startup/About/Help match the Tk desktop
-experience. Coach responses stream on a worker thread, are cancellable, and
+explicitly invoked Ollama Coach. Settings expose the shared configuration groups,
+the navigation rail has a custom vector icon for every destination, and
+startup/About/Help provide the desktop experience. Coach responses stream on a worker thread, are cancellable, and
 are saved against a SHA-256 report digest; a changed source report is discarded
 rather than saved.
 
+Qt is now the only desktop implementation: no-argument startup, `gui`, `qt`,
+and the packaged entry point all launch PySide6. Tk-only UI modules, the Tk
+replay widget and their integration tests were removed; shared video helpers,
+manual rendering, analysis services, saved archives, settings and CLI processing
+remain. Packaged smoke checks initialize Qt, and builds exclude Tk modules.
+
 Latest automated verification:
 
-- `uv run --frozen pytest -q`: **345 passed**.
+- `uv run --frozen pytest -q`: **314 passed**. Tk-only integration tests were
+  removed with their UI; Qt-entry-point, no-Tk startup and packaged-smoke
+  regressions were added, while shared-engine tests remain.
 - `uv run --frozen ruff check .`: passed.
-- `uv run --frozen mypy src`: passed across 71 source files.
+- `uv run --frozen mypy src`: passed across 67 source files.
 - `git diff --check`: passed.
 
 Remaining desktop scope and acceptance limits:

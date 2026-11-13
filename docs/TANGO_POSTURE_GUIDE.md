@@ -139,14 +139,18 @@ uv run tango-posture --help
 
 `uv sync --frozen` installs the dependency versions recorded in the lockfile. `models fetch` performs the explicit model download and checksum verification. After these setup steps, ordinary runs do not require a network connection.
 
-To open the PySide6 desktop interface, run `uv run tango-posture qt`. The equivalent command is `uv run tango-posture gui --qt`. The no-argument command and `uv run tango-posture gui` still open the legacy Tk interface.
+Run `uv run tango-posture`, `uv run tango-posture gui`, or
+`uv run tango-posture qt` to open the same PySide6 desktop interface.
+The packaged application also uses Qt. The former Tk interface has been removed;
+Tk/Tcl is not required. Existing data directories, `.tp`/`.tpc` archives, and TOML
+settings remain usable. `gui --qt` is retained only as a command compatibility alias.
 
 ### Qt desktop workflows
 
 Qt shows the TangoPosture splash screen for three seconds at startup. Select
 **About** at the bottom of the navigation rail for version, license, repository
-and usage information. **Help & Guide** renders the same styled offline manual
-as Tk, with hierarchical contents and searchable, highlighted matches.
+and usage information. **Help & Guide** renders the styled offline manual
+with hierarchical contents and searchable, highlighted matches.
 
 The Library lists practice `.tp` and reference `.tpc` archives. **Rename** saves
 the display name inside the archive without changing its filename. **Delete**
@@ -160,7 +164,7 @@ and reports unavailable media or incompatible data. Repeating migration does
 not overwrite an already migrated report. **Export Video…** in Review copies
 the currently selected stream to a destination you choose.
 
-Settings are organized into the same groups used by the Tk interface, covering
+Settings are organized into groups covering
 camera and view, calibration, tracking, movement, music, replay and Ollama.
 **Apply Settings** validates and applies changes for the current app session;
 use **Export TOML…** to save them to a configuration file.
@@ -185,7 +189,7 @@ selected `.tp` recording so they return when reopened. Archived baked video
 streams remain unchanged.
 
 Enable **Pivot rings** and **Step footprints** to display the same
-confidence-qualified movement evidence as Tk. Existing report/archive movement
+confidence-qualified movement evidence from the shared analysis pipeline. Existing archive movement
 data is loaded when available. Counts of zero mean no qualifying movement was
 detected, not that an overlay is hidden. **Lines only on floor** switches to
 the raw/source stream and replaces the dancer pixels with a neutral floor,
@@ -197,7 +201,7 @@ toggles let you compare overlays or lines against the comparison video.
 
 **Import YouTube / Facebook…** is available only in Library.
 Enter a supported HTTPS YouTube video or Facebook Reel URL, an optional title,
-and a clip range of up to 120 seconds. The shared Tk import worker downloads,
+and a clip range of up to 120 seconds. The shared background import worker downloads,
 analyzes and packages the clip, report and source provenance into a `.tp`, then
 opens the archive in Review.
 Imports require network access and `yt-dlp`; failures and cancellation are shown
@@ -960,40 +964,34 @@ The extra report can describe preview or other frame-log information than only c
 
 ### Replay movement analysis (estimated pivots and observed step placements)
 
-In the desktop GUI (`Review → Video replay`), an offline **Movement analysis** layer can inspect the unmirrored **Raw video** stream of a single dancer filmed from a fixed, approximately level camera:
+In **Review**, an offline analysis layer can inspect the unmirrored **Raw video**
+stream of a single dancer filmed from a fixed, approximately level camera:
 
 - **Controls**:
-  - **Analyse movement / Re-run movement analysis**: Runs (or re-runs) the offline pose pass on the selected recording. Use **Cancel** to stop a queued or running job; cancelling a re-run preserves any previous valid result.
-  - **Show pivots**: Draws a perspective ellipse ring centered on the hip midpoint and aligned with the projected hip line only during an observed pivot interval, with a tangent directional arrow indicating **clockwise** or **anticlockwise** top-down rotation.
-  - **Show recent steps**: Draws left and right heel-to-toe footprint markers at their observed floor positions. Each marker fades in over a short ramp (`min(0.15s, 0.15 × T)`) and fades linearly to zero at `T = replay_step_history_seconds` (default `5.0s`) of replay media time. Pausing playback pauses the fade.
-  - Enabling either toggle while viewing a baked overlay (`Overlay` or `Full lines + messages`) automatically switches the replay stream to `Raw video` at the current playhead time when available.
-  - Standalone clips opened via **Open video...** can be analysed manually for the active replay session. Saved `.tp` practice archives persist each segment's analysis as `movement_XX.v1.json`.
+  - **Analyze posture & movement**: Runs (or re-runs) the offline pose pass on the selected recording. **Cancel analysis** stops a running job; cancelling a re-run preserves the previous valid result.
+  - **Pivot rings**: Draws a perspective ellipse ring centered on the hip midpoint and aligned with the projected hip line only during an observed pivot interval, with a tangent directional arrow indicating **clockwise** or **anticlockwise** top-down rotation.
+  - **Step footprints**: Draws left and right heel-to-toe footprint markers at their observed floor positions. Each marker fades in over a short ramp (`min(0.15s, 0.15 × T)`) and fades linearly to zero at `T = replay_step_history_seconds` (default `5.0s`) of replay media time. Pausing playback pauses the fade.
+  - Select **Raw video** for dynamic layers; baked overlay pixels cannot be removed by toggling layers. **Lines only on floor** switches to a raw stream when available.
+  - Import new clips through **Library**. Qt saves posture and movement evidence in the recording's `analytics_XX.json`; older `movement_XX.v1.json` members remain readable.
 - **Scope and filming guidance**:
   - Outputs represent **estimated pivots** and **observed step placements**, not biomechanical weight-transfer measurements.
   - Keep the camera fixed and level with the dancer's full body (including both feet and ankles) clearly visible against the floor. Pair tracking, moving-camera compensation, and live coaching cues are outside this feature's scope.
 
-### Reference video import, YouTube provenance, soundtrack analysis, and comparison
+### Video import, source provenance, and comparison
 
-In `Review → Video replay`, click **Import reference video…** to import and analyse a local teacher or study clip without modifying or copying the source file:
+In **Library**, use **Import & Analyze Video…** for local clips or
+**Import YouTube / Facebook…** for permitted YouTube videos and Facebook Reels:
 
 - **Entry point and file limits**:
   - Choose a local video file (`.mp4`, `.mov`, `.m4v`, `.avi`, `.mkv`, `.webm`) up to **2 GB** and select a half-open range `[in, out)` up to **120 seconds**.
-  - Playback and analysis seek and decode forward over the selected virtual clip range `[in, out)` while keeping three coordinates explicit: **decoded frame index**, **source media time**, and **clip-relative time** (`source_time - in`).
-- **Analysis modes and calibration readiness**:
-  - **Movement review**: Produces confidence-qualified posture observations plus pivot and step overlays without requiring a reference calibration.
-  - **Reference-relative posture review**: Uses either a compatible saved reference or a user-marked stable calibration interval inside the imported clip (validated with the configured duration, sample count, and MAD stability gates, and excluded from scored practice statistics).
-- **YouTube source link and independent clock alignment**:
-  - An optional HTTPS YouTube link (`https://www.youtube.com/watch?v=...`, `https://youtu.be/...`, or `https://www.youtube.com/shorts/...`) is validated locally without network requests, canonicalised to `https://www.youtube.com/watch?v=<id>`, and stripped of tracking/playlist parameters while retaining an optional nonnegative time anchor (`t` / `start`).
-  - Entering a YouTube link without a local file enables **Open on YouTube**, while **Analyse clip** remains disabled with `"Choose a local video file to analyse"`.
-  - **Open this moment on YouTube** is enabled only after confirming that the local file and YouTube video are the same edit and saving a valid local-to-YouTube timestamp alignment. Changing the file or YouTube link invalidates prior alignments.
-- **Storage, reopening, and relinking**:
-  - Analysis writes a Markdown report (omitting full local paths in exported text), a `.metadata.json` file with the clip bounds and SHA-256 content digest, and a `.movement.v1.json` companion.
-  - If the local video file is moved, **Relink video…** verifies the SHA-256 digest before reattaching saved movement overlays, frame timestamps, and YouTube alignments.
-- **Optional video soundtrack analysis**:
-  - Enable **Analyse video soundtrack** (off by default) to decode the selected clip range's audio locally via `ffmpeg` (or a local `.wav` sidecar) into 16 kHz mono samples and feed them into an offline `BeatTracker` labelled **Video soundtrack** (never opening the live microphone or inventing nominal clock beats on silence).
-  - If `ffmpeg` or an audio stream is absent, soundtrack status is reported as unavailable with a clear reason while visual analysis proceeds normally.
-- **Teacher vs practice comparison**:
-  - Select a second clip in the **Compare with clip** bar, set one manual anchor in each clip (for example, the start of a pivot), and click **Compare clips** to play and seek around the anchors synchronously. Each pane stays on its own timeline, reference, and overlay, holding at its clip boundary rather than extrapolating, while displaying observable pivot/step differences and comparability warnings when camera setup or coverage differ.
+  - Online imports validate the provider URL, then use `yt-dlp` to download before analysis. Network access is required only for these explicit downloads and configured Ollama requests, not ordinary local review.
+- **Analysis and storage**:
+  - Imports produce confidence-qualified posture observations plus pivot and step evidence without requiring a reference calibration. These are not reference-relative scores.
+  - The selected range is copied into a portable `.tp` with indexed raw, overlay, lines, report and analytics members. Original media remains unchanged; frame indices are rebased consistently to the packaged clip.
+  - Source SHA-256, selected bounds and online provenance are retained. The archive's playback no longer depends on the original loose video path.
+- **Comparison**:
+  - **Open Comparison…** in Review chooses a `.tp` or `.tpc` from Library and synchronizes its video by elapsed playback time.
+  - Musical/biomechanical alignment, manual comparison anchors, and soundtrack analysis are not exposed in the Qt interface. Legacy metadata for those shared-engine capabilities remains compatible.
 
 ### Architecture additions
 
@@ -1133,7 +1131,7 @@ Settings are editable in the desktop app and can be imported from or exported to
 
 | Setting | Meaning |
 | --- | --- |
-| `replay_audio` | Enables optional audio during recorded-session review. |
+| `replay_audio` | Retained for configuration compatibility; Qt review currently plays video only. Export the stream for external audio playback. |
 | `ollama_base_url` | Address of the local or reachable Ollama server. |
 | `ollama_model` | Model name installed on that Ollama server. |
 | `ollama_timeout` | Maximum wait for a local model request. |

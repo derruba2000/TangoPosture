@@ -1,4 +1,4 @@
-"""Practice options and thread-safe display transport, independent of Tk."""
+"""Practice options and framework-independent, thread-safe display transport."""
 
 import math
 import queue
@@ -112,7 +112,7 @@ class PracticeOptions:
 
 
 class GuiDisplay:
-    """Bounded frame mailbox and lossless controls; no Tk calls from inference threads."""
+    """Bounded frame mailbox and lossless controls; no UI calls from inference threads."""
 
     def __init__(self):
         self.frames: queue.Queue = queue.Queue(maxsize=1)

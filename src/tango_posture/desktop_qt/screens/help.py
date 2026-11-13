@@ -1,4 +1,4 @@
-"""Searchable, styled offline manual shared with the Tk desktop interface."""
+"""Searchable, styled offline desktop manual."""
 
 from __future__ import annotations
 

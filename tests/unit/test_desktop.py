@@ -1,4 +1,5 @@
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from tango_posture import desktop
 
 
 def test_desktop_uses_user_data_and_bundled_model(monkeypatch, tmp_path):
-    from tango_posture import gui
+    from tango_posture import desktop_qt
 
     user_data = tmp_path / "Application Support" / "TangoPosture"
     model = tmp_path / "installed app" / "model.task"
@@ -24,9 +25,44 @@ def test_desktop_uses_user_data_and_bundled_model(monkeypatch, tmp_path):
         captured["data"] = cfg.data_dir
         return 0
 
-    monkeypatch.setattr(gui, "launch", launch)
+    monkeypatch.setattr(desktop_qt, "launch_qt", launch)
     assert desktop.main() == 0
     assert captured == {"cwd": user_data, "model": str(model), "data": "data"}
+
+
+def test_default_desktop_starts_without_tk(tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib.abc
+import sys
+
+class NoTk(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in ("tkinter", "_tkinter"):
+            raise ImportError("Tk is unavailable")
+
+sys.meta_path.insert(0, NoTk())
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication
+from tango_posture.cli import main
+
+app = QApplication(["TangoPosture", "-platform", "offscreen"])
+timer = QTimer()
+timer.setInterval(250)
+timer.timeout.connect(lambda: app.exit(0))
+timer.start()
+result = main([])
+assert "tkinter" not in sys.modules
+assert "_tkinter" not in sys.modules
+raise SystemExit(result)
+"""],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_desktop_rejects_unexpected_arguments(monkeypatch):

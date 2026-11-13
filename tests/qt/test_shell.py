@@ -1,11 +1,14 @@
 """Headless Qt integration tests for MainWindow, Router, and Screen components."""
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QApplication
 
+from tango_posture import desktop
 from tango_posture.config import Config, export_toml
 from tango_posture.core.entities import ReferenceSummary
 from tango_posture.desktop_qt.components.beat_strip import BeatStrip
@@ -47,6 +50,34 @@ def test_router_navigation():
 
     # At root, cannot go back further
     assert not router.go_back()
+
+
+def test_packaged_smoke_initializes_qt_and_runs_inference(qapp, tmp_path, monkeypatch, capsys):
+    for name in ("TangoPosture_logo_under_1MB.png", "TANGO_POSTURE_MANUAL.md"):
+        (tmp_path / name).write_bytes(b"resource fixture")
+    model = tmp_path / "model.task"
+    events = []
+
+    class Estimator:
+        def __init__(self, path):
+            assert path == model
+
+        def estimate(self, image, timestamp):
+            assert image.shape == (64, 64, 3)
+            events.append("estimate")
+
+        def close(self):
+            events.append("close")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(desktop, "files", lambda _: tmp_path)
+    monkeypatch.setattr(desktop, "bundled_model", lambda: model)
+    monkeypatch.setattr("tango_posture.models.verify", lambda _: events.append("verify"))
+    monkeypatch.setattr("tango_posture.pose.mediapipe_backend.MediaPipeEstimator", Estimator)
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(__version__="fixture"))
+    desktop.smoke_test()
+    assert events == ["verify", "estimate", "close"]
+    assert "Checking Qt desktop" in capsys.readouterr().out
 
 
 def test_main_window_instantiation_and_navigation(qapp):

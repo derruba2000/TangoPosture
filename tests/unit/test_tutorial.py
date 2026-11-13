@@ -2,7 +2,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 from tango_posture.config import SETTING_MAP
-from tango_posture.tutorial_ui import render_tutorial
+from tango_posture.tutorial_rendering import render_tutorial
 
 
 def test_manual_has_semantic_html_and_unique_setting_targets():

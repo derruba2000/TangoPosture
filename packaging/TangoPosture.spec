@@ -33,6 +33,7 @@ analysis = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
+    excludes=["tkinter", "_tkinter"],
 )
 pyz = PYZ(analysis.pure)
 exe = EXE(

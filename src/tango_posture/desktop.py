@@ -20,20 +20,29 @@ def bundled_model() -> Path:
 
 def smoke_test() -> None:
     print("Importing packaged dependencies", flush=True)
-    import tkinter
-    from importlib import import_module
     from importlib.metadata import version
 
     import cv2
     import numpy as np
     import sounddevice
+    from PySide6.QtWidgets import QApplication
 
+    from .config import Config
+    from .desktop_qt.shell import MainWindow
     from .models import verify
     from .pose.mediapipe_backend import MediaPipeEstimator
 
-    print("Checking Tcl and GUI imports", flush=True)
-    tkinter.Tcl().eval("info patchlevel")
-    import_module("tango_posture.gui")
+    print("Checking Qt desktop", flush=True)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(["TangoPosture", "-platform", "offscreen"])
+    elif not isinstance(app, QApplication):
+        raise RuntimeError("A non-GUI Qt application is already running")
+    window = MainWindow(Config())
+    try:
+        app.processEvents()
+    finally:
+        window.close()
     version("tango-posture")
     print("Verifying packaged resources and pose model", flush=True)
     for name in ("TangoPosture_logo_under_1MB.png", "TANGO_POSTURE_MANUAL.md"):
@@ -60,9 +69,9 @@ def main() -> int:
         raise ValueError("The desktop application does not accept command-line arguments")
 
     from .config import load
-    from .gui import launch
+    from .desktop_qt import launch_qt
 
     directory = data_directory()
     directory.mkdir(parents=True, exist_ok=True)
     os.chdir(directory)
-    return launch(load(None, {"model_path": str(bundled_model())}))
+    return launch_qt(load(None, {"model_path": str(bundled_model())}))

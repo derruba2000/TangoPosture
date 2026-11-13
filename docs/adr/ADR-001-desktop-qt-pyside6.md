@@ -13,7 +13,7 @@ TangoPosture's original graphical interface was written in Tkinter (`gui.py`, `r
 The product requirements specify a **desktop-only** redesign (no web, no cloud backend, no local HTTP/REST server), targeting macOS Apple Silicon and Windows x64.
 
 ## Decision
-We adopt **PySide6 (Qt 6.10+)** as the primary graphical framework for the modern TangoPosture desktop application.
+We adopt **PySide6 (Qt 6.10+)** as the only graphical framework for the TangoPosture desktop application. The original Tk interface was removed on 13 November 2026; its shared analysis, archive, video, and manual-rendering services remain.
 
 Key architectural decisions:
 1. **In-Process Python Services with Qt Signal Bridge:**
@@ -27,9 +27,10 @@ Key architectural decisions:
    - Long-running tasks (MediaPipe pose estimation, video cutting, archive extraction, Ollama streaming) execute in worker threads communicating back via Qt signals/slots or thread-safe message queues.
 4. **Headless & Offscreen Testability:**
    - All Qt widgets, viewmodels, and routers can be tested without a physical window display using `-platform offscreen` with `pytest-qt` or standard `QApplication` fixtures.
-5. **Preservation of CLI & Legacy Entrypoint:**
-   - The CLI `tango-posture` command continues to function identically.
-   - Legacy Tk GUI remains available via `tango-posture gui --legacy` or fallback, while `tango-posture gui` / `tango-posture qt` launches the modern PySide6 desktop experience.
+5. **Qt-only desktop entry points and preserved CLI:**
+   - `tango-posture`, `tango-posture gui`, `tango-posture qt`, and the packaged application all launch Qt. The old `gui --qt` option remains a compatibility alias, not a framework switch.
+   - Non-desktop CLI subcommands, saved archives, TOML configuration and data directories are preserved.
+   - No Tk fallback is provided; packaged builds explicitly exclude Tk/Tcl modules.
 
 ## Consequences
 - PySide6 is added as a runtime dependency.

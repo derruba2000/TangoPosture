@@ -4,6 +4,10 @@
 **Commit Baseline:** `df39fbbf10a399d3c6f8ab756632e9780d706e96`
 **Target Systems:** macOS (arm64 Apple Silicon) & Windows x64
 
+This is a historical baseline, not the current module list. On 13 November 2026,
+the Tk-only UI modules and tests below were removed; all desktop entry points now
+use Qt. Shared video helpers and manual rendering remain.
+
 ---
 
 ## 1. Existing Module Inventory & Test Baseline
