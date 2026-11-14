@@ -1,5 +1,6 @@
 import math
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -15,6 +16,7 @@ from tango_posture.calibration.models import METRIC_DETAILS, ApprovedRange, Pass
 from tango_posture.calibration.statistics import repeat_check, summarize_examples
 from tango_posture.config import Config
 from tango_posture.domain import Landmark, MetricObservation, QualityResult
+from tango_posture.geometry import torso_axis_alignment
 from tango_posture.models import MANIFEST
 from tango_posture.references.coach import (
     _serialise_pose,
@@ -64,7 +66,9 @@ def coaching_cache():
     }, observations
 
 
-@pytest.mark.parametrize("key", ["head_pitch", "shoulder_clearance", "hip_offset", "knee_flexion"])
+@pytest.mark.parametrize("key", [
+    "head_pitch", "shoulder_clearance", "hip_offset", "knee_flexion", "torso_axis_tilt",
+])
 @pytest.mark.parametrize("direction", [-1, 1])
 def test_cached_coaching_uses_both_approved_limits_not_settings(coaching_cache, key, direction):
     data, observations = coaching_cache
@@ -109,6 +113,38 @@ def test_cached_comparison_rejects_unverified_evidence_and_abstains_on_tracking_
     del data["frames"]["0"]["measurement_poses"]
     with pytest.raises(ValueError, match="display landmarks only"):
         compare_coach_data(data, Config(), target.calibration())
+
+
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_pink_axis_calibration_matches_overlay_magnitude_not_legacy_trunk(direction):
+    observation = frame(0)
+    pose = observation.poses[0]
+    for side, x in (("left", 0.4), ("right", 0.5)):
+        pose[f"{side}_hip"] = replace(pose[f"{side}_hip"], x=x, y=0.7)
+        pose[f"{side}_shoulder"] = replace(pose[f"{side}_shoulder"], x=x, y=0.3)
+    pose["right_shoulder"] = replace(pose["right_shoulder"], x=0.5 + direction * 0.1)
+    cfg = Config(max_view_width=2)
+    alignment = torso_axis_alignment(pose, 640, 480, cfg.confidence)
+    assert alignment is not None
+    expected = abs(alignment[0])
+    measured = measure_ranges(observation, cfg)
+    assert measured.values["torso_axis_tilt"] == pytest.approx(expected)
+    assert expected > 5
+    assert measured.quality["torso_axis_tilt"].valid
+    assert measured.values["trunk_inclination"] == pytest.approx(0)
+    assert measure_ranges(
+        observation, cfg.model_copy(update={"facing": "left"}),
+    ).values["torso_axis_tilt"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("missing", ["left_shoulder", "right_shoulder", "left_hip", "right_hip"])
+def test_pink_axis_calibration_abstains_when_any_required_joint_is_unreliable(missing):
+    observation = frame(0)
+    pose = observation.poses[0]
+    pose[missing] = replace(pose[missing], visibility=0.1)
+    measured = measure_ranges(observation, Config(allow_all_angles=True))
+    assert measured.values["torso_axis_tilt"] is None
+    assert not measured.quality["torso_axis_tilt"].valid
 
 
 def test_settings_default_ranges_apply_without_calibration_and_ignore_interpolated_evidence(coaching_cache):

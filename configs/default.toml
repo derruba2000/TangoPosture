@@ -3,6 +3,7 @@ camera = 0
 width = 640
 height = 480
 model_path = "models/pose_landmarker_lite.task"
+analysis_model = "lite"
 data_dir = "data"
 side = "left"
 facing = "right"

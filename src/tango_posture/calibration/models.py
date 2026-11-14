@@ -23,7 +23,8 @@ METRIC_DETAILS = {
     "head_inclination": ("Head", "Head inclination", "degrees"),
     "shoulder_clearance": ("Shoulders", "Ear-to-shoulder clearance", "normalized_clearance"),
     "hip_offset": ("Hips", "Hip offset from ankle-to-head axis", "axis_lengths"),
-    "trunk_inclination": ("Torso", "Torso alignment", "degrees"),
+    "torso_axis_tilt": ("Torso", "Torso axis tilt (pink line)", "degrees"),
+    "trunk_inclination": ("Torso", "Trunk inclination", "degrees"),
     "knee_flexion": ("Knees", "Least-bent reliably visible knee", "degrees"),
 }
 

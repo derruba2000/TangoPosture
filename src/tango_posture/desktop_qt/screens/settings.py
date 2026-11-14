@@ -89,6 +89,14 @@ class SettingsScreen(QScrollArea):
                 )
                 hint.setWordWrap(True)
                 form.addRow(hint)
+            if group == "Files":
+                model_hint = QLabel(
+                    "Live Practice always uses Lite. Offline analysis uses the model selected "
+                    "below. Missing analysis models are downloaded once with progress, then "
+                    "cached locally; Full and Heavy take more processing time."
+                )
+                model_hint.setWordWrap(True)
+                form.addRow(model_hint)
             for field in fields:
                 editor, row_widget = self._create_editor(field, setting_value(cfg, field))
                 self.field_widgets[field] = editor
@@ -143,9 +151,10 @@ class SettingsScreen(QScrollArea):
             checkbox = QCheckBox("Enabled")
             checkbox.setChecked(value)
             editor = checkbox
-        elif field in {"side", "facing", "replay_joint_interpolation"}:
+        elif field in {"side", "facing", "replay_joint_interpolation", "analysis_model"}:
             combo = QComboBox()
             combo.addItems(
+                ["lite", "full", "heavy"] if field == "analysis_model" else
                 ["linear", "quadratic"] if field == "replay_joint_interpolation" else ["left", "right"]
             )
             combo.setCurrentText(str(value))
@@ -191,7 +200,8 @@ class SettingsScreen(QScrollArea):
             "side": "Measurement side",
             "facing": "Facing direction",
             "capture_profile": "Camera setup name",
-            "model_path": "Pose model file",
+            "model_path": "Live Practice model file (Lite)",
+            "analysis_model": "Offline analysis model",
             "data_dir": "Data folder",
             "confidence": "Minimum landmark confidence",
             "smoothing": "Measurement smoothing (seconds)",

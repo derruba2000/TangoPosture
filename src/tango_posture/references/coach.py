@@ -518,12 +518,14 @@ def _build_coach_frame_entry(
     )
 
     torso_txt = "N/A"
+    torso_tilt = None
     if single_pose_ok:
         torso = torso_axis_alignment(
             frame_obs.poses[0], frame_obs.width, frame_obs.height, cfg.confidence
         )
         if torso is not None:
-            torso_txt = f"{abs(torso[0]):.1f} deg from vertical"
+            torso_tilt = abs(torso[0])
+            torso_txt = f"{torso_tilt:.1f} deg from vertical"
     if axis_curve_smoothed is None:
         hip_txt = "N/A"
     elif bad_axis:
@@ -595,6 +597,7 @@ def _build_coach_frame_entry(
         "ankle_lift_ratio": _round_or_none(ankle_lift_ratio, 4),
         "consecutive_high_ankle_steps": int(consecutive_high_ankle_steps),
         "axis_curve_smoothed": _round_or_none(axis_curve_smoothed, 4),
+        "torso_axis_tilt": _round_or_none(torso_tilt, 3),
         "axis_curve_state": axis_curve_state if axis_curve_state != "UNKNOWN" else "WITHIN_LIMIT",
         "axis_curve_elapsed": round(axis_curve_elapsed, 3),
         "role": role,

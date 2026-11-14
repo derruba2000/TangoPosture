@@ -4,12 +4,26 @@
   "version": "pose_landmarker_lite/float16/1",
   "source_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
   "sha256": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
+  "analysis_variants": {
+    "full": {
+      "filename": "pose_landmarker_full.task",
+      "version": "pose_landmarker_full/float16/1",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+      "sha256": "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"
+    },
+    "heavy": {
+      "filename": "pose_landmarker_heavy.task",
+      "version": "pose_landmarker_heavy/float16/1",
+      "source_url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task",
+      "sha256": "64437af838a65d18e5ba7a0d39b465540069bc8aae8308de3e318aad31fcbc7b"
+    }
+  },
   "weights_license": "Apache-2.0",
-  "license_evidence": "Official Pose Landmarker guide links this model card for its Lite bundle; card page 2 explicitly states Apache License, Version 2.0.",
+  "license_evidence": "Official Pose Landmarker guide links this model card for Lite, Full and Heavy; card page 2 explicitly states Apache License, Version 2.0.",
   "model_card": "https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf",
   "upstream_guide": "https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker",
   "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
   "training_data": "The card describes consented AR and fitness images and GHUM-derived synthetic supervision. Individual source images, full provenance, and redistribution licences are not published here. No training data or GHUM body-model assets are distributed by this application.",
-  "distribution": "Source installations fetch weights explicitly. Desktop installers bundle this verified upstream model; preserve Apache notices on redistribution.",
-  "reviewed_on": "2026-11-01"
+  "distribution": "Desktop installers bundle Lite. Offline analysis may fetch verified Full or Heavy weights on first use; preserve Apache notices on redistribution.",
+  "reviewed_on": "2026-11-14"
 }

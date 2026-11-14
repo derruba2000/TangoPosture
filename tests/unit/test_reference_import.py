@@ -4,6 +4,8 @@ soundtrack analysis, relinking, and teacher-vs-practice comparison.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import math
 import shutil
 import wave
@@ -16,6 +18,7 @@ import pytest
 
 from tango_posture.config import Config
 from tango_posture.domain import FrameObservation, Landmark
+from tango_posture.models import analysis_model_path, model_manifest
 from tango_posture.references.coach import coach_notes_for_frame, render_coach_frame_overlay
 from tango_posture.references.companions import load_report_coach_data, load_report_movement_data
 from tango_posture.references.comparison import compare_clips, relink_report_video
@@ -85,6 +88,65 @@ def _write_test_video(
         writer.write(frame)
     writer.release()
     return path
+
+
+@pytest.mark.parametrize("variant", ["lite", "full", "heavy"])
+def test_offline_analysis_dispatches_selected_model_and_records_its_identity(
+    tmp_path, monkeypatch, variant,
+):
+    monkeypatch.chdir(tmp_path)
+    video = _write_test_video(tmp_path / "clip.avi", duration_seconds=0.3)
+    payload = f"{variant} analysis weights".encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = model_manifest(variant)
+    monkeypatch.setitem(manifest, "sha256", digest)
+    downloads, loaded, progress = [], [], []
+
+    def download(url, **kwargs):
+        downloads.append(url)
+        return io.BytesIO(payload)
+
+    class Estimator:
+        def __init__(self, path, *, variant):
+            loaded.append((path, variant))
+
+        def estimate(self, image, timestamp):
+            return FrameObservation(timestamp, image.shape[1], image.shape[0], [])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", download)
+    monkeypatch.setattr("tango_posture.references.pipeline.MediaPipeEstimator", Estimator)
+    cfg = Config(
+        model_path=str(tmp_path / "live_lite.task"), data_dir=str(tmp_path / "data"),
+        analysis_model=variant, beat_tracking=False,
+    )
+    result = analyse_imported_clip(
+        video_path=video, cfg=cfg, selected_out=0.3,
+        progress_callback=lambda current, total, message: progress.append(message),
+    )
+    assert loaded == [(analysis_model_path(cfg), variant)]
+    assert downloads == [manifest["source_url"]]
+    assert result.coach_data["model_hash"] == digest
+    assert result.coach_data["model_variant"] == variant
+    assert any(f"frames with {variant.capitalize()}" in message for message in progress)
+    if variant != "lite":
+        assert not (tmp_path / "live_lite.task").exists()
+
+
+def test_incompatible_analysis_model_rejects_calibration_before_download(tmp_path, monkeypatch, reference):
+    video = _write_test_video(tmp_path / "clip.avi", duration_seconds=0.3)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("An incompatible calibration must be rejected before downloading")
+
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+    with pytest.raises(ValueError, match="model"):
+        analyse_imported_clip(
+            video_path=video, cfg=Config(data_dir=str(tmp_path), analysis_model="heavy"),
+            selected_out=0.3, analysis_mode="posture", reference=reference,
+        )
 
 
 def _make_pose_for_time(

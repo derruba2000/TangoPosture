@@ -176,6 +176,39 @@ def test_library_distinguishes_profiles_from_replayable_references(qapp, tmp_pat
     screen.close()
 
 
+def test_reference_editor_approves_pink_axis_and_saves_it_as_settings_defaults(
+    qapp, tmp_path, cached_reference, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    cfg = Config(data_dir=str(tmp_path))
+    bridge = ServiceBridge(cfg)
+    editor = CalibrationEditor(cached_reference, cfg, bridge=bridge)
+    try:
+        editor.step_combo.setCurrentText("Torso")
+        assert editor.metric_combo.currentData() == "torso_axis_tilt"
+        assert "pink line" in editor.metric_combo.currentText()
+        assert "0 = upright" in editor.metric_hint.text()
+        assert editor.metric_combo.findData("trunk_inclination") >= 0
+        assert editor._stats["median"] == pytest.approx(0)
+        editor.view_combo.setCurrentText("all")
+        editor.lower_spin.setValue(0)
+        editor.upper_spin.setValue(5)
+        editor._approve()
+        monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes)
+        editor._use_defaults()
+        saved_settings = Config.model_validate(tomllib.loads((tmp_path / "settings.toml").read_text()))
+        assert saved_settings.calibration_defaults["torso_axis_tilt"].upper == 5
+        editor._save()
+        target = read_range_profile(editor.saved_path)
+        assert set(target.metrics) == {"torso_axis_tilt"}
+        assert target.metrics["torso_axis_tilt"].lower == 0
+        assert target.metrics["torso_axis_tilt"].upper == 5
+        assert target.metrics["torso_axis_tilt"].unit == "degrees"
+        assert not target.metrics["torso_axis_tilt"].camera_check_passed
+    finally:
+        editor.reject()
+
+
 def test_guided_dialog_never_opens_camera_until_requested(qapp, tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Opening the dialog must not open camera/model")

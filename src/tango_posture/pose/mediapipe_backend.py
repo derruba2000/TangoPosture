@@ -2,13 +2,13 @@ from pathlib import Path
 from typing import Any
 
 from ..domain import FrameObservation, Landmark
-from ..models import verify
+from ..models import ModelVariant, verify
 from .constants import NAMES
 
 
 class MediaPipeEstimator:
-    def __init__(self, model_path: Path):
-        self.model_hash = verify(model_path)
+    def __init__(self, model_path: Path, *, variant: ModelVariant = "lite"):
+        self.model_hash = verify(model_path, variant)
         import mediapipe as mp
 
         self.mp = mp

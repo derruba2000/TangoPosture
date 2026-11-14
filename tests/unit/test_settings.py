@@ -54,6 +54,7 @@ def test_full_toml_round_trip(tmp_path):
         auto_record_start_delay=2.0,
         auto_record_stop_delay=5.0,
         max_recordings=3,
+        analysis_model="full",
         replay_joint_interpolation="quadratic",
         replay_joint_max_gap=2.75,
         calibration_defaults={
@@ -65,6 +66,7 @@ def test_full_toml_round_trip(tmp_path):
 
 
 @pytest.mark.parametrize("change", [
+    {"analysis_model": "large"},
     {"replay_joint_interpolation": "cubic"}, {"replay_joint_max_gap": -1},
     {"calibration_defaults": {
         "head_pitch": {"lower": 2, "upper": 1, "unit": "degrees", "view": "all"},

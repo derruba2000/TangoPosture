@@ -43,7 +43,13 @@ governs Pillow; the generated icons use the project's logo.
 
 ## Model weights
 
-Google BlazePose GHUM Lite, Pose Landmarker float16 bundle version 1: Apache-2.0 according to the [official linked model card, page 2](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf). `models/manifest.json` records the exact source, SHA-256 and provenance limitations. This is separate evidence from the MediaPipe code licence. The training dataset is not provided or licensed by this project.
+Google BlazePose GHUM Lite, Full and Heavy, Pose Landmarker float16 bundle
+version 1: Apache-2.0 according to the [official linked model card, page 2](https://storage.googleapis.com/mediapipe-assets/Model%20Card%20BlazePose%20GHUM%203D.pdf).
+[models/manifest.json](models/manifest.json) records the exact sources, SHA-256
+identities and provenance limitations. Desktop installers bundle Lite;
+Full/Heavy can be downloaded for offline analysis. This is separate evidence
+from the MediaPipe code licence. The training dataset is not provided or
+licensed by this project.
 
 ## Bundled native libraries and tools
 

@@ -16,6 +16,7 @@ from ..geometry import (
     head_horizontal_alignment,
     knee_bend_alignment,
     shoulder_tension_alignment,
+    torso_axis_alignment,
     wrapped,
 )
 from ..metrics import measure
@@ -44,10 +45,13 @@ def measure_ranges(frame: FrameObservation, cfg: Config) -> MetricObservation:
             pose, frame.width, frame.height, cfg.facing, cfg.side,
         ), 1),
         ("knee_flexion", knee_bend_alignment(pose, frame.width, frame.height, cfg.side), 0),
+        ("torso_axis_tilt", torso_axis_alignment(
+            pose, frame.width, frame.height, cfg.confidence,
+        ), 0),
     ):
         value = result[component] if result is not None else None
         if isinstance(value, (int, float)) and math.isfinite(value):
-            values[key] = float(value)
+            values[key] = abs(float(value)) if key == "torso_axis_tilt" else float(value)
             quality[key] = QualityResult(True)
         else:
             values[key] = None

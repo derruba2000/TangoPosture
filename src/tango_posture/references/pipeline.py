@@ -39,7 +39,7 @@ from ..geometry import (
     shoulder_tension_alignment,
 )
 from ..metrics import measure
-from ..models import verify
+from ..models import analysis_model_path, model_manifest, prepare_analysis_model, verify
 from ..movement import analyse_movement_observations
 from ..pose.mediapipe_backend import MediaPipeEstimator
 from ..reports import write_markdown_report
@@ -159,9 +159,13 @@ def analyse_imported_clip(
     clip_in, clip_out = validate_clip_range(probe, effective_in, raw_out)
     clip_duration = clip_out - clip_in
 
-    model_path = Path(cfg.model_path)
-    if estimator_factory is None and model_path.is_file():
-        model_hash = verify(model_path)
+    model_path = analysis_model_path(cfg)
+    est: PoseEstimator
+    if estimator_factory is None:
+        model_hash = (
+            verify(model_path, cfg.analysis_model) if model_path.is_file() else
+            model_manifest(cfg.analysis_model)["sha256"]
+        )
     elif reference is not None:
         model_hash = reference.model_hash
     elif model_path.is_file():
@@ -204,11 +208,19 @@ def analyse_imported_clip(
     ):
         validated_alignment = youtube_alignment
 
-    est = (
-        estimator_factory()
-        if estimator_factory is not None
-        else MediaPipeEstimator(model_path)
-    )
+    if estimator_factory is None:
+        download_progress = None
+        if progress_callback is not None:
+            download_progress = lambda current, total, message: progress_callback(
+                round(current / max(1, total) * 20), 100, message,
+            )
+            progress_callback(0, 100, f"Preparing {cfg.analysis_model.capitalize()} analysis model...")
+        model_path = prepare_analysis_model(
+            cfg, progress_callback=download_progress, cancel_check=cancel_check,
+        )
+        est = MediaPipeEstimator(model_path, variant=cfg.analysis_model)
+    else:
+        est = estimator_factory()
     decoded_frames: list[tuple[int, float, float, FrameObservation]] = []
     frame_times: list[tuple[int, float, float]] = []
     expected_frames = max(1, round(clip_duration * max(probe.fps, 1.0)))
@@ -230,8 +242,10 @@ def analyse_imported_clip(
             decoded_frames.append((item.frame_index, item.source_time, item.clip_time, obs))
             frame_times.append((item.frame_index, item.source_time, item.clip_time))
             if progress_callback is not None and (idx % 5 == 0 or idx + 1 >= expected_frames):
-                pct = min(75, round(((idx + 1) / max(expected_frames, idx + 1)) * 75))
-                progress_callback(pct, 100, f"Analysing video frames ({idx + 1})…")
+                pct = min(75, 20 + round(((idx + 1) / max(expected_frames, idx + 1)) * 55))
+                progress_callback(
+                    pct, 100, f"Analysing video frames with {cfg.analysis_model.capitalize()} ({idx + 1})…",
+                )
     finally:
         with suppress(Exception):
             est.close()
@@ -664,6 +678,7 @@ def analyse_imported_clip(
     coach_data: dict[str, Any] = {
         "version": 1,
         "model_hash": model_hash,
+        "model_variant": cfg.analysis_model,
         "capture_profile": cap_profile,
         "source_sha256": source_sha,
         "width": probe.width,
@@ -689,6 +704,7 @@ def analyse_imported_clip(
     mean_duration = float(np.mean(infer_times)) if infer_times else 0.0
     performance = {
         "model_hash": model_hash,
+        "model_variant": cfg.analysis_model,
         "resolution": [probe.width, probe.height],
         "processed_fps": 1.0 / mean_duration if mean_duration > 0 else None,
         "dropped_frames": 0,

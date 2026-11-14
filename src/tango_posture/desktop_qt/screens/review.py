@@ -262,6 +262,7 @@ class ReviewScreen(QWidget):
             ("head_angle", "Head alignment"),
             ("shoulder_elev_pct", "Shoulder height"),
             ("axis_curve_smoothed", "Torso / hip alignment"),
+            ("torso_axis_tilt", "Torso axis (pink line)"),
             ("knee_bend_deg", "Knee bend"),
         ):
             row = QHBoxLayout()
@@ -1019,11 +1020,13 @@ class ReviewScreen(QWidget):
             metric("axis_curve_smoothed", "%", scale=100.0, signed=True)
         )
         self.metric_values["knee_bend_deg"].setText(metric("knee_bend_deg", "°"))
+        self.metric_values["torso_axis_tilt"].setText(metric("torso_axis_tilt", "°"))
         if self._using_range_targets():
             rows = {row["metric"]: row for row in entry.get("calibration_rows", [])}
             for display_key, key in (
                 ("head_angle", "head_pitch"), ("shoulder_elev_pct", "shoulder_clearance"),
                 ("axis_curve_smoothed", "hip_offset"), ("knee_bend_deg", "knee_flexion"),
+                ("torso_axis_tilt", "torso_axis_tilt"),
             ):
                 row = rows.get(key)
                 measured_value = row.get("smoothed") if row is not None else None

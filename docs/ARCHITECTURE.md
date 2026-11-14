@@ -509,6 +509,24 @@ in-memory comparison/display layers. Workers retain their run-specific configura
 no raw archive evidence is rewritten. Load the saved file with `--config settings.toml`
 on subsequent launches, or use TOML import.
 
+**Files → Offline analysis model** persists `analysis_model` (`lite`, `full`, or
+`heavy`; default `lite`). The shared import/Review pipeline resolves this choice
+independently of live `model_path`; live and guided camera inference retain the
+Lite-only checksum gate. [models.py](../src/tango_posture/models.py) verifies each
+variant against its pinned version-1 SHA-256. Missing analysis models download
+in the existing background job, with progress/cancellation and temporary-file
+cleanup before atomic installation. Full/Heavy use `<data_dir>/models/`; Lite
+uses the configured live model path. Corrupt cached files and download failures
+are explicit errors, with no fallback to another variant. The model resolver
+also checks the data-folder cache, the configured model's directory,
+and local `models/` before downloading, returning the first existing candidate.
+That file must pass the selected variant's checksum; invalid weights are reported
+without automatically overwriting them. Valid installed copies are used in place.
+Analysis records its
+actual model hash and selected variant in coaching data; choosing another model
+does not rewrite old evidence until analysis runs again. Calibration model
+compatibility checks remain unchanged.
+
 ## 7. Practice, recording, scoring and songs
 
 The UI owner is [PracticeScreen](../src/tango_posture/desktop_qt/screens/practice.py).
@@ -741,6 +759,14 @@ Saving dancer selection separately updates `reference.json`; it does not rewrite
 the raw measurements/video. An unapproved metric remains unavailable for scoring.
 Per-leg support inference, pelvic rotation and validated 3-D spine diagnosis are
 not supplied by this workflow.
+
+The Torso group includes the optional `torso_axis_tilt` metric alongside the
+unchanged `trunk_inclination`. It reuses `torso_axis_alignment` and records the
+absolute projected tilt in degrees, matching the pink overlay's magnitude.
+All four shoulder/hip landmarks must be reliable; raw cached evidence supplies
+approval statistics and later comparisons, never display interpolation.
+Approved bounds persist in `.tpc` profiles and can be copied to Settings defaults.
+Existing profiles remain valid without this additional metric.
 
 ### Guided camera calibration and a later camera check
 
@@ -984,8 +1010,10 @@ be remote, so "local by default" is not a guarantee that every configured server
 is on this machine. Cancellation is cooperative while streaming; a blocked HTTP
 read can remain pending until its timeout.
 
-Other network boundaries are the explicit model-setup download and online video
-import. Camera/file practice does not automatically fetch a model or call an LLM.
+Other network boundaries are the explicit Lite model-setup download, the
+first-use download of a selected analysis model when analysis starts, and online
+video import. Downloads retrieve public model/video assets; video analysis remains
+local. Camera/file practice does not automatically fetch a model or call an LLM.
 
 ## 12. Maintenance and verification
 

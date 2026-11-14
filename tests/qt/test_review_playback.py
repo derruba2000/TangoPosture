@@ -154,6 +154,57 @@ def test_review_calibration_picker_compares_cached_ranges_without_settings_fallb
         widget.close()
 
 
+def test_review_approved_pink_axis_uses_old_raw_cache_and_abstains_on_missing_hip(
+    qapp, tmp_path, video,
+):
+    cfg = Config(data_dir=str(tmp_path), entry_duration=0.1, smoothing=0.0001)
+    target = RangeProfile(
+        name="Pink axis", context="Walking", model_hash=MANIFEST["sha256"],
+        capture_profile=profile(cfg, 64, 48, "video"), source={"archive": "reference.tpr"},
+        metrics={"torso_axis_tilt": ApprovedRange(
+            lower=0, upper=5, unit="degrees", view="all",
+            passages=[Passage(start=0, end=1)], median=0, p10=0, p90=5,
+            valid_duration=1, selected_duration=1, samples=10, inside_fraction=1,
+        )},
+    )
+    calibration = tmp_path / "calibrations" / "Pink.tpc"
+    save_range_profile(calibration, target)
+    raw_pose = {
+        "left_shoulder": [0.6, 0.2, 0, 0.99, 0.99],
+        "right_shoulder": [0.7, 0.2, 0, 0.99, 0.99],
+        "left_hip": [0.4, 0.8, 0, 0.99, 0.99],
+        "right_hip": [0.5, 0.8, 0, 0.99, 0.99],
+    }
+    missing_hip = {key: value for key, value in raw_pose.items() if key != "right_hip"}
+    data = {
+        "width": 64, "height": 48, "model_hash": MANIFEST["sha256"],
+        "capture_profile": target.capture_profile, "frames": {
+            str(index): {
+                "timestamp": index / 10, "poses": [pose], "measurement_poses": [pose],
+            }
+            for index, pose in enumerate([raw_pose, raw_pose, raw_pose, missing_hip])
+        },
+    }
+    widget = ReviewScreen(ServiceBridge(cfg), Router())
+    try:
+        widget.load_archive(video)
+        widget._coach_data = data
+        widget.reference_combo.setCurrentIndex(
+            widget.reference_combo.findData(str(calibration.resolve())),
+        )
+        widget._show_frame(2)
+        assert "24.1 degrees" in widget.metric_values["torso_axis_tilt"].text()
+        assert "Torso axis tilt (pink line)" in widget.alerts_text.text()
+        assert "outside approved range" in widget.alerts_text.text()
+        assert "No approved" in widget.metric_values["head_angle"].text()
+        widget._show_frame(3)
+        assert "No approved / valid measurement" in widget.metric_values["torso_axis_tilt"].text()
+        assert "tracking/view" in widget.alerts_text.text()
+        assert "right_hip" not in data["frames"]["3"]["measurement_poses"][0]
+    finally:
+        widget.close()
+
+
 def test_review_interpolation_settings_refresh_display_without_changing_raw_alerts(
     screen, video, monkeypatch,
 ):

@@ -97,7 +97,26 @@ uv run tango-posture models fetch
 uv run tango-posture qt
 ```
 
-`models fetch` is an explicit setup operation. It downloads only the versioned model in `models/manifest.json`, verifies SHA-256, and atomically installs it. Runs never download models. For offline installation, transfer that exact verified file yourself and pass `--model-path /path/to/pose_landmarker_lite.task`. Every run verifies its checksum.
+`models fetch` is an explicit setup operation for the pinned Lite model in
+[models/manifest.json](models/manifest.json). Live Practice always uses Lite and
+never downloads models. For offline live installation, transfer that exact
+verified file yourself and pass `--model-path /path/to/pose_landmarker_lite.task`.
+Every run verifies its checksum.
+
+For offline video analysis, choose **Settings → Files → Offline analysis model**:
+**Lite**, **Full**, or **Heavy** (`analysis_model` in TOML; default `lite`).
+Review's **Analyze posture & movement** and Library video analysis use this choice.
+Missing analysis models download automatically with progress when analysis starts;
+Full/Heavy are cached under `<data_dir>/models/`, while Lite uses `model_path`.
+Before downloading, analysis also checks the data-folder model cache, the folder
+containing the configured Lite model, and the local `models/` folder for the
+selected variant's filename. A found copy is SHA-256 verified and used in place;
+the app does not scan the entire disk or duplicate installed weights.
+After download, analysis runs locally and can reuse the verified cache offline.
+Downloads are cancellable and atomically installed only after SHA-256 verification;
+failure never substitutes another model. Changing models requires reanalysis to
+replace existing cached results, and calibration comparison still requires a
+matching model hash.
 
 `uv run tango-posture`, `uv run tango-posture gui`, and
 `uv run tango-posture qt` all open the same PySide6 desktop interface.

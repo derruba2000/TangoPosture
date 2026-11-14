@@ -260,14 +260,17 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
 
     settings_screen.cam_spin.setValue(2)
     settings_screen.bpm_spin.setValue(130.0)
+    settings_screen.field_widgets["analysis_model"].setCurrentText("heavy")
     settings_screen._save_settings()
 
     assert window.bridge.config.camera == 2
     assert window.bridge.config.tango_bpm == 130.0
+    assert window.bridge.config.analysis_model == "heavy"
 
     settings_screen._reset_defaults()
     assert window.bridge.config.camera == 0
     assert window.bridge.config.tango_bpm == 120.0
+    assert settings_screen.field_widgets["analysis_model"].currentText() == "lite"
     assert settings_screen.smooth_spin.value() == Config().smoothing
     assert settings_screen.mirror_cb.isChecked() == Config().mirror
     settings_screen.field_widgets["calibration_duration"].setValue(15.0)
@@ -279,6 +282,7 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
     assert window.bridge.config.head_forward.entry == 0.1
 
     source = Config(
+        analysis_model="full",
         camera=3,
         side="right",
         facing="left",
@@ -302,6 +306,7 @@ def test_settings_screen_update(qapp, tmp_path, monkeypatch):
     )
     settings_screen._import_toml()
     assert settings_screen.cam_spin.value() == 3
+    assert settings_screen.field_widgets["analysis_model"].currentText() == "full"
     assert settings_screen.side_combo.currentText() == "right"
     assert settings_screen.facing_combo.currentText() == "left"
     assert settings_screen.mirror_cb.isChecked()

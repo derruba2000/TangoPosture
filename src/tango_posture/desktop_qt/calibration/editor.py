@@ -180,6 +180,9 @@ class CalibrationEditor(QDialog):
         self.metric_combo.currentIndexChanged.connect(self._change_metric)
         controls.addWidget(self.step_combo)
         controls.addWidget(self.metric_combo)
+        self.metric_hint = QLabel()
+        self.metric_hint.setWordWrap(True)
+        controls.addWidget(self.metric_hint)
         options = QFormLayout()
         self.view_combo = QComboBox()
         self.view_combo.addItems(["side", "front", "all"])
@@ -314,6 +317,13 @@ class CalibrationEditor(QDialog):
         key = self.metric_combo.currentData()
         if key is None:
             return
+        self.metric_hint.setText(
+            "Pink line: shoulder-midpoint to hip-midpoint tilt from image vertical, "
+            "in degrees (0 = upright). The angle is a magnitude, as on the video overlay; "
+            "both shoulders and hips must be reliably visible. Keep the camera level."
+            if key == "torso_axis_tilt" else ""
+        )
+        self.metric_hint.setVisible(key == "torso_axis_tilt")
         first, last = self.evidence.frames[0].timestamp, self.evidence.frames[-1].timestamp
         holds = self.holds.get(self.step_combo.currentText())
         passages = [holds[0]] if holds else [Passage(start=first, end=last + 1 / self._reader.fps)]

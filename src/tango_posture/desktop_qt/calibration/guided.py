@@ -42,7 +42,10 @@ FRAMING = {
     "Head": "Keep the camera side-on with ear, nose, shoulder and hip visible.",
     "Shoulders": "Keep your ear, shoulder and hip visible; avoid obscuring the shoulders.",
     "Hips": "Move back until the ankles, hip and head are visible.",
-    "Torso": "Turn side-on so the camera can see shoulder and hip clearly.",
+    "Torso": (
+        "Keep the camera level and both shoulders and both hips visible for the pink axis. "
+        "Trunk inclination uses a side-on view."
+    ),
     "Knees": "Move back until both ankles and knees are visible.",
 }
 

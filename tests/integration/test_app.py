@@ -55,6 +55,44 @@ class FakeEstimator:
         self.closed = True
 
 
+@pytest.mark.parametrize("analysis_model", ["full", "heavy"])
+def test_live_practice_keeps_lite_when_analysis_model_changes(tmp_path, monkeypatch, analysis_model):
+    verified, loaded = [], []
+    cfg = Config(data_dir=str(tmp_path), analysis_model=analysis_model, beat_tracking=False)
+    monkeypatch.setattr(
+        "tango_posture.app.verify", lambda path: verified.append(path) or MANIFEST["sha256"],
+    )
+    monkeypatch.setattr(
+        "tango_posture.app.MediaPipeEstimator", lambda path: loaded.append(path) or FakeEstimator(),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Live Practice must not download an analysis model")
+
+    monkeypatch.setattr("urllib.request.urlopen", forbidden)
+
+    class Buttons(GuiDisplay):
+        def __init__(self):
+            super().__init__()
+            self.frames = 0
+
+        def show(self, image):
+            self.frames += 1
+            if self.frames == 2:
+                self.request("q")
+
+    storage = Storage(tmp_path)
+    try:
+        app = Application(cfg, storage, capture=FakeCapture(count=2), display=Buttons())
+        app.run()
+        assert verified == [Path(cfg.model_path)]
+        assert loaded == [Path(cfg.model_path)]
+        assert app.model_hash == MANIFEST["sha256"]
+        assert not (tmp_path / "models").exists()
+    finally:
+        storage.close()
+
+
 def test_settings_range_defaults_coach_without_granting_session_scoring(tmp_path, monkeypatch):
     monkeypatch.setattr("tango_posture.app.verify", lambda _: MANIFEST["sha256"])
     value = measure_ranges(frame(0, forward=0.2), Config()).values["head_pitch"]
@@ -92,8 +130,9 @@ def test_settings_range_defaults_coach_without_granting_session_scoring(tmp_path
 
 
 @pytest.mark.parametrize("camera_checked", [False, True])
+@pytest.mark.parametrize("metric", ["head_pitch", "torso_axis_tilt"])
 def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
-    tmp_path, cfg, monkeypatch, camera_checked,
+    tmp_path, cfg, monkeypatch, camera_checked, metric,
 ):
     from tango_posture.archive import read_analytics
     from tango_posture.calibration.evidence import cached_evidence
@@ -116,8 +155,9 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
         name="Checked camera", context="Neutral posture", model_hash=MANIFEST["sha256"],
         capture_profile=profile(cfg, 640, 480, "camera:0" if camera_checked else "video"),
         source={"archive": "missing.tpr"},
-        metrics={"head_pitch": ApprovedRange(
-            lower=-5, upper=5, unit="degrees", view="side",
+        metrics={metric: ApprovedRange(
+            lower=9 if metric == "torso_axis_tilt" else -5,
+            upper=11 if metric == "torso_axis_tilt" else 5, unit="degrees", view="side",
             passages=[Passage(start=0, end=2)], median=0, p10=-3, p90=3,
             valid_duration=1.8, selected_duration=2, samples=20, inside_fraction=1,
             camera_check_passed=camera_checked,
@@ -147,8 +187,8 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
         app.run()
         assert capture.closed and estimator.closed
         if camera_checked:
-            assert app.last_summary["metrics"]["head_pitch"]["event_count"] == 1
-            assert set(app.last_summary["metrics"]) == {"head_pitch"}
+            assert app.last_summary["metrics"][metric]["event_count"] == 1
+            assert set(app.last_summary["metrics"]) == {metric}
         else:
             assert app.last_summary is None and app.session is None
             assert "comparison only" in app.display.notes.lower()
@@ -163,7 +203,7 @@ def test_range_scoring_records_reusable_landmarks_and_portable_analytics(
         assert analytics["frames"][0]["poses"]
         dataset = load_archive_dataset(app.practice_file, 0)
         if camera_checked:
-            assert dataset.metrics["head_pitch"].event_count == 1
+            assert dataset.metrics[metric].event_count == 1
         reference = tmp_path / "references" / "Promoted.tpr"
         promote_reference(app.practice_file, reference, "Reusable camera evidence")
         assert len(cached_evidence(reference).frames) == 30

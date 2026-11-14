@@ -171,6 +171,15 @@ camera and view, calibration, tracking, movement, music, replay and Ollama.
 use **Apply & Save settings.toml** to confirm and overwrite that file, or
 **Export TOML…** to choose a different destination.
 
+**Settings → Files → Offline analysis model** lets you select **Lite**, **Full**,
+or **Heavy** for Review and Library video analysis. Lite is the default; Full and
+Heavy generally cost more processing time. **Live Practice and guided camera
+capture always use Lite**, regardless of this choice. Missing analysis weights
+download with progress when you start analysis, then remain cached locally.
+Changing this setting does not reanalyze old recordings automatically: click
+**Analyze posture & movement** again to replace the cached evidence. Calibrations
+created with another model remain incompatible; model checking is not bypassed.
+
 In the calibration editor, **Use approved ranges as Settings defaults...** copies
 the exact approved minimum/maximum, units and views into **Settings → Calibration
 defaults** and saves `settings.toml` after confirmation. Existing `.tpc` profiles
@@ -334,10 +343,21 @@ Use **Create calibration** on a `.tpr` in Library. In the shared approval screen
 
 The initial metric set is ear-to-nose head pitch, existing head-forward and
 head-inclination measurements, normalized ear-to-shoulder clearance, hip offset
-from the ankle-to-head axis, projected torso alignment and the least-bent
+from the ankle-to-head axis, pink torso-axis tilt, existing trunk inclination and the least-bent
 reliably visible knee. Clearance is not left/right shoulder level; hip offset
 is not pelvic rotation. Head yaw/lateral tilt, separate shoulder/hip-level
 angles and support-leg ranges are not implemented or represented as validated.
+
+In **Torso**, choose **Torso axis tilt (pink line)** to calibrate the angle shown
+on the overlay. It measures the absolute shoulder-midpoint to hip-midpoint tilt
+from image vertical in degrees: zero is upright, and either tilt direction has
+the same magnitude. Keep the camera level; both shoulders and both hips must be
+reliably visible. Select the applicable view and example passages, then approve
+the acceptable minimum/maximum. These bounds are available to Live Practice,
+Review and **Use as Settings defaults**. Missing joints yield unavailable
+measurements, not interpolated scoring evidence. The separate **Trunk inclination**
+metric and existing profiles keep their original definitions; this projected
+angle is not a balance or 3-D posture diagnosis.
 
 For **Guided camera calibration**, preview first, then explicitly begin a spoken
 and visible countdown. Each group captures comfortable neutral, changed,
@@ -860,20 +880,36 @@ This is not a guarantee against power loss, forced process termination, or an un
 
 ## 17. Offline operation and the model licence
 
-The selected model is Google's Pose Landmarker Lite, float16, version 1. Its exact URL and SHA-256 are recorded in [models/manifest.json](../models/manifest.json), and the installed model is verified before use.
+Live Practice uses Google's Pose Landmarker Lite, float16, version 1. Offline
+analysis can select Lite, Full or Heavy, all pinned to their float16 version-1
+bundles in [models/manifest.json](../models/manifest.json). Each installed model
+is verified against its own exact SHA-256 before use.
 
-The workflow separates explicit network setup from normal analysis:
+Live capture stays offline after setup. Analysis can download a missing selected
+model on first use:
 
 ```text
-Setup: install dependencies → explicitly fetch model → verify checksum
-Run:   verify existing local model → local capture/inference → local storage
+Setup:    install dependencies → explicitly fetch Lite → verify checksum
+Practice: verify local Lite → local capture/inference → local storage
+Analysis: download selected model if missing → verify → local inference/storage
 ```
 
 The official Pose Landmarker guide links the BlazePose GHUM model card for its model bundles. That card identifies Apache-2.0 terms. The repository records that weights evidence separately from the MediaPipe source-code licence.
 
 The model's training images and complete individual-image provenance are not supplied by this application. No claim is made that the application licence covers those images or separate GHUM assets. Weights are not bundled in source control.
 
-The manifest checksum also means `--model-path` is an offline-installation convenience for the identified model, not a way to silently substitute arbitrary weights. Using a different model requires an explicit licence/provenance review and corresponding manifest change; existing references would then be incompatible.
+Full and Heavy are cached in `<data_dir>/models/`; Lite uses `model_path`.
+Before downloading, analysis checks those locations, the folder alongside your
+configured Lite model, and the local `models/` folder. Put the selected variant's
+manifest-named `.task` file in one of these folders to reuse it without a download.
+Found files are checksum verified and used directly; no whole-disk scan is performed.
+For offline analysis installation, transfer the selected manifest's exact model
+to that location. Cancelled/failed downloads remove temporary files and do not
+install unverified weights. Cached corruption raises an error rather than falling
+back to Lite. `--model-path` remains a Lite installation convenience for practice,
+not a way to substitute arbitrary weights. Calibration comparisons require the
+same model hash; a Full/Heavy calibration does not silently become valid for Lite
+live scoring.
 
 See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and the preserved wheel notices in `docs/licenses/` for dependency terms, including native libraries shipped within upstream wheels.
 
@@ -1153,7 +1189,8 @@ Settings are editable in the desktop app and can be imported from or exported to
 
 | Setting | Meaning |
 | --- | --- |
-| `model_path` | Location of the pose-estimation model file. |
+| `model_path` | Location of the Lite model used for Live Practice and Lite analysis. |
+| `analysis_model` | Offline analysis model: `lite` (default), `full`, or `heavy`. Missing models download when analysis starts; live coaching remains Lite. |
 | `data_dir` | Directory for the local database and practice artifacts. |
 
 ### Quality & calibration

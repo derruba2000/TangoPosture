@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from ..config import Config
 from ..domain import (
     Calibration,
 )
-from ..models import verify
+from ..models import analysis_model_path, model_manifest, verify
 from ..references.video import VideoProbeInfo, validate_clip_range
 from .baseline import compatible, profile
 
@@ -62,8 +61,10 @@ def check_calibration_readiness(
         raise ValueError(f"Unsupported analysis_mode: {analysis_mode!r}")
 
     if reference is not None:
+        model_path = analysis_model_path(cfg)
         resolved_hash = model_hash or (
-            verify(Path(cfg.model_path)) if Path(cfg.model_path).is_file() else reference.model_hash
+            verify(model_path, cfg.analysis_model) if model_path.is_file() else
+            model_manifest(cfg.analysis_model)["sha256"]
         )
         cap_profile = profile(cfg, probe.width, probe.height, "video")
         try:

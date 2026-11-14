@@ -39,6 +39,7 @@ class Config(BaseModel):
     width: int = Field(default=640, gt=0)
     height: int = Field(default=480, gt=0)
     model_path: str = "models/pose_landmarker_lite.task"
+    analysis_model: Literal["lite", "full", "heavy"] = "lite"
     data_dir: str = "data"
     side: Literal["left", "right"] = "left"
     facing: Literal["left", "right"] = "right"
@@ -146,7 +147,7 @@ SETTING_GROUPS = {
         "mirror",
         "allow_all_angles",
     ),
-    "Files": ("model_path", "data_dir"),
+    "Files": ("model_path", "analysis_model", "data_dir"),
     "Quality & calibration": (
         "confidence",
         "min_torso",
