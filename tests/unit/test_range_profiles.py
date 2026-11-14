@@ -123,7 +123,7 @@ def test_settings_default_ranges_apply_without_calibration_and_ignore_interpolat
     compared = compare_default_coach_data(displayed, cfg)
     assert compared["frames"]["1"]["calibration_rows"][0]["state"] == "UNKNOWN"
     assert compared["frames"]["1"]["calibration_rows"][0]["smoothed"] is None
-    assert set(row["metric"] for row in compared["frames"]["0"]["calibration_rows"]) == {"head_pitch"}
+    assert {row["metric"] for row in compared["frames"]["0"]["calibration_rows"]} == {"head_pitch"}
     assert not compared["settings_coaching"]
     assert compared["calibration_name"] == "Settings default ranges"
     cfg.calibration_defaults["head_pitch"].lower = value - 1

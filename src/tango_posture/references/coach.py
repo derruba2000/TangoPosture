@@ -224,8 +224,8 @@ def render_coach_frame_overlay(
     if image.shape[1] != width or image.shape[0] != height:
         return image
 
-    observation = _coach_observation(entry, width, height, use_display_poses=True)
-    poses = observation.poses
+    observation = _coach_observation(entry, width, height)
+    poses = _coach_observation(entry, width, height, use_display_poses=True).poses
 
     if lines_only:
         canvas = image.copy()
@@ -300,6 +300,7 @@ def render_coach_frame_overlay(
             show_vertical_axis=show_vertical_axis,
             show_footer=show_footer,
             settings_coaching=bool(coach_data.get("settings_coaching", True)),
+            skeleton_poses=poses,
         ),
     )
 

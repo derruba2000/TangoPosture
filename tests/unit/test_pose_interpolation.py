@@ -82,3 +82,26 @@ def test_rendered_connections_bridge_missing_joints_without_replacing_raw_eviden
     assert data == original
     assert interpolated["frames"]["1"]["calibration_rows"] == data["frames"]["1"]["calibration_rows"]
     assert "left_hip" not in interpolated["frames"]["1"]["measurement_poses"][0]
+
+
+def test_interpolated_skeleton_does_not_invent_posture_measurement_annotations(monkeypatch):
+    labels = []
+    monkeypatch.setattr(
+        "tango_posture.overlay.cv2.putText",
+        lambda image, text, *args, **kwargs: labels.append(text) or image,
+    )
+    data = {"width": 100, "height": 100, "frames": {"0": {
+        "measurement_poses": [],
+        "display_poses": [{
+            "nose": [0.7, 0.3, 0, 1, 1],
+            "left_ear": [0.4, 0.2, 0, 1, 1],
+            "right_ear": [0.45, 0.2, 0, 1, 1],
+            "left_shoulder": [0.4, 0.5, 0, 1, 1],
+            "left_hip": [0.4, 0.8, 0, 1, 1],
+        }],
+    }}}
+    image = render_coach_frame_overlay(
+        np.zeros((100, 100, 3), np.uint8), data, 0, Config(),
+    )
+    assert image[:, :, 1].max() > 0
+    assert not any(label.startswith(("Head horiz:", "Shoulders:")) for label in labels)

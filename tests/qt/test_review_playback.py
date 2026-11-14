@@ -158,9 +158,11 @@ def test_review_interpolation_settings_refresh_display_without_changing_raw_aler
     screen, video, monkeypatch,
 ):
     observations = []
+    skeletons = []
 
     def render(image, observation, *args, **kwargs):
         observations.append(observation)
+        skeletons.append(kwargs["skeleton_poses"])
         return image
 
     monkeypatch.setattr("tango_posture.references.coach.draw", render)
@@ -176,19 +178,21 @@ def test_review_interpolation_settings_refresh_display_without_changing_raw_aler
     }}
     screen.refresh()
     screen._show_frame(2)
-    assert observations[-1].poses[0]["left_hip"].x == pytest.approx(0.6)
+    assert skeletons[-1][0]["left_hip"].x == pytest.approx(0.6)
+    assert not observations[-1].poses
     assert screen.alerts_text.text() == "Tracking unavailable"
     screen.bridge.update_config(screen.bridge.config.model_copy(update={
         "replay_joint_interpolation": "quadratic",
     }))
     screen._show_frame(2)
-    assert observations[-1].poses[0]["left_hip"].x == pytest.approx(0.5)
+    assert skeletons[-1][0]["left_hip"].x == pytest.approx(0.5)
     assert observations[-1].timestamp == 0.2
     assert screen.alerts_text.text() == "Tracking unavailable"
     assert screen._coach_data["frames"]["2"]["measurement_poses"] == [{}]
     screen.bridge.update_config(screen.bridge.config.model_copy(update={"replay_joint_max_gap": 0}))
     screen._show_frame(2)
     assert not observations[-1].poses
+    assert not skeletons[-1]
 
 
 @pytest.mark.parametrize("archived", [False, True])

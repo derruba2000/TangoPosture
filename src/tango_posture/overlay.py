@@ -126,6 +126,7 @@ def draw(
     show_vertical_axis: bool = True,
     show_footer: bool = True,
     settings_coaching: bool = True,
+    skeleton_poses: list[dict[str, Landmark]] | None = None,
 ) -> Any:
     image = cv2.flip(image, 1) if mirror else image.copy()
     disp_w = max(960, observation.width)
@@ -142,13 +143,7 @@ def draw(
     bad_ankles = settings_coaching and bool(ankle_high_alert)
     detected_role = role
     detected_embrace = embrace_type
-    for pose in observation.poses:
-        if detected_role is None:
-            detected_role = detect_role(pose)
-        if settings_coaching and detected_embrace is None and detected_role in ("LEADER", "FOLLOWER"):
-            detected_embrace = detect_embrace_type(
-                pose, detected_role, closed_threshold=embrace_closed_threshold
-            )
+    for pose in observation.poses if skeleton_poses is None else skeleton_poses:
         if verbose_skeleton:
             for a, b in CONNECTIONS:
                 if reliable(pose.get(a), confidence) and reliable(pose.get(b), confidence):
@@ -178,6 +173,13 @@ def draw(
                         (80, 220, 80),
                         -1,
                     )
+    for pose in observation.poses:
+        if detected_role is None:
+            detected_role = detect_role(pose)
+        if settings_coaching and detected_embrace is None and detected_role in ("LEADER", "FOLLOWER"):
+            detected_embrace = detect_embrace_type(
+                pose, detected_role, closed_threshold=embrace_closed_threshold
+            )
         head_info = head_horizontal_alignment(
             pose, observation.width, observation.height, neutral_offset=head_neutral_offset
         )

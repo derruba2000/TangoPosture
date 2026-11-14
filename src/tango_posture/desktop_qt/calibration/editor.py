@@ -455,20 +455,20 @@ class CalibrationEditor(QDialog):
         if not self.approved:
             raise ValueError("Approve at least one metric; skipped metrics will remain unavailable")
         return RangeProfile(
-                name=self.name_input.text().strip(), context=self.context_combo.currentText(),
-                model_hash=self.evidence.model_hash, capture_profile=self.evidence.capture_profile,
-                source={
-                    **self.evidence.source, "dancer_at_track_start": self.dancer_spin.value() - 1,
-                    "track_start_frame": self._track_start,
-                    "dancer_anchors": [
-                        {"frame": frame, "dancer": dancer} for frame, dancer in sorted(self._anchors.items())
-                    ],
-                    **({"target_reference": self.base_profile.source} if self.base_profile else {}),
-                },
-                metrics=self.approved,
-                camera_checks={"holds": {
-                    key: [hold.model_dump() for hold in holds] for key, holds in self.holds.items()
-                }},
+            name=self.name_input.text().strip(), context=self.context_combo.currentText(),
+            model_hash=self.evidence.model_hash, capture_profile=self.evidence.capture_profile,
+            source={
+                **self.evidence.source, "dancer_at_track_start": self.dancer_spin.value() - 1,
+                "track_start_frame": self._track_start,
+                "dancer_anchors": [
+                    {"frame": frame, "dancer": dancer} for frame, dancer in sorted(self._anchors.items())
+                ],
+                **({"target_reference": self.base_profile.source} if self.base_profile else {}),
+            },
+            metrics=self.approved,
+            camera_checks={"holds": {
+                key: [hold.model_dump() for hold in holds] for key, holds in self.holds.items()
+            }},
         )
 
     def _use_defaults(self) -> None:
